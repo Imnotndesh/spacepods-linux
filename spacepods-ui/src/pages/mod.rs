@@ -3,3 +3,4 @@ pub mod anc_page;
 pub mod eq_page;
 pub mod settings_page;
 pub mod about_page;
+pub mod loading_page;

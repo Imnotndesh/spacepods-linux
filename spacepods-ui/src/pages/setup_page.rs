@@ -6,6 +6,7 @@ use std::rc::Rc;
 use std::cell::RefCell;
 use glib::clone;
 use libspacepods::client::SpacePodsClient;
+use crate::storage::add_known_device;
 
 pub struct SetupPage;
 
@@ -189,18 +190,23 @@ impl SetupPage {
                 ));
             }
         ));
+
         let on_complete_close = on_complete.clone();
         device_list.connect_row_activated(clone!(
             #[strong] scanned,
             move |_, row| {
                 let idx = row.index() as usize;
                 let devices = scanned.borrow();
-                if let Some((_, address)) = devices.get(idx) {
+                if let Some((name, address)) = devices.get(idx) {
+                    let name = name.clone();
                     let address = address.clone();
                     let on_complete = on_complete.clone();
                     glib::spawn_future_local(async move {
                         if let Ok(mut client) = SpacePodsClient::connect(None).await {
-                            let _ = client.connect_device(address).await;
+                            if let Ok(_) = client.connect_device(address.clone()).await {
+                                add_known_device(name, address);
+                                let _ = crate::storage::load_settings();
+                            }
                         }
                         on_complete();
                     });

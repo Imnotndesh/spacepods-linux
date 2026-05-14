@@ -11,6 +11,7 @@ use std::cell::{Cell, RefCell};
 use std::fs;
 use std::path::PathBuf;
 use std::rc::Rc;
+use crate::storage::{load_settings, update_settings};
 
 const BUILTIN_PRESETS: [(u8, &str, [i8; 7]); 6] = [
     (0, "Flat",         [0,  0,  0,  0,  0,  0,  0]),
@@ -116,7 +117,6 @@ impl EqPage {
             });
         }
 
-
         let builtin_label = Label::new(Some("Presets"));
         builtin_label.add_css_class("heading");
         builtin_label.set_halign(gtk4::Align::Start);
@@ -124,7 +124,7 @@ impl EqPage {
         let flow = make_flowbox();
         let first_toggle: Rc<RefCell<Option<ToggleButton>>> = Rc::new(RefCell::new(None));
 
-        for (_id, name, gains) in BUILTIN_PRESETS.iter() {
+        for (id, name, gains) in BUILTIN_PRESETS.iter() {
             let btn = make_preset_button(name, gains, false);
 
             if first_toggle.borrow().is_none() {
@@ -136,6 +136,7 @@ impl EqPage {
             }
 
             let gains_copy = *gains;
+            let preset_id = *id;
             let drawing_ref = drawing.clone();
             let gains_ref = current_gains.clone();
             let in_custom_ref = in_custom_mode.clone();
@@ -148,6 +149,8 @@ impl EqPage {
                         in_custom_ref.set(false);
                         *gains_ref.borrow_mut() = gains_copy;
                         drawing_ref.queue_draw();
+                        // Save the selected preset ID
+                        update_settings(|s| s.last_eq_preset = preset_id);
                     } else {
                         b.remove_css_class("suggested-action");
                     }
@@ -166,7 +169,6 @@ impl EqPage {
         custom_section_label.set_margin_top(8);
 
         let custom_flow = make_flowbox();
-
 
         let sliders_card = libadwaita::Bin::new();
         sliders_card.add_css_class("card");
@@ -264,6 +266,8 @@ impl EqPage {
                         }
                         sliders_card_ref.set_visible(true);
                         drawing_ref.queue_draw();
+                        // When entering custom mode, set last_eq_preset to 6 (custom)
+                        update_settings(|s| s.last_eq_preset = 6);
                     } else {
                         b.remove_css_class("suggested-action");
                         sliders_card_ref.set_visible(false);
@@ -308,6 +312,8 @@ impl EqPage {
                 name_entry_ref.set_text("");
                 sliders_card_ref.set_visible(false);
                 edit_btn_ref.set_active(false);
+                // After saving a custom preset, set last_eq_preset to 6 (custom)
+                update_settings(|s| s.last_eq_preset = 6);
             });
         }
 
@@ -375,6 +381,8 @@ fn add_custom_preset_button(
                     in_custom_ref.set(false);
                     *gains_ref.borrow_mut() = gains_copy;
                     drawing_ref.queue_draw();
+                    // For custom preset, we might not have a preset ID; but we can set last_eq_preset to 6
+                    update_settings(|s| s.last_eq_preset = 6);
                 } else {
                     b.remove_css_class("suggested-action");
                 }

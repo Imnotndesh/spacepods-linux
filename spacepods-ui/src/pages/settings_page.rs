@@ -9,6 +9,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use crate::tray::{TrayCommand, TrayHandle};
+use crate::storage::{load_settings, update_settings};
 
 pub struct SettingsPage;
 
@@ -18,6 +19,9 @@ impl SettingsPage {
 
         let tray_enabled = Rc::new(Cell::new(false));
         let close_to_tray = Rc::new(Cell::new(false));
+
+        // Load saved settings
+        let saved_settings = load_settings();
 
         let header = HeaderBar::new();
         let title_widget = libadwaita::WindowTitle::new("Settings", "");
@@ -37,12 +41,11 @@ impl SettingsPage {
         let autostart_row = SwitchRow::new();
         autostart_row.set_title("Start on login");
         autostart_row.set_subtitle("Launch SpacePods automatically at login");
+        autostart_row.set_active(saved_settings.autostart);
         autostart_row.connect_active_notify(|row| {
-            if row.is_active() {
-                write_autostart_entry(true);
-            } else {
-                write_autostart_entry(false);
-            }
+            let enabled = row.is_active();
+            update_settings(|s| s.autostart = enabled);
+            write_autostart_entry(enabled);
         });
 
         general_group.add(&autostart_row);
@@ -56,10 +59,12 @@ impl SettingsPage {
         let tray_row = SwitchRow::new();
         tray_row.set_title("Enable tray icon");
         tray_row.set_subtitle("Show SpacePods in the system notification area");
+        tray_row.set_active(saved_settings.tray_enabled);
         let close_tray_row = SwitchRow::new();
         close_tray_row.set_title("Minimise to tray on close");
         close_tray_row.set_subtitle("Closing the window hides it instead of quitting");
-        close_tray_row.set_sensitive(false);
+        close_tray_row.set_active(saved_settings.close_to_tray);
+        close_tray_row.set_sensitive(saved_settings.tray_enabled);
 
         {
             let close_tray_row_ref = close_tray_row.clone();
@@ -71,13 +76,13 @@ impl SettingsPage {
                     let enabled = row.is_active();
                     tray_enabled_ref.set(enabled);
                     close_tray_row_ref.set_sensitive(enabled);
+                    update_settings(|s| s.tray_enabled = enabled);
 
                     if let Some(ref handle) = *tray_handle_ref {
                         if enabled {
                             handle.send(TrayCommand::Show);
                         } else {
                             handle.send(TrayCommand::Hide);
-                            // Also disable close-to-tray if tray is turned off
                             close_tray_row_ref.set_active(false);
                         }
                     }
@@ -87,7 +92,9 @@ impl SettingsPage {
         {
             let close_to_tray_ref = close_to_tray.clone();
             close_tray_row.connect_active_notify(move |row| {
-                close_to_tray_ref.set(row.is_active());
+                let enabled = row.is_active();
+                close_to_tray_ref.set(enabled);
+                update_settings(|s| s.close_to_tray = enabled);
             });
         }
 
@@ -195,4 +202,3 @@ fn write_autostart_entry(enable: bool) {
         let _ = std::fs::remove_file(&path);
     }
 }
-
