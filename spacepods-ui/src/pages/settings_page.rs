@@ -120,7 +120,6 @@ impl SettingsPage {
             let start_btn_ref = start_btn.clone();
             start_btn.connect_clicked(move |_| {
                 // TODO: start systemd user unit via gio::Subprocess or dbus
-                // For now, update label optimistically
                 service_status_ref.set_text("Running");
                 service_status_ref.remove_css_class("dim-label");
                 service_status_ref.add_css_class("success");
@@ -147,7 +146,7 @@ impl SettingsPage {
         source_row.set_subtitle("github.com/your-user/spacepods");
         source_row.set_activatable(true);
         source_row.connect_activated(|_| {
-            let _ = gtk4::UriLauncher::new("https://github.com/your-user/spacepods")
+            let _ = gtk4::UriLauncher::new("https://github.com/Imnotndesh/spacepods-linux")
                 .launch(gtk4::Window::NONE, gio::Cancellable::NONE, |_| {});
         });
         let chevron = gtk4::Image::from_icon_name("go-next-symbolic");
