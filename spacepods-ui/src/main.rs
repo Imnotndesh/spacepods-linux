@@ -3,6 +3,7 @@ use libadwaita::prelude::*;
 use libadwaita::{Application, ApplicationWindow};
 use std::cell::RefCell;
 use std::rc::Rc;
+use tokio::runtime::Runtime;
 
 mod pages;
 mod home;
@@ -12,7 +13,12 @@ use home::HomeView;
 use pages::setup_page::SetupPage;
 
 fn main() -> glib::ExitCode {
+    // Create a Tokio runtime and enter its context
+    let rt = Runtime::new().expect("Failed to create tokio runtime");
+    let _guard = rt.enter();
+
     let app = Application::new(Some("com.spacepods.ui"), Default::default());
+
     app.connect_activate(|app| {
         let window = ApplicationWindow::new(app);
         window.set_title(Some("SpacePods"));
@@ -49,5 +55,6 @@ fn main() -> glib::ExitCode {
         window.set_content(Some(&setup_page));
         window.present();
     });
+
     app.run()
 }

@@ -1534,13 +1534,16 @@ dependencies = [
 name = "spacepods-ui"
 version = "0.1.0"
 dependencies = [
+ "btleplug",
  "gio",
  "glib",
  "gtk4",
  "ksni",
  "libadwaita",
+ "libspacepods",
  "serde",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]

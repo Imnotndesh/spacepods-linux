@@ -243,6 +243,31 @@ impl DeviceScanner {
         Err(SpaceBudsError::DeviceNotFound)
     }
 
+    pub async fn scan_devices(timeout: Duration) -> Result<Vec<Peripheral>> {
+        let manager = Manager::new().await?;
+        let adapters = manager.adapters().await?;
+        let adapter = adapters.into_iter().next().ok_or(SpaceBudsError::DeviceNotFound)?;
+
+        adapter.start_scan(ScanFilter::default()).await?;
+        time::sleep(timeout).await;
+
+        let peripherals = adapter.peripherals().await?;
+        let mut found = Vec::new();
+
+        for peripheral in peripherals {
+            if let Ok(Some(properties)) = peripheral.properties().await {
+                for uuid in &properties.services {
+                    let uuid_str = uuid.to_string().to_lowercase();
+                    if uuid_str.contains("ff17") || uuid_str.contains("fe2c") {
+                        found.push(peripheral);
+                        break;
+                    }
+                }
+            }
+        }
+        Ok(found)
+    }
+
     pub async fn find_device_with_retry(timeout: Duration, max_retries: usize) -> Result<Peripheral> {
         for attempt in 1..=max_retries {
             println!("Scan attempt {}/{}...", attempt, max_retries);

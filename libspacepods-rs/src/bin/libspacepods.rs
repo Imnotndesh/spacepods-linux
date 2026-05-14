@@ -72,10 +72,9 @@ async fn main() -> Result<()> {
     let socket_path = cli.socket.unwrap_or_else(|| PathBuf::from(DEFAULT_SOCKET));
 
     match cli.command {
-        Commands::Service => {
-            // Run as service
+       Commands::Service => {
             println!("Starting SpacePods service...");
-            let mut service = libspacepods::service::SpacePodsService::new(Some(socket_path)).await?;
+            let mut service = libspacepods::service::SpacePodsService::new(Some(socket_path)).await;
 
             tokio::select! {
                 _ = service.run() => {},

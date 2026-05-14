@@ -1,8 +1,10 @@
-use crate::{SpaceBuds, SpaceBudsError, Result};
+use crate::{SpaceBuds, SpaceBudsError, Result, DeviceScanner};
 use crate::protocol::{MODE_OFF, MODE_ANC, MODE_TRANSPARENCY};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
+use btleplug::api::Peripheral;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{broadcast, Mutex, RwLock};
@@ -28,6 +30,12 @@ pub enum ServiceCommand {
 
     #[serde(rename = "level")]
     SetLevel { level: u8 },
+
+    #[serde(rename = "scan")]
+    Scan { timeout_secs: u64 },
+
+    #[serde(rename = "connect")]
+    Connect { address: String },
 
     #[serde(rename = "eq")]
     SetEqPreset { preset: u8 },
@@ -73,8 +81,17 @@ pub enum ServiceResponse {
     #[serde(rename = "error")]
     Error { message: String },
 
+    #[serde(rename = "scan_results")]
+    ScanResults { devices: Vec<ScannedDevice> },
+
     #[serde(rename = "status_update")]
     StatusUpdate { status: DeviceStatus },
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ScannedDevice {
+    pub name: String,
+    pub address: String,
 }
 
 pub struct SpacePodsService {
@@ -87,11 +104,9 @@ pub struct SpacePodsService {
 }
 
 impl SpacePodsService {
-    pub async fn new(socket_path: Option<PathBuf>) -> Result<Self> {
-        let buds = SpaceBuds::new().await?;
-
+    pub async fn new(socket_path: Option<PathBuf>) -> Self {
+        let buds = SpaceBuds::new_disconnected();
         let (status_tx, _) = broadcast::channel(32);
-
         let status = Arc::new(RwLock::new(DeviceStatus {
             connected: false,
             address: None,
@@ -106,17 +121,15 @@ impl SpacePodsService {
             battery_right: None,
             battery_case: None,
         }));
-
         let socket_path = socket_path.unwrap_or_else(|| PathBuf::from(DEFAULT_SOCKET_PATH));
-
-        Ok(Self {
+        Self {
             buds,
             status,
             status_tx,
             socket_path,
             running: Arc::new(Mutex::new(false)),
             subscribers: Arc::new(Mutex::new(Vec::new())),
-        })
+        }
     }
 
     pub async fn run(&mut self) -> Result<()> {
@@ -391,6 +404,40 @@ impl SpacePodsService {
                 ServiceResponse::Success {
                     message: None,
                     data: Some(data),
+                }
+            }
+
+            ServiceCommand::Scan { timeout_secs } => {
+            match DeviceScanner::scan_devices(Duration::from_secs(timeout_secs)).await {
+                Ok(peripherals) => {
+                    let mut devices = Vec::new();
+                    for p in peripherals {
+                        if let Ok(Some(props)) = p.properties().await {
+                            devices.push(ScannedDevice {
+                                name: props.local_name.unwrap_or_else(|| "Unknown".to_string()),
+                                address: p.address().to_string(),
+                            });
+                        }
+                    }
+                    ServiceResponse::ScanResults { devices }
+                }
+                Err(e) => ServiceResponse::Error {
+                message: format!("Scan failed: {}", e),
+                },
+                }
+            }
+
+            ServiceCommand::Connect { address } => {
+                // For now the service connects to whatever it finds;
+                // address filtering is a future TODO in SpaceBuds::with_address
+                match buds.connect().await {
+                    Ok(_) => ServiceResponse::Success {
+                        message: Some(format!("Connected to {}", address)),
+                        data: None,
+                    },
+                    Err(e) => ServiceResponse::Error {
+                        message: format!("Connection failed: {}", e),
+                    },
                 }
             }
 

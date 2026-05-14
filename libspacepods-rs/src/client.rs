@@ -26,7 +26,19 @@ impl SpacePodsClient {
             subscribed: false,
         })
     }
+    pub async fn scan(&mut self, timeout_secs: u64) -> Result<Vec<(String, String)>> {
+        match self.send_command(ServiceCommand::Scan { timeout_secs }).await? {
+            ServiceResponse::ScanResults { devices } => {
+                Ok(devices.into_iter().map(|d| (d.name, d.address)).collect())
+            }
+            _ => Err(SpaceBudsError::Ipc("Unexpected response to scan".to_string())),
+        }
+    }
 
+    pub async fn connect_device(&mut self, address: String) -> Result<()> {
+        self.send_command(ServiceCommand::Connect { address }).await?;
+        Ok(())
+    }
     pub async fn send_command(&mut self, cmd: ServiceCommand) -> Result<ServiceResponse> {
         let cmd_json = serde_json::to_string(&cmd).unwrap() + "\n";
 

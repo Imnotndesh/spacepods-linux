@@ -1,5 +1,5 @@
 // lib.rs
-mod ble;
+pub mod ble;
 mod errors;
 mod protocol;
 mod commands;
@@ -28,7 +28,13 @@ impl SpaceBuds {
     pub async fn new() -> Result<Self> {
         Self::with_address(None).await
     }
-
+    pub fn new_disconnected() -> Self {
+    Self {
+        conn: Arc::new(Mutex::new(None)),
+        address: None,
+        max_retries: 3,
+    }
+}
     pub async fn with_address(address: Option<String>) -> Result<Self> {
         let buds = Self {
             conn: Arc::new(Mutex::new(None)),
