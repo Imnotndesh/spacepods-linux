@@ -1,40 +1,3 @@
-// src/tray.rs
-//
-// System tray icon using `ksni` (StatusNotifierItem / freedesktop spec).
-// Supported on: GNOME Shell + AppIndicator extension, KDE Plasma, XFCE, etc.
-//
-// Cargo.toml additions:
-//   ksni = { version = "0.3", features = ["blocking"] }
-//   (ksni's blocking feature gives us a synchronous TrayMethods::spawn())
-//
-// Architecture
-// ────────────
-// ksni runs the tray on its own internal async runtime (separate thread).
-// GTK is NOT thread-safe, so tray callbacks MUST NOT touch GTK widgets directly.
-// Instead, tray callbacks send a `TrayCommand` over a `std::sync::mpsc` channel;
-// the GTK main loop polls the channel via `glib::idle_add` and dispatches on
-// the main thread.
-//
-// Usage (in main.rs / window setup):
-//
-//   let (tray_handle, tray_receiver) = tray::spawn_tray();
-//
-//   // Poll the receiver from the GTK main loop:
-//   let window_ref = window.clone();
-//   glib::idle_add(move || {
-//       while let Ok(cmd) = tray_receiver.try_recv() {
-//           match cmd {
-//               TrayCommand::ShowWindow  => window_ref.present(),
-//               TrayCommand::HideWindow  => window_ref.set_visible(false),
-//               TrayCommand::Quit        => window_ref.close(),
-//               TrayCommand::SetAncMode(m) => { /* call your BLE layer */ }
-//               TrayCommand::SetEqPreset(p) => { /* call your BLE layer */ }
-//               _ => {}
-//           }
-//       }
-//       glib::ControlFlow::Continue
-//   });
-
 use std::sync::mpsc::{self, Receiver, Sender};
 use ksni::TrayMethods;
 
@@ -53,12 +16,10 @@ pub enum TrayCommand {
 #[derive(Clone)]
 pub struct TrayHandle {
     sender: Sender<TrayCommand>,
-    /// ksni handle — used to update the tray state (e.g. checked radio items)
     tray_service: ksni::Handle<SpacePodsTray>,
 }
 
 impl TrayHandle {
-    /// Send a command to the tray service itself (e.g. Show/Hide).
     pub fn send(&self, cmd: TrayCommand) {
         match cmd {
             TrayCommand::Show => {
@@ -72,14 +33,11 @@ impl TrayHandle {
             }
         }
     }
-
-    /// Update which ANC mode is shown as checked in the tray menu.
+    
     pub fn set_anc_mode(&self, mode: u8) {
         self.tray_service
             .update(|t| t.anc_mode = mode as usize);
     }
-
-    /// Update which EQ preset is shown as checked in the tray menu.
     pub fn set_eq_preset(&self, preset: u8) {
         self.tray_service
             .update(|t| t.eq_preset = preset as usize);
@@ -110,11 +68,8 @@ pub async fn spawn_tray() -> (TrayHandle, Receiver<TrayCommand>) {
 #[derive(Debug)]
 pub struct SpacePodsTray {
     sender: Sender<TrayCommand>,
-    /// Index into ANC_MODES (0 = Off, 1 = ANC, 2 = Transparency)
     pub anc_mode: usize,
-    /// Index into EQ_PRESET_NAMES
     pub eq_preset: usize,
-    /// Whether the icon is currently shown
     pub visible: bool,
 }
 
@@ -137,16 +92,12 @@ impl ksni::Tray for SpacePodsTray {
     fn id(&self) -> String {
         "spacepods".into()
     }
-
     fn title(&self) -> String {
         "SpacePods".into()
     }
-
-    /// Use a themed icon name so it adapts to the desktop's icon theme.
     fn icon_name(&self) -> String {
         "audio-headset-symbolic".into()
     }
-
     fn tool_tip(&self) -> ksni::ToolTip {
         ksni::ToolTip {
             icon_name: "audio-headset-symbolic".into(),
@@ -250,44 +201,3 @@ impl ksni::Tray for SpacePodsTray {
         ]
     }
 }
-
-// ── Integration snippet for main.rs ──────────────────────────────────────────
-//
-// fn main() -> glib::ExitCode {
-//     let app = adw::Application::builder()
-//         .application_id("io.github.yourname.spacepods")
-//         .build();
-//
-//     app.connect_activate(|app| {
-//         let (tray_handle, tray_rx) = tray::spawn_tray();
-//
-//         let window = build_window(app, tray_handle.clone());
-//
-//         // Poll tray commands on every GTK idle tick
-//         let win_ref = window.clone();
-//         let tray_ref = tray_handle.clone();
-//         glib::idle_add_local(move || {
-//             while let Ok(cmd) = tray_rx.try_recv() {
-//                 match cmd {
-//                     TrayCommand::ShowWindow  => win_ref.present(),
-//                     TrayCommand::HideWindow  => win_ref.set_visible(false),
-//                     TrayCommand::Quit        => win_ref.close(),
-//                     TrayCommand::SetAncMode(m) => {
-//                         tray_ref.set_anc_mode(m);
-//                         // TODO: send BLE command
-//                     }
-//                     TrayCommand::SetEqPreset(p) => {
-//                         tray_ref.set_eq_preset(p);
-//                         // TODO: send BLE command
-//                     }
-//                     _ => {}
-//                 }
-//             }
-//             glib::ControlFlow::Continue
-//         });
-//
-//         window.present();
-//     });
-//
-//     app.run()
-// }

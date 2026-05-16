@@ -322,7 +322,6 @@ impl EqPage {
                 name_entry_ref.set_text("");
                 sliders_card_ref.set_visible(false);
                 edit_btn_ref.set_active(false);
-                // After saving a custom preset, set last_eq_preset to 6 (custom)
                 update_settings(|s| s.last_eq_preset = 6);
             });
         }
@@ -403,8 +402,6 @@ fn add_custom_preset_button(
     let child = gtk4::FlowBoxChild::new();
     child.set_child(Some(&btn));
     child.set_focusable(false);
-
-    // Right-click → delete popover
     let gc = GestureClick::new();
     gc.set_button(3);
     {
@@ -418,8 +415,6 @@ fn add_custom_preset_button(
         });
     }
     btn.add_controller(gc);
-
-    // Long-press (touch) → same delete popover
     let glp = GestureLongPress::new();
     glp.set_touch_only(false);
     {
