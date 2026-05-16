@@ -111,7 +111,6 @@ impl SettingsPage {
         service_row.set_title("SpacePods daemon");
         service_row.set_subtitle("Manages the BLE connection to your earbuds");
 
-        // Status indicator label (updated by checking systemd unit status)
         let service_status = Label::new(Some("Checking…"));
         service_status.add_css_class("dim-label");
         service_status.add_css_class("caption");
@@ -122,21 +121,90 @@ impl SettingsPage {
         start_btn.add_css_class("pill");
         start_btn.set_valign(gtk4::Align::Center);
 
+        let stop_btn = gtk4::Button::with_label("Stop");
+        stop_btn.add_css_class("destructive-action");
+        stop_btn.add_css_class("pill");
+        stop_btn.set_valign(gtk4::Align::Center);
+        stop_btn.set_visible(false);
+
+        let restart_btn = gtk4::Button::with_label("Restart");
+        restart_btn.add_css_class("pill");
+        restart_btn.set_valign(gtk4::Align::Center);
+        restart_btn.set_visible(false);
+
+        // Check actual daemon status on open
         {
-            let service_status_ref = service_status.clone();
-            let start_btn_ref = start_btn.clone();
+            let service_status_r = service_status.clone();
+            let start_btn_r = start_btn.clone();
+            let stop_btn_r = stop_btn.clone();
+            let restart_btn_r = restart_btn.clone();
+            glib::spawn_future_local(async move {
+                let running = check_daemon_running().await;
+                update_daemon_ui(&service_status_r, &start_btn_r, &stop_btn_r, &restart_btn_r, running);
+            });
+        }
+
+        {
+            let service_status_r = service_status.clone();
+            let start_btn_r = start_btn.clone();
+            let stop_btn_r = stop_btn.clone();
+            let restart_btn_r = restart_btn.clone();
             start_btn.connect_clicked(move |_| {
-                // TODO: start systemd user unit via gio::Subprocess or dbus
-                service_status_ref.set_text("Running");
-                service_status_ref.remove_css_class("dim-label");
-                service_status_ref.add_css_class("success");
-                start_btn_ref.set_sensitive(false);
-                start_btn_ref.set_label("Running");
+                let ss = service_status_r.clone();
+                let sb = start_btn_r.clone();
+                let stb = stop_btn_r.clone();
+                let rb = restart_btn_r.clone();
+                glib::spawn_future_local(async move {
+                    spawn_daemon();
+                    tokio::time::sleep(tokio::time::Duration::from_millis(900)).await;
+                    let running = check_daemon_running().await;
+                    update_daemon_ui(&ss, &sb, &stb, &rb, running);
+                });
+            });
+        }
+        {
+            let service_status_r = service_status.clone();
+            let start_btn_r = start_btn.clone();
+            let stop_btn_r = stop_btn.clone();
+            let restart_btn_r = restart_btn.clone();
+            stop_btn.connect_clicked(move |_| {
+                kill_daemon();
+                let ss = service_status_r.clone();
+                let sb = start_btn_r.clone();
+                let stb = stop_btn_r.clone();
+                let rb = restart_btn_r.clone();
+                glib::spawn_future_local(async move {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(400)).await;
+                    let running = check_daemon_running().await;
+                    update_daemon_ui(&ss, &sb, &stb, &rb, running);
+                });
+            });
+        }
+        {
+            let service_status_r = service_status.clone();
+            let start_btn_r = start_btn.clone();
+            let stop_btn_r = stop_btn.clone();
+            let restart_btn_r = restart_btn.clone();
+            restart_btn.connect_clicked(move |_| {
+                kill_daemon();
+                let ss = service_status_r.clone();
+                let sb = start_btn_r.clone();
+                let stb = stop_btn_r.clone();
+                let rb = restart_btn_r.clone();
+                glib::spawn_future_local(async move {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                    spawn_daemon();
+                    tokio::time::sleep(tokio::time::Duration::from_millis(900)).await;
+                    let running = check_daemon_running().await;
+                    update_daemon_ui(&ss, &sb, &stb, &rb, running);
+                });
             });
         }
 
         service_row.add_suffix(&service_status);
         service_row.add_suffix(&start_btn);
+        service_row.add_suffix(&stop_btn);
+        service_row.add_suffix(&restart_btn);
         service_group.add(&service_row);
         let about_group = PreferencesGroup::new();
         about_group.set_title("About");
@@ -201,4 +269,49 @@ fn write_autostart_entry(enable: bool) {
     } else {
         let _ = std::fs::remove_file(&path);
     }
+}
+fn update_daemon_ui(
+    status: &Label,
+    start: &gtk4::Button,
+    stop: &gtk4::Button,
+    restart: &gtk4::Button,
+    running: bool,
+) {
+    if running {
+        status.set_text("Running");
+        status.remove_css_class("dim-label");
+        status.remove_css_class("error");
+        status.add_css_class("success");
+        start.set_visible(false);
+        stop.set_visible(true);
+        restart.set_visible(true);
+    } else {
+        status.set_text("Stopped");
+        status.remove_css_class("success");
+        status.remove_css_class("dim-label");
+        status.add_css_class("error");
+        start.set_visible(true);
+        stop.set_visible(false);
+        restart.set_visible(false);
+    }
+}
+
+async fn check_daemon_running() -> bool {
+    libspacepods::client::SpacePodsClient::connect(None).await.is_ok()
+}
+
+fn spawn_daemon() {
+    let exe = std::env::current_exe().unwrap_or_else(|_| "spacepods".into());
+    let _ = std::process::Command::new(exe)
+        .arg("service")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+}
+
+fn kill_daemon() {
+    let _ = std::process::Command::new("pkill")
+        .args(["-f", "spacepods service"])
+        .spawn();
 }
