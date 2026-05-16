@@ -150,30 +150,6 @@ impl LoadingPage {
                 let settings = load_settings();
                 info_label.set_text("Restoring settings…");
 
-                if let Err(e) = client.set_anc_mode(match settings.last_anc_mode {
-                    0 => "off",
-                    1 => "anc",
-                    _ => "transparency",
-                }).await {
-                    eprintln!("Failed to restore ANC mode: {}", e);
-                }
-
-                if settings.last_anc_mode != 0 {
-                    tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
-                    if let Err(e) = client.set_level(settings.last_anc_level).await {
-                        eprintln!("Failed to restore ANC level: {}", e);
-                    }
-                }
-
-                if let Err(e) = client.set_eq_preset(settings.last_eq_preset).await {
-                    eprintln!("Failed to restore EQ preset: {}", e);
-                }
-                if let Err(e) = client.set_adaptive_anc(settings.adaptive_anc_enabled).await {
-                    eprintln!("Failed to restore adaptive ANC: {}", e);
-                }
-                if let Err(e) = client.set_dual_device(settings.dual_device_enabled).await {
-                    eprintln!("Failed to restore dual device: {}", e);
-                }
                 info_label.set_text("Connected successfully!");
                 tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
                 Ok(LoadingOutcome::Connected(Arc::new(Mutex::new(client))))

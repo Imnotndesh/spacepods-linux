@@ -196,28 +196,28 @@ impl BleConnection {
         Ok(())
     }
     pub async fn get_battery_level(&self) -> Result<(Option<u8>, Option<u8>, Option<u8>)> {
-    use crate::protocol::{CMD_GET_POWER, ID_BATTERY};
+        use crate::protocol::ID_BATTERY;
 
-    let result = self.query(
-        CMD_GET_POWER,
-        vec![ID_BATTERY, 0x00],
-        |packet| {
-            if packet.cmd_id == CMD_GET_POWER {
-                let mut parser = TlvParser::new(&packet.payload);
-                if let Some(data) = parser.get_bytes(ID_BATTERY) {
-                    let left  = data.get(0).map(|&b| b.min(100));
-                    let right = data.get(1).map(|&b| b.min(100));
-                    let case  = data.get(2).map(|&b| b.min(100));
-                    return Some((left, right, case));
+        let result = self.query(
+            CMD_HANDSHAKE,
+            vec![0xFF, 0x00, ID_BATTERY, 0x00],
+            |packet| {
+                if packet.cmd_id == CMD_HANDSHAKE {
+                    let mut parser = TlvParser::new(&packet.payload);
+                    if let Some(data) = parser.get_bytes(ID_BATTERY) {
+                        let left  = data.get(0).map(|&b| b.min(100));
+                        let right = data.get(1).map(|&b| b.min(100));
+                        let case  = data.get(2).map(|&b| b.min(100));
+                        return Some((left, right, case));
+                    }
                 }
-            }
-            None
-        },
-        Duration::from_secs(3),
-    ).await?;
+                None
+            },
+            Duration::from_secs(3),
+        ).await?;
 
-    Ok(result.unwrap_or((None, None, None)))
-}
+        Ok(result.unwrap_or((None, None, None)))
+    }
 }
 
 impl DeviceScanner {

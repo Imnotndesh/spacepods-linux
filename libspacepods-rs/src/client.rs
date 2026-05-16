@@ -70,6 +70,18 @@ impl SpacePodsClient {
         }
     }
 
+    pub async fn get_battery(&mut self) -> Result<(Option<u8>, Option<u8>, Option<u8>)> {
+        match self.send_command(ServiceCommand::GetBattery).await? {
+            ServiceResponse::Success { data: Some(data), .. } => {
+                let left  = data["battery_left"].as_u64().map(|v| v as u8);
+                let right = data["battery_right"].as_u64().map(|v| v as u8);
+                let case_ = data["battery_case"].as_u64().map(|v| v as u8);
+                Ok((left, right, case_))
+            }
+            _ => Ok((None, None, None)),
+        }
+    }
+
     pub async fn get_status(&mut self) -> Result<DeviceStatus> {
         match self.send_command(ServiceCommand::GetStatus).await {
             Ok(ServiceResponse::Success { data, .. }) => {

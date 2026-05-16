@@ -121,31 +121,31 @@ fn main() -> glib::ExitCode {
                             *shared_client.borrow_mut() = Some(Arc::clone(&client));
 
                             {
-                                let client_ref = Arc::clone(&client);
                                 let tray_ref = tray_handle.clone();
                                 glib::spawn_future_local(async move {
-                                    if let Ok(mut rx) = {
-                                        let mut c = client_ref.lock().await;
-                                        c.subscribe().await
-                                    } {
-                                        while let Ok(status) = rx.recv().await {
-                                            if let Some(ref h) = *tray_ref {
-                                                h.set_anc_mode(status.anc_mode.unwrap_or(0));
-                                                h.set_eq_preset(status.eq_mode.unwrap_or(0));
-                                                let connected = status.connected;
-                                                let name = status.address.clone().unwrap_or_default();
-                                                glib::spawn_future_local({
-                                                    let h2 = h.clone();
-                                                    async move {
-                                                        h2.set_status(
-                                                            name,
-                                                            status.battery_left,
-                                                            status.battery_right,
-                                                            status.battery_case,
-                                                            connected,
-                                                        );
-                                                    }
-                                                });
+                                    if let Ok(mut sub_client) =
+                                        libspacepods::client::SpacePodsClient::connect(None).await
+                                    {
+                                        if let Ok(mut rx) = sub_client.subscribe().await {
+                                            while let Ok(status) = rx.recv().await {
+                                                if let Some(ref h) = *tray_ref {
+                                                    h.set_anc_mode(status.anc_mode.unwrap_or(0));
+                                                    h.set_eq_preset(status.eq_mode.unwrap_or(0));
+                                                    let connected = status.connected;
+                                                    let name = status.address.clone().unwrap_or_default();
+                                                    glib::spawn_future_local({
+                                                        let h2 = h.clone();
+                                                        async move {
+                                                            h2.set_status(
+                                                                name,
+                                                                status.battery_left,
+                                                                status.battery_right,
+                                                                status.battery_case,
+                                                                connected,
+                                                            );
+                                                        }
+                                                    });
+                                                }
                                             }
                                         }
                                     }

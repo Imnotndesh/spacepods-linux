@@ -43,6 +43,9 @@ pub enum ServiceCommand {
     #[serde(rename = "adaptive")]
     SetAdaptiveAnc { enabled: bool },
 
+    #[serde(rename = "battery")]
+    GetBattery,
+
     #[serde(rename = "dual")]
     SetDualDevice { enabled: bool },
 
@@ -197,10 +200,15 @@ impl SpacePodsService {
         subscribers: Arc<Mutex<Vec<tokio::sync::mpsc::UnboundedSender<DeviceStatus>>>>,
     ) {
         let mut reconnect_delay = time::Duration::from_secs(1);
-        let mut battery_interval = time::interval(time::Duration::from_secs(60));
+        let status_clone = status.clone();
+        let status_tx_clone = status_tx.clone();
+        let subscribers_clone = subscribers.clone();
+
+        let mut battery_interval = time::interval(time::Duration::from_secs(30));
 
         Self::refresh_full_status(&buds, &status, &status_tx, &subscribers).await;
-
+        tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+        Self::refresh_battery_only(&buds, &status_clone, &status_tx_clone, &subscribers_clone).await;
         while *running.lock().await {
             let connected = buds.is_connected().await;
 
@@ -432,6 +440,16 @@ impl SpacePodsService {
                 message: format!("Scan failed: {}", e),
                 },
                 }
+            }
+            
+            ServiceCommand::GetBattery => {
+                let status = status.read().await.clone();
+                let data = serde_json::json!({
+                    "battery_left": status.battery_left,
+                    "battery_right": status.battery_right,
+                    "battery_case": status.battery_case,
+                });
+                ServiceResponse::Success { message: None, data: Some(data) }
             }
 
            ServiceCommand::Connect { address } => {
