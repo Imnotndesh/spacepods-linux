@@ -427,9 +427,13 @@ impl SpacePodsService {
                 }
             }
 
-            ServiceCommand::Connect { address } => {
-                // For now the service connects to whatever it finds;
-                // address filtering is a future TODO in SpaceBuds::with_address
+           ServiceCommand::Connect { address } => {
+                if buds.is_connected().await {
+                    return ServiceResponse::Success {
+                        message: Some(format!("Already connected to {}", address)),
+                        data: None,
+                    };
+                }
                 match buds.connect().await {
                     Ok(_) => ServiceResponse::Success {
                         message: Some(format!("Connected to {}", address)),
@@ -439,7 +443,7 @@ impl SpacePodsService {
                         message: format!("Connection failed: {}", e),
                     },
                 }
-            }
+           }
 
             ServiceCommand::SetAncMode { mode } => {
                 let mode_val = match mode.as_str() {

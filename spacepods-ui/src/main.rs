@@ -26,11 +26,9 @@ fn main() -> glib::ExitCode {
 
         let window_weak = window.downgrade();
 
-        // Holder for the callback (to allow self‑reference in Retry)
         let callback_holder: Rc<RefCell<Option<Rc<dyn Fn(LoadingOutcome)>>>> =
             Rc::new(RefCell::new(None));
 
-        // The actual callback that handles outcomes
         let callback: Rc<dyn Fn(LoadingOutcome)> = {
             let window_weak = window_weak.clone();
             let callback_holder = callback_holder.clone();

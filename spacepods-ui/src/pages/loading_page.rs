@@ -137,9 +137,12 @@ impl LoadingPage {
 
         match client.connect_device(device.address.clone()).await {
             Ok(_) => {
-                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-                let status = client.get_status().await.map_err(|e| format!("Status check failed: {}", e))?;
-                if status.connected {
+                tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
+                let status = client
+                    .get_status()
+                    .await
+                    .map_err(|e| format!("Status check failed: {}", e))?;
+                if status.connected || status.address.as_deref() == Some(&device.address){
                     add_known_device(device.name.clone(), device.address.clone());
 
                     let settings = load_settings();
