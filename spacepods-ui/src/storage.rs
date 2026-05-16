@@ -96,7 +96,17 @@ pub fn save_settings(settings: &AppSettings) {
     }
     let _ = fs::write(&path, serde_json::to_string_pretty(settings).unwrap());
 }
-
+pub fn rename_known_device(address: &str, new_name: String) {
+    let mut devices = load_known_devices();
+    if let Some(d) = devices.iter_mut().find(|d| d.address == address) {
+        d.name = new_name;
+    }
+    let path = devices_file();
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write(&path, serde_json::to_string_pretty(&devices).unwrap());
+}
 pub fn update_settings<F>(updater: F)
 where
     F: FnOnce(&mut AppSettings),

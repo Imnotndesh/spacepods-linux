@@ -50,7 +50,6 @@ impl HomeView {
                 Some(&format!("win.switch-device::{}", device.address)),
             );
         }
-        device_menu.append(None, None);
         device_menu.append(Some("Add New Device…"), Some("win.add-device"));
 
         let split_btn = SplitButton::new();

@@ -5,6 +5,7 @@ use libadwaita::prelude::*;
 use libadwaita::{
     ActionRow, Clamp, HeaderBar, NavigationPage, PreferencesGroup, SwitchRow,
 };
+use crate::storage::{load_known_devices, rename_known_device};
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -227,11 +228,32 @@ impl SettingsPage {
         let chevron = gtk4::Image::from_icon_name("go-next-symbolic");
         chevron.add_css_class("dim-label");
         source_row.add_suffix(&chevron);
+        use crate::storage::{load_known_devices, rename_known_device};
+        let devices_group = PreferencesGroup::new();
+        devices_group.set_title("Saved Devices");
+        devices_group.set_description(Some("Tap a device name to rename it"));
+
+        for device in load_known_devices() {
+            let row = libadwaita::EntryRow::new();
+            row.set_title(&device.address);
+            row.set_text(&device.name);
+            row.set_show_apply_button(true);
+
+            let address = device.address.clone();
+            row.connect_apply(move |r| {
+                let new_name = r.text().trim().to_string();
+                if !new_name.is_empty() {
+                    rename_known_device(&address, new_name);
+                }
+            });
+
+            devices_group.add(&row);
+        }
 
         about_group.add(&version_row);
         about_group.add(&source_row);
         content.append(&general_group);
-        content.append(&tray_group);
+        content.append(&devices_group);
         content.append(&service_group);
         content.append(&about_group);
         clamp.set_child(Some(&content));

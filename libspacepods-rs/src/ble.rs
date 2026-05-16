@@ -1,3 +1,4 @@
+use crate::TlvParser;
 use crate::errors::{Result, SpaceBudsError};
 use crate::protocol::{Packet, UUID_NOTIFY, UUID_WRITE, UUID_BATTERY_LEVEL, CMD_HANDSHAKE};
 use btleplug::api::{Central, Manager as _, Peripheral as _, ScanFilter, WriteType, Characteristic};
@@ -122,52 +123,29 @@ impl BleConnection {
     }
 
     pub async fn query<T, F>(&self, cmd_id: u8, payload: Vec<u8>, parser: F, timeout: Duration) -> Result<Option<T>>
-    where
-        F: Fn(&Packet) -> Option<T> + Send + 'static,
-        T: Send + 'static,
-    {
-        let packet = Packet::new_request(self.next_seq().await, cmd_id, payload);
-        let mut response_rx = self.response_tx.subscribe();
-        self.write(&packet).await?;
+        where
+            F: Fn(&Packet) -> Option<T> + Send + 'static,
+            T: Send + 'static,
+        {
+            let packet = Packet::new_request(self.next_seq().await, cmd_id, payload);
+            let mut response_rx = self.response_tx.subscribe();
+            while response_rx.try_recv().is_ok() {}
+            self.write(&packet).await?;
 
-        tokio::select! {
-            Ok(packet) = response_rx.recv() => {
-                Ok(parser(&packet))
-            }
-            _ = time::sleep(timeout) => {
-                Ok(None)
+            tokio::select! {
+                result = async {
+                    loop {
+                        match response_rx.recv().await {
+                            Ok(p) => if let Some(v) = parser(&p) { return Some(v); },
+                            Err(_) => return None,
+                        }
+                    }
+                } => Ok(result),
+                _ = time::sleep(timeout) => Ok(None),
             }
         }
-    }
     pub fn subscribe_battery(&self) -> broadcast::Receiver<(Option<u8>, Option<u8>, Option<u8>)> {
         self.battery_tx.subscribe()
-    }
-
-    pub async fn get_battery_level(&self) -> Result<(Option<u8>, Option<u8>, Option<u8>)> {
-        let chars = self.peripheral.characteristics();
-
-        for char in chars.iter() {
-            if char.uuid == UUID_BATTERY_LEVEL {
-                if let Ok(value) = self.peripheral.read(char).await {
-                    if !value.is_empty() {
-                        let level = value[0].min(100);
-                        return Ok((Some(level), Some(level), None));
-                    }
-                }
-            }
-        }
-
-        if let Ok(Some(props)) = self.peripheral.properties().await {
-            for (_, data) in &props.manufacturer_data {
-                if data.len() >= 4 && (data[0] == 0x06 || data[0] == 0x07) {
-                    let left = Some(data[1].min(100));
-                    let right = Some(data[2].min(100));
-                    let case = if data.len() >= 4 { Some(data[3].min(100)) } else { None };
-                    return Ok((left, right, case));
-                }
-            }
-        }
-        Ok((None, None, None))
     }
 
     pub async fn is_connected(&self) -> bool {
@@ -217,6 +195,29 @@ impl BleConnection {
 
         Ok(())
     }
+    pub async fn get_battery_level(&self) -> Result<(Option<u8>, Option<u8>, Option<u8>)> {
+    use crate::protocol::{CMD_GET_POWER, ID_BATTERY};
+
+    let result = self.query(
+        CMD_GET_POWER,
+        vec![ID_BATTERY, 0x00],
+        |packet| {
+            if packet.cmd_id == CMD_GET_POWER {
+                let mut parser = TlvParser::new(&packet.payload);
+                if let Some(data) = parser.get_bytes(ID_BATTERY) {
+                    let left  = data.get(0).map(|&b| b.min(100));
+                    let right = data.get(1).map(|&b| b.min(100));
+                    let case  = data.get(2).map(|&b| b.min(100));
+                    return Some((left, right, case));
+                }
+            }
+            None
+        },
+        Duration::from_secs(3),
+    ).await?;
+
+    Ok(result.unwrap_or((None, None, None)))
+}
 }
 
 impl DeviceScanner {
@@ -275,7 +276,7 @@ impl DeviceScanner {
                 Ok(device) => return Ok(device),
                 Err(e) if attempt < max_retries => {
                     println!("Device not found, retrying...");
-                    time::sleep(Duration::from_secs(2)).await;
+                    time::sleep(Duration::from_secs(1)).await;
                 }
                 Err(e) => return Err(e),
             }

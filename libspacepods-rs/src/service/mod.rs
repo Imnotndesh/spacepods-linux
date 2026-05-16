@@ -329,14 +329,20 @@ impl SpacePodsService {
             return;
         }
 
-        let anc_mode = buds.anc().get_mode().await.unwrap_or(None);
-        let (level, max_level) = buds.anc().get_level().await.unwrap_or((0, 0));
-        let eq_state = buds.eq().get_state().await.unwrap_or(None);
-        let adaptive = buds.features().get_adaptive_anc().await.unwrap_or(None);
-        let dual = buds.features().get_dual_device().await.unwrap_or(None);
-        let (batt_left, batt_right, batt_case) = buds.with_connection(|conn| async move {
-            conn.get_battery_level().await
-        }).await.unwrap_or((None, None, None));
+        let (anc_mode, anc_level_max, eq_state, adaptive, dual, battery) = tokio::join!(
+            async { buds.anc().get_mode().await.unwrap_or(None) },
+            async { buds.anc().get_level().await.unwrap_or((0, 0)) },
+            async { buds.eq().get_state().await.unwrap_or(None) },
+            async { buds.features().get_adaptive_anc().await.unwrap_or(None) },
+            async { buds.features().get_dual_device().await.unwrap_or(None) },
+            async {
+                buds.with_connection(|conn| async move {
+                    conn.get_battery_level().await
+                }).await.unwrap_or((None, None, None))
+            },
+        );
+
+        let (level, max_level) = anc_level_max;
 
         let mut status_lock = status.write().await;
         status_lock.connected = true;
@@ -352,11 +358,12 @@ impl SpacePodsService {
 
         status_lock.adaptive_anc = adaptive;
         status_lock.dual_device = dual;
-        status_lock.battery_left = batt_left;
-        status_lock.battery_right = batt_right;
-        status_lock.battery_case = batt_case;
+        status_lock.battery_left = battery.0;
+        status_lock.battery_right = battery.1;
+        status_lock.battery_case = battery.2;
 
         let new_status = status_lock.clone();
+        drop(status_lock);
         let _ = status_tx.send(new_status.clone());
         Self::broadcast_to_subscribers(subscribers, new_status).await;
     }
@@ -435,15 +442,30 @@ impl SpacePodsService {
                     };
                 }
                 match buds.connect().await {
-                    Ok(_) => ServiceResponse::Success {
-                        message: Some(format!("Connected to {}", address)),
-                        data: None,
-                    },
+                    Ok(_) => {
+                        let buds = buds.clone();
+                        let status = status.clone();
+                        tokio::spawn(async move {
+                            tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
+                            let (batt_left, batt_right, batt_case) = buds.with_connection(|conn| async move {
+                                conn.get_battery_level().await
+                            }).await.unwrap_or((None, None, None));
+                            let mut s = status.write().await;
+                            s.connected = true;
+                            s.battery_left = batt_left;
+                            s.battery_right = batt_right;
+                            s.battery_case = batt_case;
+                        });
+                        ServiceResponse::Success {
+                            message: Some(format!("Connected to {}", address)),
+                            data: None,
+                        }
+                    }
                     Err(e) => ServiceResponse::Error {
                         message: format!("Connection failed: {}", e),
                     },
                 }
-           }
+            }
 
             ServiceCommand::SetAncMode { mode } => {
                 let mode_val = match mode.as_str() {

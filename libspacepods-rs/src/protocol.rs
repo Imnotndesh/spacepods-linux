@@ -22,6 +22,9 @@ pub const ID_ENV_ADAPTIVE: u8 = 0x21;
 pub const TYPE_REQUEST: u8 = 0x01;
 pub const TYPE_RESPONSE: u8 = 0x02;
 
+pub const CMD_GET_POWER: u8 = 0x05;
+pub const ID_BATTERY: u8 = 0x03;
+
 // ANC modes
 pub const MODE_OFF: u8 = 0;
 pub const MODE_ANC: u8 = 1;

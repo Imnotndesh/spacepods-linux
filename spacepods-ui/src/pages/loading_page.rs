@@ -28,6 +28,7 @@ impl LoadingPage {
         status_page.set_title("Starting SpacePods");
         status_page.set_description(Some("Checking service and connecting to your earbuds…"));
         status_page.set_vexpand(true);
+        status_page.set_hexpand(true);
 
         let spinner = Spinner::new();
         spinner.set_size_request(32, 32);
@@ -46,8 +47,12 @@ impl LoadingPage {
         let retry_button = Button::with_label("Retry");
         retry_button.add_css_class("suggested-action");
         retry_button.set_visible(false);
+        retry_button.set_hexpand(false);
+        retry_button.set_halign(gtk4::Align::Center);
 
         let setup_button = Button::with_label("Go to Setup");
+        setup_button.set_halign(gtk4::Align::Center);
+        setup_button.set_hexpand(false);
         setup_button.set_visible(false);
 
         let vbox = Box::new(Orientation::Vertical, 12);
@@ -139,41 +144,39 @@ impl LoadingPage {
 
         match client.connect_device(device.address.clone()).await {
             Ok(_) => {
-                tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
-                let status = client
-                    .get_status()
-                    .await
-                    .map_err(|e| format!("Status check failed: {}", e))?;
-                if status.connected || status.address.as_deref() == Some(&device.address){
-                    add_known_device(device.name.clone(), device.address.clone());
+                tokio::time::sleep(tokio::time::Duration::from_millis(3000)).await;
+                add_known_device(device.name.clone(), device.address.clone());
 
-                    let settings = load_settings();
-                    info_label.set_text("Restoring settings…");
-                    if let Err(e) = client.set_anc_mode(match settings.last_anc_mode {
-                        0 => "off",
-                        1 => "anc",
-                        _ => "transparency",
-                    }).await {
-                        eprintln!("Failed to restore ANC mode: {}", e);
-                    }
+                let settings = load_settings();
+                info_label.set_text("Restoring settings…");
+
+                if let Err(e) = client.set_anc_mode(match settings.last_anc_mode {
+                    0 => "off",
+                    1 => "anc",
+                    _ => "transparency",
+                }).await {
+                    eprintln!("Failed to restore ANC mode: {}", e);
+                }
+
+                if settings.last_anc_mode != 0 {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
                     if let Err(e) = client.set_level(settings.last_anc_level).await {
                         eprintln!("Failed to restore ANC level: {}", e);
                     }
-                    if let Err(e) = client.set_eq_preset(settings.last_eq_preset).await {
-                        eprintln!("Failed to restore EQ preset: {}", e);
-                    }
-                    if let Err(e) = client.set_adaptive_anc(settings.adaptive_anc_enabled).await {
-                        eprintln!("Failed to restore adaptive ANC: {}", e);
-                    }
-                    if let Err(e) = client.set_dual_device(settings.dual_device_enabled).await {
-                        eprintln!("Failed to restore dual device: {}", e);
-                    }
-                    info_label.set_text("Connected successfully!");
-                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-                    Ok(LoadingOutcome::Connected(Arc::new(Mutex::new(client))))
-                } else {
-                    Err("Connection established but device not reported as connected".to_string())
                 }
+
+                if let Err(e) = client.set_eq_preset(settings.last_eq_preset).await {
+                    eprintln!("Failed to restore EQ preset: {}", e);
+                }
+                if let Err(e) = client.set_adaptive_anc(settings.adaptive_anc_enabled).await {
+                    eprintln!("Failed to restore adaptive ANC: {}", e);
+                }
+                if let Err(e) = client.set_dual_device(settings.dual_device_enabled).await {
+                    eprintln!("Failed to restore dual device: {}", e);
+                }
+                info_label.set_text("Connected successfully!");
+                tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+                Ok(LoadingOutcome::Connected(Arc::new(Mutex::new(client))))
             }
             Err(e) => Err(format!("Failed to connect to {}: {}", device.name, e)),
         }
