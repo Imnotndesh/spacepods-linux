@@ -5,12 +5,14 @@ use glib::clone;
 use libspacepods::client::SpacePodsClient;
 use crate::storage::{get_last_connected_device, add_known_device, load_settings};
 use std::rc::Rc;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 pub struct LoadingPage;
 
 #[derive(Clone)]
 pub enum LoadingOutcome {
-    Connected,
+    Connected(Arc<Mutex<SpacePodsClient>>),
     NoDevice,
     Retry,
 }
@@ -77,8 +79,8 @@ impl LoadingPage {
                 let outcome = Self::run_checks(&info_label).await;
                 spinner.stop();
                 match outcome {
-                    Ok(LoadingOutcome::Connected) => {
-                        on_complete(LoadingOutcome::Connected);
+                    Ok(LoadingOutcome::Connected(client)) => {
+                        on_complete(LoadingOutcome::Connected(client));
                     }
                     Ok(LoadingOutcome::NoDevice) => {
                         on_complete(LoadingOutcome::NoDevice);
@@ -168,7 +170,7 @@ impl LoadingPage {
                     }
                     info_label.set_text("Connected successfully!");
                     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-                    Ok(LoadingOutcome::Connected)
+                    Ok(LoadingOutcome::Connected(Arc::new(Mutex::new(client))))
                 } else {
                     Err("Connection established but device not reported as connected".to_string())
                 }

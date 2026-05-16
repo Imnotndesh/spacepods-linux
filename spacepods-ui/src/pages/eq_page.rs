@@ -11,7 +11,10 @@ use std::cell::{Cell, RefCell};
 use std::fs;
 use std::path::PathBuf;
 use std::rc::Rc;
-use crate::storage::{load_settings, update_settings};
+use std::sync::Arc;
+use tokio::sync::Mutex;
+use libspacepods::client::SpacePodsClient;
+use crate::storage::{update_settings};
 
 const BUILTIN_PRESETS: [(u8, &str, [i8; 7]); 6] = [
     (0, "Flat",         [0,  0,  0,  0,  0,  0,  0]),
@@ -60,7 +63,7 @@ fn save_custom_presets(presets: &[CustomPreset]) {
 pub struct EqPage;
 
 impl EqPage {
-    pub fn new() -> gtk4::Widget {
+    pub fn new(client: Arc<Mutex<SpacePodsClient>>) -> gtk4::Widget {
         let current_gains: Rc<RefCell<[i8; 7]>> = Rc::new(RefCell::new([0; 7]));
         let custom_presets: Rc<RefCell<Vec<CustomPreset>>> =
             Rc::new(RefCell::new(load_custom_presets()));
@@ -140,6 +143,7 @@ impl EqPage {
             let drawing_ref = drawing.clone();
             let gains_ref = current_gains.clone();
             let in_custom_ref = in_custom_mode.clone();
+            let client_ref = Arc::clone(&client);  // add this
 
             btn.connect_toggled(clone!(
                 #[weak] drawing_ref,
@@ -149,8 +153,14 @@ impl EqPage {
                         in_custom_ref.set(false);
                         *gains_ref.borrow_mut() = gains_copy;
                         drawing_ref.queue_draw();
-                        // Save the selected preset ID
                         update_settings(|s| s.last_eq_preset = preset_id);
+                        let client = Arc::clone(&client_ref);
+                        glib::spawn_future_local(async move {
+                            let mut c = client.lock().await;
+                            if let Err(e) = c.set_eq_preset(preset_id).await {
+                                eprintln!("set_eq_preset {}: {}", preset_id, e);
+                            }
+                        });
                     } else {
                         b.remove_css_class("suggested-action");
                     }

@@ -3,30 +3,35 @@ use libadwaita::{
     HeaderBar, NavigationView, NavigationPage, ViewStack, ViewSwitcher,
     AboutWindow, ViewSwitcherPolicy, SplitButton, ToolbarView,
 };
-use gio::{Menu, MenuItem, SimpleActionGroup, SimpleAction};
+use gio::{Menu, SimpleActionGroup, SimpleAction};
 use glib::clone;
 use gtk4::MenuButton;
+use std::sync::Arc;
+use tokio::sync::Mutex;
+use libspacepods::client::SpacePodsClient;
 use crate::pages::anc_page::AncPage;
 use crate::pages::eq_page::EqPage;
+use crate::storage::load_known_devices;
 
 pub struct HomeView;
 
-const KNOWN_DEVICES: [&str; 2] = ["SpaceBuds Pro (Left)", "SpaceBuds Lite"];
-
 impl HomeView {
-    pub fn new(on_add_device: impl Fn() + 'static + Clone) -> NavigationView {
+    pub fn new(
+        client: Arc<Mutex<SpacePodsClient>>,
+        on_add_device: impl Fn() + 'static + Clone,
+    ) -> NavigationView {
         let nav_view = NavigationView::new();
 
         let view_stack = ViewStack::new();
         view_stack.set_vexpand(true);
 
-        let anc_page = AncPage::new();
+        let anc_page = AncPage::new(Arc::clone(&client));
         view_stack.add_titled_with_icon(
             &anc_page, Some("anc"), "ANC",
             "org.gnome.Settings-accessibility-hearing-symbolic",
         );
 
-        let eq_page = EqPage::new();
+        let eq_page = EqPage::new(Arc::clone(&client));
         view_stack.add_titled_with_icon(
             &eq_page, Some("eq"), "EQ",
             "audio-card-symbolic",
@@ -37,12 +42,17 @@ impl HomeView {
         view_switcher.set_stack(Some(&view_stack));
         view_switcher.set_policy(ViewSwitcherPolicy::Wide);
 
+        // Populate device menu from saved devices
         let device_menu = Menu::new();
-        for name in KNOWN_DEVICES.iter() {
-            device_menu.append(Some(name), Some(&format!("win.switch-device::{}", name)));
+        for device in load_known_devices() {
+            device_menu.append(
+                Some(&device.name),
+                Some(&format!("win.switch-device::{}", device.address)),
+            );
         }
         device_menu.append(None, None);
         device_menu.append(Some("Add New Device…"), Some("win.add-device"));
+
         let split_btn = SplitButton::new();
         split_btn.set_icon_name("list-add-symbolic");
         split_btn.set_tooltip_text(Some("Add new device"));
@@ -74,14 +84,20 @@ impl HomeView {
             split_btn.connect_clicked(move |_| on_add());
         }
         {
+            let client_ref = Arc::clone(&client);
             let switch_action = SimpleAction::new(
                 "switch-device",
                 Some(glib::VariantTy::STRING),
             );
             switch_action.connect_activate(move |_, param| {
-                if let Some(name) = param.and_then(|p| p.get::<String>()) {
-                    // TODO: connect to selected BLE device
-                    println!("Switching to device: {}", name);
+                if let Some(address) = param.and_then(|p| p.get::<String>()) {
+                    let client = Arc::clone(&client_ref);
+                    glib::spawn_future_local(async move {
+                        let mut c = client.lock().await;
+                        if let Err(e) = c.connect_device(address.clone()).await {
+                            eprintln!("Failed to switch device to {}: {}", address, e);
+                        }
+                    });
                 }
             });
             actions.add_action(&switch_action);

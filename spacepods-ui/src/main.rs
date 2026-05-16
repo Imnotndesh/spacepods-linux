@@ -2,6 +2,7 @@ use gtk4::prelude::*;
 use libadwaita::{Application, ApplicationWindow};
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 use libadwaita::prelude::AdwApplicationWindowExt;
 
 mod pages;
@@ -35,16 +36,22 @@ fn main() -> glib::ExitCode {
             Rc::new(move |outcome| {
                 if let Some(window) = window_weak.upgrade() {
                     match outcome {
-                        LoadingOutcome::Connected => {
-                            let home_view = HomeView::new(|| {});
+                        LoadingOutcome::Connected(client) => {
+                            let home_view = HomeView::new(client, || {});
                             window.set_content(Some(&home_view));
                         }
                         LoadingOutcome::NoDevice => {
                             let go_to_home = {
                                 let window = window.clone();
                                 move || {
-                                    let home_view = HomeView::new(|| {});
-                                    window.set_content(Some(&home_view));
+                                    let window = window.clone();
+                                    glib::spawn_future_local(async move {
+                                        if let Ok(client) = libspacepods::client::SpacePodsClient::connect(None).await {
+                                            let client = Arc::new(tokio::sync::Mutex::new(client));
+                                            let home_view = HomeView::new(client, || {});
+                                            window.set_content(Some(&home_view));
+                                        }
+                                    });
                                 }
                             };
                             let setup_page = SetupPage::new(go_to_home);
