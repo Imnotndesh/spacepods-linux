@@ -1,5 +1,6 @@
 use uuid::Uuid;
 
+// Command IDs
 pub const CMD_HANDSHAKE: u8 = 0x27;
 pub const CMD_ANC_MODE: u8 = 0x2C;
 pub const CMD_ANC_GAIN: u8 = 0x30;
@@ -8,7 +9,8 @@ pub const CMD_DUAL_DEVICE: u8 = 0x33;
 pub const CMD_EQ_SETTING: u8 = 0x20;
 pub const CMD_ENV_ADAPTIVE: u8 = 0x37;
 
-// Info IDs (for queries)
+// Info IDs (TLV tags)
+pub const ID_BATTERY: u8 = 0x01;
 pub const ID_ANC_MODE: u8 = 0x0C;
 pub const ID_ANC_GAIN: u8 = 0x11;
 pub const ID_TRANS_GAIN: u8 = 0x12;
@@ -18,12 +20,14 @@ pub const ID_DUAL_DEVICE: u8 = 0x19;
 pub const ID_EQ_SETTING: u8 = 0x04;
 pub const ID_ENV_ADAPTIVE: u8 = 0x21;
 
+pub const CMD_FACTORY_RESET: u8 = 0x24;
+pub const CMD_WORK_MODE: u8 = 0x25;
+pub const CMD_FIND_DEVICE: u8 = 0x2A;
+pub const ID_WORK_MODE: u8 = 0x08;
+
 // Message types
 pub const TYPE_REQUEST: u8 = 0x01;
 pub const TYPE_RESPONSE: u8 = 0x02;
-
-pub const CMD_GET_POWER: u8 = 0x05;
-pub const ID_BATTERY: u8 = 0x03;
 
 // ANC modes
 pub const MODE_OFF: u8 = 0;
@@ -71,7 +75,6 @@ impl Packet {
         if data.len() < 5 {
             return None;
         }
-
         Some(Self {
             seq: data[0],
             cmd_id: data[1],
@@ -81,7 +84,7 @@ impl Packet {
     }
 }
 
-// TLV Parser (matches Python's _parse_tlv)
+// TLV Parser
 pub struct TlvParser<'a> {
     data: &'a [u8],
     pos: usize,
@@ -96,18 +99,14 @@ impl<'a> TlvParser<'a> {
         if self.pos + 2 > self.data.len() {
             return None;
         }
-
         let tag = self.data[self.pos];
         let len = self.data[self.pos + 1] as usize;
         let val_start = self.pos + 2;
-
         if val_start + len > self.data.len() {
             return None;
         }
-
         let value = &self.data[val_start..val_start + len];
         self.pos = val_start + len;
-
         Some((tag, value))
     }
 

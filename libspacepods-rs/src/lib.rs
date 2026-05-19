@@ -1,8 +1,7 @@
-// lib.rs
 pub mod ble;
 mod errors;
-mod protocol;
-mod commands;
+pub mod protocol;
+pub mod commands;
 pub mod service;
 pub mod client;
 pub mod cli;
@@ -28,47 +27,38 @@ impl SpaceBuds {
     pub async fn new() -> Result<Self> {
         Self::with_address(None).await
     }
+
     pub fn new_disconnected() -> Self {
-    Self {
-        conn: Arc::new(Mutex::new(None)),
-        address: None,
-        max_retries: 3,
+        Self {
+            conn: Arc::new(Mutex::new(None)),
+            address: None,
+            max_retries: 3,
+        }
     }
-}
+
     pub async fn with_address(address: Option<String>) -> Result<Self> {
         let buds = Self {
             conn: Arc::new(Mutex::new(None)),
             address,
             max_retries: 3,
         };
-
         buds.connect().await?;
         Ok(buds)
     }
 
     pub async fn connect(&self) -> Result<()> {
         let mut conn_lock = self.conn.lock().await;
-
-        // Check if already connected
         if let Some(conn) = conn_lock.as_ref() {
             if conn.is_connected().await {
                 return Ok(());
             }
         }
-
-        // Find and connect to device
-        let peripheral = if let Some(_addr) = &self.address {
-            // TODO: Connect to specific address
-            DeviceScanner::find_device(Duration::from_secs(10)).await?
-        } else {
-            DeviceScanner::find_device(Duration::from_secs(10)).await?
-        };
-
+        let peripheral = DeviceScanner::find_device(Duration::from_secs(10)).await?;
         let conn = BleConnection::new(peripheral).await?;
-        *conn_lock = Some(conn.clone());
-
+        *conn_lock = Some(conn);
         Ok(())
     }
+
     pub async fn with_connection<F, Fut, T>(&self, f: F) -> Result<T>
     where
         F: FnOnce(BleConnection) -> Fut,
@@ -83,13 +73,11 @@ impl SpaceBuds {
 
     pub async fn ensure_connected(&self) -> Result<()> {
         let conn_lock = self.conn.lock().await;
-
         if let Some(conn) = conn_lock.as_ref() {
             if conn.is_connected().await {
                 return Ok(());
             }
         }
-
         drop(conn_lock);
         self.connect().await
     }
@@ -119,6 +107,18 @@ impl SpaceBuds {
     pub fn anc(&self) -> AncController {
         AncController::new(self.clone())
     }
+    pub fn work_mode(&self) -> WorkModeController {
+        WorkModeController::new(self.clone())
+    }
+
+    pub fn find_device(&self) -> FindDeviceController {
+        FindDeviceController::new(self.clone())
+    }
+
+    pub fn factory_reset(&self) -> FactoryResetController {
+        FactoryResetController::new(self.clone())
+    }
+
 
     pub fn eq(&self) -> EqController {
         EqController::new(self.clone())

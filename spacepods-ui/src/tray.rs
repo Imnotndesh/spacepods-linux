@@ -12,6 +12,12 @@ pub enum TrayCommand {
     Hide,
 }
 
+/// TODO: Work on:
+/// 1. Linking this tray to the ui
+/// 2. Fixing battery to sync to ui
+/// 3. Figure out the extension situation for gnome and KDE
+
+
 #[derive(Clone)]
 pub struct TrayHandle {
     sender: Sender<TrayCommand>,

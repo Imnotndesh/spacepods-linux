@@ -31,7 +31,7 @@ pub enum SpaceBudsError {
 
     #[error("Invalid preset: {0}")]
     InvalidPreset(u8),
-    
+
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
 }

@@ -17,20 +17,18 @@ pub struct BleConnection {
     write_char: Characteristic,
     notify_char: Characteristic,
     seq: Arc<Mutex<u8>>,
-    response_tx: broadcast::Sender<Packet>,
+    pub(crate) response_tx: broadcast::Sender<Packet>,
     battery_tx: broadcast::Sender<(Option<u8>, Option<u8>, Option<u8>)>,
 }
 
 impl BleConnection {
     pub async fn new(peripheral: Peripheral) -> Result<Self> {
         let peripheral = Arc::new(peripheral);
-
         peripheral.connect().await?;
         peripheral.discover_services().await?;
         time::sleep(Duration::from_millis(500)).await;
 
         let chars = peripheral.characteristics();
-
         let write_char = chars
             .iter()
             .find(|c| c.uuid == UUID_WRITE)
@@ -51,7 +49,6 @@ impl BleConnection {
             .cloned();
 
         if let Some(ref bat_char) = battery_char {
-            // Only subscribe if the characteristic supports notifications/indications
             if bat_char.properties.contains(btleplug::api::CharPropFlags::NOTIFY)
                 || bat_char.properties.contains(btleplug::api::CharPropFlags::INDICATE)
             {
@@ -74,7 +71,6 @@ impl BleConnection {
                         let _ = battery_tx_clone.send((Some(level), Some(level), None));
                     }
                 } else if notification.uuid == UUID_NOTIFY {
-                    // Main protocol packets
                     if let Some(packet) = Packet::from_bytes(&notification.value) {
                         let _ = response_tx_clone.send(packet);
                     }
@@ -92,7 +88,6 @@ impl BleConnection {
         };
 
         conn.handshake().await?;
-
         Ok(conn)
     }
 
@@ -103,7 +98,7 @@ impl BleConnection {
         Ok(())
     }
 
-    async fn next_seq(&self) -> u8 {
+    pub(crate) async fn next_seq(&self) -> u8 {
         let mut seq = self.seq.lock().await;
         let current = *seq;
         *seq = current.wrapping_add(1);
@@ -123,27 +118,32 @@ impl BleConnection {
     }
 
     pub async fn query<T, F>(&self, cmd_id: u8, payload: Vec<u8>, parser: F, timeout: Duration) -> Result<Option<T>>
-        where
-            F: Fn(&Packet) -> Option<T> + Send + 'static,
-            T: Send + 'static,
-        {
-            let packet = Packet::new_request(self.next_seq().await, cmd_id, payload);
-            let mut response_rx = self.response_tx.subscribe();
-            while response_rx.try_recv().is_ok() {}
-            self.write(&packet).await?;
+    where
+        F: Fn(&Packet) -> Option<T> + Send + 'static,
+        T: Send + 'static,
+    {
+        let packet = Packet::new_request(self.next_seq().await, cmd_id, payload);
+        let mut response_rx = self.response_tx.subscribe();
+        // flush stale messages
+        while response_rx.try_recv().is_ok() {}
+        self.write(&packet).await?;
 
-            tokio::select! {
-                result = async {
-                    loop {
-                        match response_rx.recv().await {
-                            Ok(p) => if let Some(v) = parser(&p) { return Some(v); },
-                            Err(_) => return None,
-                        }
+        tokio::select! {
+            result = async {
+                loop {
+                    match response_rx.recv().await {
+                        Ok(p) => if let Some(v) = parser(&p) { return Some(v); },
+                        Err(_) => return None,
                     }
-                } => Ok(result),
-                _ = time::sleep(timeout) => Ok(None),
-            }
+                }
+            } => Ok(result),
+            _ = time::sleep(timeout) => {
+                eprintln!("[BLE] Query timeout for cmd 0x{:02x}", cmd_id);
+                Ok(None)
+            },
         }
+    }
+
     pub fn subscribe_battery(&self) -> broadcast::Receiver<(Option<u8>, Option<u8>, Option<u8>)> {
         self.battery_tx.subscribe()
     }
@@ -170,21 +170,15 @@ impl BleConnection {
     pub async fn reconnect_with_rediscovery(&self) -> Result<()> {
         self.peripheral.disconnect().await?;
         time::sleep(Duration::from_millis(500)).await;
-
         self.peripheral.connect().await?;
         time::sleep(Duration::from_millis(500)).await;
-
         self.peripheral.discover_services().await?;
         time::sleep(Duration::from_millis(500)).await;
 
         let chars = self.peripheral.characteristics();
-
-        // Re-subscribe to main notify characteristic
         if let Some(notify_char) = chars.iter().find(|c| c.uuid == UUID_NOTIFY) {
             self.peripheral.subscribe(notify_char).await?;
         }
-
-        // Re-subscribe to battery characteristic if present and supports notify
         if let Some(bat_char) = chars.iter().find(|c| c.uuid == UUID_BATTERY_LEVEL) {
             if bat_char.properties.contains(btleplug::api::CharPropFlags::NOTIFY)
                 || bat_char.properties.contains(btleplug::api::CharPropFlags::INDICATE)
@@ -192,12 +186,11 @@ impl BleConnection {
                 let _ = self.peripheral.subscribe(bat_char).await;
             }
         }
-
         Ok(())
     }
+
     pub async fn get_battery_level(&self) -> Result<(Option<u8>, Option<u8>, Option<u8>)> {
         use crate::protocol::ID_BATTERY;
-
         let result = self.query(
             CMD_HANDSHAKE,
             vec![0xFF, 0x00, ID_BATTERY, 0x00],
@@ -215,7 +208,6 @@ impl BleConnection {
             },
             Duration::from_secs(3),
         ).await?;
-
         Ok(result.unwrap_or((None, None, None)))
     }
 }
@@ -225,12 +217,9 @@ impl DeviceScanner {
         let manager = Manager::new().await?;
         let adapters = manager.adapters().await?;
         let adapter = adapters.into_iter().next().ok_or(SpaceBudsError::DeviceNotFound)?;
-
         adapter.start_scan(ScanFilter::default()).await?;
         time::sleep(timeout).await;
-
         let peripherals = adapter.peripherals().await?;
-
         for peripheral in peripherals {
             let properties = peripheral.properties().await?.unwrap();
             for uuid in &properties.services {
@@ -240,7 +229,6 @@ impl DeviceScanner {
                 }
             }
         }
-
         Err(SpaceBudsError::DeviceNotFound)
     }
 
@@ -248,13 +236,10 @@ impl DeviceScanner {
         let manager = Manager::new().await?;
         let adapters = manager.adapters().await?;
         let adapter = adapters.into_iter().next().ok_or(SpaceBudsError::DeviceNotFound)?;
-
         adapter.start_scan(ScanFilter::default()).await?;
         time::sleep(timeout).await;
-
         let peripherals = adapter.peripherals().await?;
         let mut found = Vec::new();
-
         for peripheral in peripherals {
             if let Ok(Some(properties)) = peripheral.properties().await {
                 for uuid in &properties.services {

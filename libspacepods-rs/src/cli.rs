@@ -39,15 +39,12 @@ impl Highlighter for CliHelper {
             Borrowed(prompt)
         }
     }
-
     fn highlight_hint<'h>(&self, hint: &'h str) -> Cow<'h, str> {
         Owned("\x1b[1m".to_string() + hint + "\x1b[m")
     }
-
     fn highlight<'l>(&self, line: &'l str, pos: usize) -> Cow<'l, str> {
         self.highlighter.highlight(line, pos)
     }
-
     fn highlight_char(&self, line: &str, pos: usize, kind: rustyline::highlight::CmdKind) -> bool {
         self.highlighter.highlight_char(line, pos, kind)
     }
@@ -55,7 +52,7 @@ impl Highlighter for CliHelper {
 
 pub struct InteractiveCli {
     client: Arc<Mutex<SpacePodsClient>>,
-    status: Arc<tokio::sync::RwLock<DeviceStatus>>, // Use RwLock instead of Mutex
+    status: Arc<tokio::sync::RwLock<DeviceStatus>>,
 }
 
 impl InteractiveCli {
@@ -63,15 +60,11 @@ impl InteractiveCli {
         let client = SpacePodsClient::connect(socket_path)
             .await
             .context("Failed to connect to SpacePods service. Is it running?")?;
-
         let client = Arc::new(Mutex::new(client));
-
-        // Get initial status
         let status = {
             let mut client_lock = client.lock().await;
             client_lock.get_status().await?
         };
-
         Ok(Self {
             client,
             status: Arc::new(tokio::sync::RwLock::new(status)),
@@ -98,7 +91,6 @@ impl InteractiveCli {
         rl.bind_sequence(KeyEvent::alt('n'), EventHandler::Simple(Cmd::HistorySearchForward));
         rl.bind_sequence(KeyEvent::alt('p'), EventHandler::Simple(Cmd::HistorySearchBackward));
 
-        // Load history
         if rl.load_history(".spacepods_history").is_err() {
             println!("No command history found");
         }
@@ -106,7 +98,6 @@ impl InteractiveCli {
         println!("\x1b[1;32mSpacePods Interactive CLI\x1b[0m");
         println!("Type 'help' for commands, 'exit' to quit");
 
-        // Check connection and show initial status
         match self.check_connection().await {
             Ok(true) => {
                 println!("Service connection: \x1b[1;32m✓\x1b[0m");
@@ -204,7 +195,7 @@ impl InteractiveCli {
                 let mode = parts[1];
                 let mut client = self.client.lock().await;
                 client.set_anc_mode(mode).await?;
-                drop(client); // Release lock before refresh
+                drop(client);
                 println!("\x1b[1;32m✓\x1b[0m ANC mode set to: {}", mode);
                 self.refresh_status().await?;
             }
@@ -236,18 +227,16 @@ impl InteractiveCli {
                     println!("\nExample: eq 1  (sets Bass Boost preset)");
                     return Ok(false);
                 }
-
                 let preset: u8 = parts[1].parse()?;
                 let mut client = self.client.lock().await;
                 client.set_eq_preset(preset).await?;
                 drop(client);
-
                 self.refresh_status().await?;
-
                 let status = self.status.read().await;
                 let preset_name = status.eq_name.as_deref().unwrap_or("Unknown");
                 println!("\x1b[1;32m✓\x1b[0m EQ preset set to: {} ({})", preset, preset_name);
             }
+
             "adaptive" => {
                 if parts.len() < 2 {
                     println!("Usage: adaptive <on|off>");
@@ -274,6 +263,49 @@ impl InteractiveCli {
                 self.refresh_status().await?;
             }
 
+            // --- New commands ---
+            "factoryreset" => {
+                println!("⚠️  This will reset your earbuds to factory defaults. Continue? [y/N]");
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input)?;
+                if input.trim().eq_ignore_ascii_case("y") {
+                    let mut client = self.client.lock().await;
+                    client.factory_reset().await?;
+                    println!("\x1b[1;32m✓\x1b[0m Factory reset command sent. Earbuds will restart.");
+                } else {
+                    println!("Cancelled.");
+                }
+            }
+
+            "find" => {
+                if parts.len() < 2 {
+                    println!("Usage: find <on|off>");
+                    return Ok(false);
+                }
+                let enable = parts[1] == "on";
+                let mut client = self.client.lock().await;
+                client.find_device(enable).await?;
+                drop(client);
+                if enable {
+                    println!("\x1b[1;32m✓\x1b[0m Find device started (earbuds will beep)");
+                } else {
+                    println!("\x1b[1;32m✓\x1b[0m Find device stopped");
+                }
+            }
+
+            "gamemode" => {
+                if parts.len() < 2 {
+                    println!("Usage: gamemode <on|off>");
+                    return Ok(false);
+                }
+                let enable = parts[1] == "on";
+                let mut client = self.client.lock().await;
+                client.set_work_mode(enable).await?;
+                drop(client);
+                println!("\x1b[1;32m✓\x1b[0m Game mode: {}", if enable { "ON" } else { "OFF" });
+                self.refresh_status().await?;
+            }
+
             "clear" => {
                 print!("\x1b[2J\x1b[1;1H");
                 std::io::Write::flush(&mut std::io::stdout())?;
@@ -293,7 +325,6 @@ impl InteractiveCli {
             let mut client = self.client.lock().await;
             client.get_status().await?
         };
-
         let mut status_lock = self.status.write().await;
         *status_lock = status;
         Ok(())
@@ -316,7 +347,6 @@ impl InteractiveCli {
             println!("  Address      : {}", addr);
         }
 
-        // Battery status with icons
         match (status.battery_left, status.battery_right, status.battery_case) {
             (Some(l), Some(r), Some(c)) => {
                 let l_icon = if l > 80 { "🔋" } else if l > 20 { "🔋" } else { "🪫" };
@@ -334,7 +364,6 @@ impl InteractiveCli {
             _ => {}
         }
 
-        // ANC Mode with icon
         let anc_icon = match status.anc_mode {
             Some(0) => "🔇",
             Some(1) => "🎧",
@@ -367,6 +396,10 @@ impl InteractiveCli {
             None => "UNKNOWN",
         });
 
+        if let Some(gm) = status.game_mode {
+            println!("  Game Mode    : {}", if gm { "\x1b[1;32mON\x1b[0m" } else { "\x1b[1;33mOFF\x1b[0m" });
+        }
+
         println!();
     }
 
@@ -387,8 +420,7 @@ impl InteractiveCli {
                     let mut status_lock = self.status.write().await;
                     *status_lock = status;
                     drop(status_lock);
-
-                    print!("\x1b[2J\x1b[1;1H"); // Clear screen
+                    print!("\x1b[2J\x1b[1;1H");
                     self.print_status().await;
                 }
                 Ok::<_, anyhow::Error>(())
@@ -401,9 +433,9 @@ impl InteractiveCli {
     }
 
     fn print_help(&self) {
-        println!("\x1b[1;36m╔════════════════════════════════════╗\x1b[0m");
-        println!("\x1b[1;36m║        Available Commands         ║\x1b[0m");
-        println!("\x1b[1;36m╚════════════════════════════════════╝\x1b[0m");
+        println!("\x1b[1;36m╔══════════════════════════════════════════════════════════════╗\x1b[0m");
+        println!("\x1b[1;36m║                        Available Commands                      ║\x1b[0m");
+        println!("\x1b[1;36m╚══════════════════════════════════════════════════════════════╝\x1b[0m");
         println!();
         println!("  \x1b[1;33mstatus\x1b[0m              - Show device status");
         println!("  \x1b[1;33mwatch\x1b[0m               - Live watch status updates");
@@ -412,6 +444,9 @@ impl InteractiveCli {
         println!("  \x1b[1;33meq <0-6>\x1b[0m            - Set EQ preset");
         println!("  \x1b[1;33madaptive <on|off>\x1b[0m   - Set adaptive ANC");
         println!("  \x1b[1;33mdual <on|off>\x1b[0m       - Set dual device mode");
+        println!("  \x1b[1;33mgamemode <on|off>\x1b[0m   - Enable/disable game (low latency) mode");
+        println!("  \x1b[1;33mfind <on|off>\x1b[0m       - Make earbuds beep to find them");
+        println!("  \x1b[1;33mfactoryreset\x1b[0m        - Factory reset (confirmation required)");
         println!("  \x1b[1;33mclear\x1b[0m               - Clear screen");
         println!("  \x1b[1;33mexit|quit\x1b[0m           - Exit CLI");
         println!();

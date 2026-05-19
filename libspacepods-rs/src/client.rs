@@ -19,13 +19,13 @@ impl SpacePodsClient {
         let path = socket_path.unwrap_or_else(|| PathBuf::from(DEFAULT_SOCKET_PATH));
         let stream = UnixStream::connect(path).await?;
         let (reader, writer) = stream.into_split();
-
         Ok(Self {
             reader: Arc::new(Mutex::new(BufReader::new(reader))),
             writer: Arc::new(Mutex::new(writer)),
             subscribed: false,
         })
     }
+
     pub async fn scan(&mut self, timeout_secs: u64) -> Result<Vec<(String, String)>> {
         match self.send_command(ServiceCommand::Scan { timeout_secs }).await? {
             ServiceResponse::ScanResults { devices } => {
@@ -39,15 +39,14 @@ impl SpacePodsClient {
         self.send_command(ServiceCommand::Connect { address }).await?;
         Ok(())
     }
+
     pub async fn send_command(&mut self, cmd: ServiceCommand) -> Result<ServiceResponse> {
         let cmd_json = serde_json::to_string(&cmd).unwrap() + "\n";
-
         {
             let mut writer = self.writer.lock().await;
             writer.write_all(cmd_json.as_bytes()).await?;
             writer.flush().await?;
         }
-
         let mut line = String::new();
         let mut reader = self.reader.lock().await;
         match reader.read_line(&mut line).await {
@@ -122,15 +121,37 @@ impl SpacePodsClient {
         Ok(())
     }
 
+    pub async fn factory_reset(&mut self) -> Result<()> {
+        self.send_command(ServiceCommand::FactoryReset).await?;
+        Ok(())
+    }
+
+    pub async fn find_device(&mut self, enable: bool) -> Result<()> {
+        self.send_command(ServiceCommand::FindDevice { enable }).await?;
+        Ok(())
+    }
+
+    pub async fn set_work_mode(&mut self, game_mode: bool) -> Result<()> {
+        self.send_command(ServiceCommand::SetWorkMode { game_mode }).await?;
+        Ok(())
+    }
+
+    pub async fn get_work_mode(&mut self) -> Result<Option<bool>> {
+        match self.send_command(ServiceCommand::GetWorkMode).await? {
+            ServiceResponse::Success { data: Some(data), .. } => {
+                let enabled = data["game_mode"].as_bool();
+                Ok(enabled)
+            }
+            _ => Ok(None),
+        }
+    }
+
     pub async fn subscribe(&mut self) -> Result<broadcast::Receiver<DeviceStatus>> {
         let (tx, rx) = broadcast::channel(32);
-
         self.send_command(ServiceCommand::Subscribe).await?;
         self.subscribed = true;
-
         let reader = Arc::clone(&self.reader);
         let tx_clone = tx.clone();
-
         tokio::spawn(async move {
             let mut reader = reader.lock().await;
             let mut line = String::new();
@@ -139,9 +160,7 @@ impl SpacePodsClient {
                 match reader.read_line(&mut line).await {
                     Ok(0) => break,
                     Ok(_) => {
-                        if let Ok(ServiceResponse::StatusUpdate { status }) =
-                            serde_json::from_str(line.trim())
-                        {
+                        if let Ok(ServiceResponse::StatusUpdate { status }) = serde_json::from_str(line.trim()) {
                             if tx_clone.send(status).is_err() {
                                 break;
                             }
@@ -151,7 +170,6 @@ impl SpacePodsClient {
                 }
             }
         });
-
         Ok(rx)
     }
 

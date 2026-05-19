@@ -54,6 +54,10 @@ pub enum ServiceCommand {
 
     #[serde(rename = "unsubscribe")]
     Unsubscribe,
+    FactoryReset,
+    FindDevice { enable: bool },
+    SetWorkMode { game_mode: bool },
+    GetWorkMode,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -70,6 +74,7 @@ pub struct DeviceStatus {
     pub battery_left: Option<u8>,
     pub battery_right: Option<u8>,
     pub battery_case: Option<u8>,
+    pub game_mode: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -123,6 +128,7 @@ impl SpacePodsService {
             battery_left: None,
             battery_right: None,
             battery_case: None,
+            game_mode: None,
         }));
         let socket_path = socket_path.unwrap_or_else(|| PathBuf::from(DEFAULT_SOCKET_PATH));
         Self {
@@ -199,45 +205,43 @@ impl SpacePodsService {
         running: Arc<Mutex<bool>>,
         subscribers: Arc<Mutex<Vec<tokio::sync::mpsc::UnboundedSender<DeviceStatus>>>>,
     ) {
-        let mut reconnect_delay = time::Duration::from_secs(1);
+        let mut reconnect_delay = Duration::from_secs(1);
         let status_clone = status.clone();
         let status_tx_clone = status_tx.clone();
         let subscribers_clone = subscribers.clone();
-
-        let mut battery_interval = time::interval(time::Duration::from_secs(30));
+        let mut battery_interval = time::interval(Duration::from_secs(30));
 
         Self::refresh_full_status(&buds, &status, &status_tx, &subscribers).await;
-        tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+        time::sleep(Duration::from_secs(3)).await;
         Self::refresh_battery_only(&buds, &status_clone, &status_tx_clone, &subscribers_clone).await;
+
         while *running.lock().await {
             let connected = buds.is_connected().await;
 
             if connected {
-                reconnect_delay = time::Duration::from_secs(1);
-
+                reconnect_delay = Duration::from_secs(1);
                 tokio::select! {
                     _ = battery_interval.tick() => {
                         Self::refresh_battery_only(&buds, &status, &status_tx, &subscribers).await;
                     }
-                    _ = tokio::signal::ctrl_c() => {
-                        break;
-                    }
+                    _ = tokio::signal::ctrl_c() => break,
                 }
             } else {
-                {
-                    let mut status_lock = status.write().await;
-                    status_lock.connected = false;
-                }
-                let current_status = status.read().await.clone();
+                let mut status_lock = status.write().await;
+                status_lock.connected = false;
+                let current_status = status_lock.clone();
+                drop(status_lock);
                 let _ = status_tx.send(current_status.clone());
                 Self::broadcast_to_subscribers(&subscribers, current_status).await;
 
                 let _ = buds.reconnect().await;
+                Self::refresh_full_status(&buds, &status, &status_tx, &subscribers).await;
                 time::sleep(reconnect_delay).await;
-                reconnect_delay = (reconnect_delay * 2).min(time::Duration::from_secs(30));
+                reconnect_delay = (reconnect_delay * 2).min(Duration::from_secs(30));
             }
         }
     }
+
 
     async fn broadcast_to_subscribers(
         subscribers: &Arc<Mutex<Vec<tokio::sync::mpsc::UnboundedSender<DeviceStatus>>>>,
@@ -337,20 +341,16 @@ impl SpacePodsService {
             return;
         }
 
-        let (anc_mode, anc_level_max, eq_state, adaptive, dual, battery) = tokio::join!(
-            async { buds.anc().get_mode().await.unwrap_or(None) },
-            async { buds.anc().get_level().await.unwrap_or((0, 0)) },
-            async { buds.eq().get_state().await.unwrap_or(None) },
-            async { buds.features().get_adaptive_anc().await.unwrap_or(None) },
-            async { buds.features().get_dual_device().await.unwrap_or(None) },
-            async {
-                buds.with_connection(|conn| async move {
-                    conn.get_battery_level().await
-                }).await.unwrap_or((None, None, None))
-            },
-        );
-
-        let (level, max_level) = anc_level_max;
+        let anc_mode = buds.anc().get_mode().await.unwrap_or(None);
+        let (level, max_level) = buds.anc().get_level().await.unwrap_or((0, 0));
+        let eq_state = buds.eq().get_state().await.unwrap_or(None);
+        let adaptive = buds.features().get_adaptive_anc().await.unwrap_or(None);
+        let dual = buds.features().get_dual_device().await.unwrap_or(None);
+        let game_mode = buds.work_mode().get_game_mode().await.unwrap_or(None);
+        let battery = buds
+            .with_connection(|conn| async move { conn.get_battery_level().await })
+            .await
+            .unwrap_or((None, None, None));
 
         let mut status_lock = status.write().await;
         status_lock.connected = true;
@@ -358,6 +358,7 @@ impl SpacePodsService {
         status_lock.anc_mode = anc_mode;
         status_lock.anc_level = level;
         status_lock.anc_max = max_level;
+        status_lock.game_mode = game_mode;
 
         if let Some(eq) = eq_state {
             status_lock.eq_mode = Some(eq.mode);
@@ -441,6 +442,7 @@ impl SpacePodsService {
                 },
                 }
             }
+
             
             ServiceCommand::GetBattery => {
                 let status = status.read().await.clone();
@@ -601,6 +603,61 @@ impl SpacePodsService {
                     Err(e) => ServiceResponse::Error {
                         message: format!("Failed to set adaptive ANC: {}", e),
                     },
+                }
+            }
+            ServiceCommand::FactoryReset => {
+                match buds.factory_reset().reset().await {
+                    Ok(_) => ServiceResponse::Success {
+                        message: Some("Factory reset command sent".to_string()),
+                        data: None,
+                    },
+                    Err(e) => ServiceResponse::Error {
+                        message: format!("Factory reset failed: {}", e),
+                    },
+                }
+            }
+
+            ServiceCommand::FindDevice { enable } => {
+                match buds.find_device().set_enabled(enable).await {
+                    Ok(_) => {
+                        if enable {
+                            let buds_clone = buds.clone();
+                            tokio::spawn(async move {
+                                tokio::time::sleep(Duration::from_secs(10)).await;
+                                let _ = buds_clone.find_device().set_enabled(false).await;
+                            });
+                        }
+                        ServiceResponse::Success {
+                            message: Some(format!("Find device {}", if enable { "started (auto‑stop in 10s)" } else { "stopped" })),
+                            data: None,
+                        }
+                    }
+                    Err(e) => ServiceResponse::Error {
+                        message: format!("Find device failed: {}", e),
+                    },
+                }
+            }
+
+            ServiceCommand::SetWorkMode { game_mode } => {
+                match buds.work_mode().set_game_mode(game_mode).await {
+                    Ok(_) => ServiceResponse::Success {
+                        message: Some(format!("Game mode {}", if game_mode { "enabled" } else { "disabled" })),
+                        data: None,
+                    },
+                    Err(e) => ServiceResponse::Error {
+                        message: format!("Set work mode failed: {}", e),
+                    },
+                }
+            }
+
+            ServiceCommand::GetWorkMode => {
+                match buds.work_mode().get_game_mode().await {
+                    Ok(Some(enabled)) => {
+                        let data = serde_json::json!({ "game_mode": enabled });
+                        ServiceResponse::Success { message: None, data: Some(data) }
+                    }
+                    Ok(None) => ServiceResponse::Success { message: None, data: Some(serde_json::json!({ "game_mode": null })) },
+                    Err(e) => ServiceResponse::Error { message: format!("Get work mode failed: {}", e) },
                 }
             }
 
