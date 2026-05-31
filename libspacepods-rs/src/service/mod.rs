@@ -65,6 +65,8 @@ pub enum ServiceCommand {
     SyncDeviceTime { timestamp: u64 },
     SetAutoShutdown { minutes: u16 },
     SetSpatialAudio { enabled: bool },
+    #[serde(rename = "get_spatial_audio")]
+    GetSpatialAudio,
     Set3dSoundEffect { mode: u8 },
     SetHearingCare { enabled: bool },
     SetToneVolume { volume: u8 },
@@ -104,6 +106,8 @@ pub struct DeviceStatus {
     pub battery_right: Option<u8>,
     pub battery_case: Option<u8>,
     pub game_mode: Option<bool>,
+    pub spatial_audio: bool,
+    pub multi_device: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -158,6 +162,8 @@ impl SpacePodsService {
             battery_right: None,
             battery_case: None,
             game_mode: None,
+            multi_device: false,
+            spatial_audio: false,
         }));
         let socket_path = socket_path.unwrap_or_else(|| PathBuf::from(DEFAULT_SOCKET_PATH));
         Self {
@@ -489,8 +495,189 @@ impl SpacePodsService {
                     Err(e) => ServiceResponse::Error { message: format!("Failed to switch voice prompts: {}", e) },
                 }
             }
+            ServiceCommand::ConfigureGesture { gesture, function } => {
+                match buds.features().remap_gesture(gesture, function).await {
+                    Ok(_) => ServiceResponse::Success {
+                        message: Some(format!("Remapped key interaction {} to function {}", gesture, function)),
+                        data: None,
+                    },
+                    Err(e) => ServiceResponse::Error { message: format!("Failed to configure key map: {}", e) },
+                }
+            }
+
+            ServiceCommand::SetLanguage { lang_id } => {
+                match buds.features().set_language(lang_id).await {
+                    Ok(_) => ServiceResponse::Success {
+                        message: Some(format!("System language changed to ID {}", lang_id)),
+                        data: None,
+                    },
+                    Err(e) => ServiceResponse::Error { message: format!("Failed to update prompt language: {}", e) },
+                }
+            }
+
+            ServiceCommand::SyncDeviceTime { timestamp } => {
+                match buds.features().sync_device_time(timestamp).await {
+                    Ok(_) => ServiceResponse::Success {
+                        message: Some("Device clock successfully synchronized".to_string()),
+                        data: None,
+                    },
+                    Err(e) => ServiceResponse::Error { message: format!("Failed to pass epoch synchronization payload: {}", e) },
+                }
+            }
+
+            ServiceCommand::SetAutoShutdown { minutes } => {
+                match buds.features().set_auto_shutdown(minutes).await {
+                    Ok(_) => ServiceResponse::Success {
+                        message: Some(format!("Auto shutdown timeout set to {} minutes", minutes)),
+                        data: None,
+                    },
+                    Err(e) => ServiceResponse::Error { message: format!("Failed to set power sleep threshold: {}", e) },
+                }
+            }
+
+            ServiceCommand::SetSpatialAudio { enabled } => {
+                match buds.features().set_spatial_audio(enabled).await {
+                    Ok(_) => {
+                        // Spawn a fast thread loop to fetch verified status from hardware and cache it
+                        tokio::spawn({
+                            let buds = buds.clone();
+                            let status = status.clone();
+                            async move {
+                                tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+                                if let Ok(Some(is_active)) = buds.features().get_spatial_audio().await {
+                                    let mut status_lock = status.write().await;
+                                    // Make sure to add `spatial_audio: bool` to your DeviceStatus struct layout
+                                    status_lock.spatial_audio = is_active;
+                                }
+                            }
+                        });
+
+                        ServiceResponse::Success {
+                            message: Some(format!("Spatial audio matrix toggled to {}", enabled)),
+                            data: None,
+                        }
+                    }
+                    Err(e) => ServiceResponse::Error {
+                        message: format!("Failed to configure spatial sound tracking: {}", e),
+                    },
+                }
+            }
+
+            ServiceCommand::GetSpatialAudio => {
+                match buds.features().get_spatial_audio().await {
+                    Ok(Some(is_active)) => ServiceResponse::Success {
+                        message: Some("Fetched spatial audio layout".to_string()),
+                        data: Some(serde_json::json!({ "spatial_audio": is_active })),
+                    },
+                    Ok(None) => ServiceResponse::Error {
+                        message: "Device returned empty payload descriptor".to_string(),
+                    },
+                    Err(e) => ServiceResponse::Error {
+                        message: format!("Failed to read spatial setting hardware context: {}", e),
+                    },
+                }
+            }
+
+            ServiceCommand::Set3dSoundEffect { mode } => {
+                match buds.features().set_3d_sound_effect(mode).await {
+                    Ok(_) => ServiceResponse::Success {
+                        message: Some(format!("Soundstage environment updated to preset {}", mode)),
+                        data: None,
+                    },
+                    Err(e) => ServiceResponse::Error { message: format!("Failed to update 3D DSP sound stage: {}", e) },
+                }
+            }
+
+            ServiceCommand::SetHearingCare { enabled } => {
+                match buds.features().set_hearing_care(enabled).await {
+                    Ok(_) => ServiceResponse::Success {
+                        message: Some(format!("Safe listening dB clamping thresholds {}", if enabled { "active" } else { "inactive" })),
+                        data: None,
+                    },
+                    Err(e) => ServiceResponse::Error { message: format!("Failed to configure decibel audio clamp: {}", e) },
+                }
+            }
+
+            ServiceCommand::SetToneVolume { volume } => {
+                match buds.features().set_tone_volume(volume).await {
+                    Ok(_) => ServiceResponse::Success {
+                        message: Some(format!("System prompts sound level altered to {}%", volume)),
+                        data: None,
+                    },
+                    Err(e) => ServiceResponse::Error { message: format!("Failed to write tone gain level: {}", e) },
+                }
+            }
+
+            ServiceCommand::SetAdaptiveVolume { enabled } => {
+                match buds.features().set_adaptive_volume(enabled).await {
+                    Ok(_) => ServiceResponse::Success {
+                        message: Some(format!("Dynamic smart volume attenuation {}", if enabled { "enabled" } else { "disabled" })),
+                        data: None,
+                    },
+                    Err(e) => ServiceResponse::Error { message: format!("Failed to set adaptive gain metrics: {}", e) },
+                }
+            }
+
+            ServiceCommand::SetKaraokeMode { enabled } => {
+                match buds.features().set_karaoke_mode(enabled).await {
+                    Ok(_) => ServiceResponse::Success {
+                        message: Some(format!("Karaoke real-time localized reverb loop {}", if enabled { "active" } else { "inactive" })),
+                        data: None,
+                    },
+                    Err(e) => ServiceResponse::Error { message: format!("Failed to toggle mic monitoring reverb: {}", e) },
+                }
+            }
+
+            ServiceCommand::SetChatMode { enabled } => {
+                match buds.features().set_chat_mode(enabled).await {
+                    Ok(_) => ServiceResponse::Success {
+                        message: Some(format!("Auto voice-activated conversational awareness {}", if enabled { "enabled" } else { "disabled" })),
+                        data: None,
+                    },
+                    Err(e) => ServiceResponse::Error { message: format!("Failed to bind chatter ducking detection: {}", e) },
+                }
+            }
+
+            ServiceCommand::SetLongEndurance { enabled } => {
+                match buds.features().set_long_endurance(enabled).await {
+                    Ok(_) => ServiceResponse::Success {
+                        message: Some(format!("Low power saving codec optimization {}", if enabled { "enabled" } else { "disabled" })),
+                        data: None,
+                    },
+                    Err(e) => ServiceResponse::Error { message: format!("Failed to lock eco mode profile: {}", e) },
+                }
+            }
+
+            ServiceCommand::SetAutoAnswer { enabled } => {
+                match buds.features().set_auto_answer(enabled).await {
+                    Ok(_) => ServiceResponse::Success {
+                        message: Some(format!("Auto-answer incoming telephony calls on fit sensor lock {}", if enabled { "enabled" } else { "disabled" })),
+                        data: None,
+                    },
+                    Err(e) => ServiceResponse::Error { message: format!("Failed to configure ingestion call routing hooks: {}", e) },
+                }
+            }
+
+            ServiceCommand::SetStepCounting { enabled } => {
+                match buds.features().set_step_counting(enabled).await {
+                    Ok(_) => ServiceResponse::Success {
+                        message: Some(format!("Internal fitness accelerometer tracking {}", if enabled { "enabled" } else { "disabled" })),
+                        data: None,
+                    },
+                    Err(e) => ServiceResponse::Error { message: format!("Failed to toggle onboard pod step tracker: {}", e) },
+                }
+            }
+
+            ServiceCommand::ResetSportData => {
+                match buds.features().reset_sport_data().await {
+                    Ok(_) => ServiceResponse::Success {
+                        message: Some("Fitness and run counters reset to zero".to_string()),
+                        data: None,
+                    },
+                    Err(e) => ServiceResponse::Error { message: format!("Failed to dispatch sports reset stroke: {}", e) },
+                }
+            }
             ServiceCommand::RemapGesture { gesture, function } => {
-                // Change buds.keys() to buds.features()
                 match buds.features().remap_gesture(gesture, function).await {
                     Ok(_) => ServiceResponse::Success {
                         message: Some(format!(
