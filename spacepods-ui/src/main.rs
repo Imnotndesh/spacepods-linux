@@ -225,23 +225,50 @@ fn main() -> glib::ExitCode {
                                     {
                                         if let Ok(mut rx) = sub_client.subscribe().await {
                                             while let Ok(status) = rx.recv().await {
+                                                let anc_mode = status.anc_mode.unwrap_or(0);
+                                                let eq_mode = status.eq_mode.unwrap_or(0);
+                                                let connected = status.connected;
+                                                let address_str = status.address.clone().unwrap_or_default();
+
+                                                let bat_left = status.battery_left;
+                                                let bat_right = status.battery_right;
+                                                let bat_case = status.battery_case;
+
                                                 if let Some(ref h) = *tray_ref {
-                                                    h.set_anc_mode(status.anc_mode.unwrap_or(0));
-                                                    h.set_eq_preset(status.eq_mode.unwrap_or(0));
-                                                    let connected = status.connected;
-                                                    let name = status.address.clone().unwrap_or_default();
+                                                    h.set_anc_mode(anc_mode);
+                                                    h.set_eq_preset(eq_mode);
                                                     glib::spawn_future_local({
                                                         let h2 = h.clone();
+                                                        let addr = address_str.clone();
                                                         async move {
                                                             h2.set_status(
-                                                                name,
-                                                                status.battery_left,
-                                                                status.battery_right,
-                                                                status.battery_case,
+                                                                addr,
+                                                                bat_left,
+                                                                bat_right,
+                                                                bat_case,
                                                                 connected,
                                                             );
                                                         }
                                                     });
+                                                }
+
+                                                // 2. FIXED: Safely fetch the app reference globally to satisfy 'static lifetimes
+                                                if let Some(gio_app) = gio::Application::default() {
+                                                    if let Some(app) = gio_app.downcast_ref::<libadwaita::Application>() {
+                                                        if let Some(window) = app.active_window() {
+                                                            let left_val = bat_left.unwrap_or(0) as i32;
+                                                            let right_val = bat_right.unwrap_or(0) as i32;
+                                                            let case_val = bat_case.unwrap_or(0) as i32;
+
+                                                            glib::idle_add_local(move || {
+                                                                let _ = window.activate_action(
+                                                                    "win.update-battery-ui",
+                                                                    Some(&(left_val, right_val, case_val, connected).to_variant()),
+                                                                );
+                                                                glib::ControlFlow::Break
+                                                            });
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }

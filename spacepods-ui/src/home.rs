@@ -124,7 +124,19 @@ impl HomeView {
             });
             actions.add_action(&about_action);
         }
+        {
+            let anc_page_clone = anc_page.clone();
+            let battery_update_action = SimpleAction::new(
+                "update-battery-ui",
+                Some(&glib::VariantTy::new("(iiib)").unwrap()),
+            );
 
+            battery_update_action.connect_activate(move |_, param| {
+                if let Some((left, right, case, connected)) = param.and_then(|p| p.get::<(i32, i32, i32, bool)>()) {
+                }
+            });
+            actions.add_action(&battery_update_action);
+        }
         nav_view.insert_action_group("win", Some(&actions));
         let toolbar_view = ToolbarView::new();
         toolbar_view.add_top_bar(&header);
