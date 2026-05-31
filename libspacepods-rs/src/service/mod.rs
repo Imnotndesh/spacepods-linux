@@ -58,6 +58,8 @@ pub enum ServiceCommand {
     FindDevice { enable: bool },
     SetWorkMode { game_mode: bool },
     GetWorkMode,
+    #[serde(rename = "custom_eq")]
+    SetCustomEq { gains: Vec<i8> },
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -420,6 +422,31 @@ impl SpacePodsService {
                 ServiceResponse::Success {
                     message: None,
                     data: Some(data),
+                }
+            }
+            ServiceCommand::SetCustomEq { gains } => {
+                match buds.eq().set_custom(gains).await {
+                    Ok(_) => {
+                        tokio::spawn({
+                            let buds = buds.clone();
+                            let status = status.clone();
+                            async move {
+                                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                                if let Some(eq) = buds.eq().get_state().await.unwrap_or(None) {
+                                    let mut status_lock = status.write().await;
+                                    status_lock.eq_mode = Some(eq.mode);
+                                    status_lock.eq_name = Some(eq.name);
+                                }
+                            }
+                        });
+                        ServiceResponse::Success {
+                            message: Some("Custom EQ profile updated successfully".to_string()),
+                            data: None,
+                        }
+                    }
+                    Err(e) => ServiceResponse::Error {
+                        message: format!("Failed to set custom EQ parameters: {}", e),
+                    },
                 }
             }
 

@@ -2,14 +2,13 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tokio::sync::Mutex;
-use libspacepods::client::SpacePodsClient;
 use libadwaita::prelude::*;
 use gtk4::{
     Box as GtkBox, Button, Grid, Label, Orientation, Spinner, Switch, ToggleButton,
-    Revealer, RevealerTransitionType, AlertDialog,
+    Revealer, RevealerTransitionType, AlertDialog, Scale,
 };
 use libadwaita::{ActionRow, PreferencesGroup};
+use tokio::sync::mpsc;
 use crate::storage::load_settings;
 
 pub struct AncPage;
@@ -62,7 +61,7 @@ fn make_battery_card(title: &str) -> (gtk4::Frame, gtk4::Image, Label) {
 }
 
 impl AncPage {
-    pub fn new(client: Arc<Mutex<SpacePodsClient>>) -> GtkBox {
+    pub fn new(tx: mpsc::Sender<crate::ClientCommand>) -> GtkBox {
         let container = GtkBox::new(Orientation::Vertical, 0);
         container.set_hexpand(true);
         container.set_vexpand(true);
@@ -86,7 +85,6 @@ impl AncPage {
         banner_box.append(&disconnected_label);
         banner_box.append(&reconnect_btn);
         disconnect_revealer.set_child(Some(&banner_box));
-
         container.append(&disconnect_revealer);
 
         let clamp = libadwaita::Clamp::new();
@@ -123,8 +121,9 @@ impl AncPage {
         batt_header.append(&batt_title);
         batt_header.append(&batt_spinner);
         batt_header.append(&refresh_btn);
+        inner.append(&batt_header);
 
-        // Battery grid
+        // Battery grid setup
         let batt_grid = Grid::new();
         batt_grid.set_column_spacing(8);
         batt_grid.set_row_spacing(0);
@@ -137,628 +136,259 @@ impl AncPage {
         batt_grid.attach(&left_card, 0, 0, 1, 1);
         batt_grid.attach(&case_card, 1, 0, 1, 1);
         batt_grid.attach(&right_card, 2, 0, 1, 1);
+        inner.append(&batt_grid);
 
-        // Noise Control
-        let nc_header = GtkBox::new(Orientation::Horizontal, 0);
-        let title = Label::new(Some("Noise Control"));
-        title.add_css_class("title-1");
-        title.set_halign(gtk4::Align::Start);
-        title.set_hexpand(true);
-        nc_header.append(&title);
+        // Noise Control setup
+        let anc_group = PreferencesGroup::new();
+        anc_group.set_title("Noise Control");
 
-        let off_btn = ToggleButton::with_label("OFF");
-        let anc_btn = ToggleButton::with_label("ANC");
+        let modes_box = GtkBox::new(Orientation::Horizontal, 0);
+        modes_box.add_css_class("linked");
+        modes_box.set_halign(gtk4::Align::Center);
+
+        let off_btn = ToggleButton::with_label("Off");
+        off_btn.set_hexpand(true);
+        let anc_btn = ToggleButton::with_label("Noise Cancelling");
+        anc_btn.set_hexpand(true);
         let trans_btn = ToggleButton::with_label("Transparency");
+        trans_btn.set_hexpand(true);
 
         anc_btn.set_group(Some(&off_btn));
         trans_btn.set_group(Some(&off_btn));
 
-        off_btn.set_hexpand(true);
-        anc_btn.set_hexpand(true);
-        trans_btn.set_hexpand(true);
+        modes_box.append(&off_btn);
+        modes_box.append(&anc_btn);
+        modes_box.append(&trans_btn);
+        anc_group.add(&modes_box);
+        inner.append(&anc_group);
 
-        let buttons_box = GtkBox::new(Orientation::Horizontal, 8);
-        buttons_box.set_hexpand(true);
-        buttons_box.append(&off_btn);
-        buttons_box.append(&anc_btn);
-        buttons_box.append(&trans_btn);
-
-        // Level buttons
-        let level_box = GtkBox::new(Orientation::Vertical, 8);
-        level_box.set_hexpand(true);
-        level_box.set_visible(false);
-
-        let level_label = Label::new(Some("Intensity"));
-        level_label.set_halign(gtk4::Align::Start);
-        level_label.add_css_class("caption");
-
-        let low_btn = ToggleButton::with_label("Low");
-        let med_btn = ToggleButton::with_label("Med");
-        let high_btn = ToggleButton::with_label("High");
-        med_btn.set_group(Some(&low_btn));
-        high_btn.set_group(Some(&low_btn));
-
-        low_btn.set_hexpand(true);
-        med_btn.set_hexpand(true);
-        high_btn.set_hexpand(true);
-
-        let level_buttons_box = GtkBox::new(Orientation::Horizontal, 8);
-        level_buttons_box.set_hexpand(true);
-        level_buttons_box.append(&low_btn);
-        level_buttons_box.append(&med_btn);
-        level_buttons_box.append(&high_btn);
-
-        level_box.append(&level_label);
-        level_box.append(&level_buttons_box);
-
-        // Additional Features
-        let adaptive_row = ActionRow::new();
-        adaptive_row.set_title("Adaptive ANC");
-        adaptive_row.set_subtitle("Dynamically adjust based on environment");
-        let adaptive_switch = Switch::new();
-        adaptive_switch.set_valign(gtk4::Align::Center);
-        adaptive_switch.set_vexpand(false);
-        adaptive_row.add_suffix(&adaptive_switch);
-        adaptive_row.set_activatable_widget(Some(&adaptive_switch));
-
-        let dual_row = ActionRow::new();
-        dual_row.set_title("Dual Device (Multi-point)");
-        dual_row.set_subtitle("Connect to two devices simultaneously");
-        let dual_switch = Switch::new();
-        dual_switch.set_valign(gtk4::Align::Center);
-        dual_switch.set_vexpand(false);
-        dual_row.add_suffix(&dual_switch);
-        dual_row.set_activatable_widget(Some(&dual_switch));
+        // Sub-features setup: Noise Cancelling and Transparency sub-sliders
+        let sub_features_revealer = Revealer::new();
+        sub_features_revealer.set_transition_type(RevealerTransitionType::SlideDown);
 
         let features_group = PreferencesGroup::new();
-        features_group.set_title("Additional Features");
-        features_group.set_valign(gtk4::Align::Start);
-        features_group.set_vexpand(false);
-        features_group.add(&adaptive_row);
-        features_group.add(&dual_row);
+        features_group.set_title("Mode Configuration");
 
-        // Advanced Features
-        let game_row = ActionRow::new();
-        game_row.set_title("Game Mode");
-        game_row.set_subtitle("Low latency mode for gaming");
-        let game_switch = Switch::new();
-        game_switch.set_valign(gtk4::Align::Center);
-        game_switch.set_vexpand(false);
-        game_row.add_suffix(&game_switch);
-        game_row.set_activatable_widget(Some(&game_switch));
+        // Noise Cancelling level layout
+        let anc_level_row = ActionRow::new();
+        anc_level_row.set_title("Noise Cancelling Level");
+        let anc_scale = Scale::with_range(Orientation::Horizontal, 0.0, 15.0, 1.0);
+        anc_scale.set_size_request(200, -1);
+        anc_scale.set_draw_value(true);
+        anc_level_row.add_suffix(&anc_scale);
+        features_group.add(&anc_level_row);
+
+        let adaptive_row = ActionRow::new();
+        adaptive_row.set_title("Adaptive ANC");
+        adaptive_row.set_subtitle("Automatically match cancellation depth to atmospheric ambient pressure logs");
+        let adaptive_switch = Switch::new();
+        adaptive_switch.set_valign(gtk4::Align::Center);
+        adaptive_row.add_suffix(&adaptive_switch);
+        features_group.add(&adaptive_row);
+
+        let trans_level_row = ActionRow::new();
+        trans_level_row.set_title("Transparency Level");
+        // FUH!! trans scale sio
+        let trans_scale = Scale::with_range(Orientation::Horizontal, 0.0, 15.0, 1.0);
+        trans_scale.set_size_request(200, -1);
+        trans_scale.set_draw_value(true);
+        trans_level_row.add_suffix(&trans_scale);
+        features_group.add(&trans_level_row);
+
+        sub_features_revealer.set_child(Some(&features_group));
+        inner.append(&sub_features_revealer);
+
+        let setting_from_status = Arc::new(AtomicBool::new(false));
+
+        let update_sub_features_visibility = {
+            let off_btn = off_btn.clone();
+            let anc_btn = anc_btn.clone();
+            let trans_btn = trans_btn.clone();
+            let anc_level_row = anc_level_row.clone();
+            let adaptive_row = adaptive_row.clone();
+            let trans_level_row = trans_level_row.clone();
+            let sub_features_revealer = sub_features_revealer.clone();
+
+            move || {
+                if off_btn.is_active() {
+                    sub_features_revealer.set_reveal_child(false);
+                } else {
+                    sub_features_revealer.set_reveal_child(true);
+                    if anc_btn.is_active() {
+                        anc_level_row.set_visible(true);
+                        adaptive_row.set_visible(true);
+                        trans_level_row.set_visible(false);
+                    } else if trans_btn.is_active() {
+                        anc_level_row.set_visible(false);
+                        adaptive_row.set_visible(false);
+                        trans_level_row.set_visible(true);
+                    }
+                }
+            }
+        };
+
+
+        {
+            let tx = tx.clone();
+            let setting_ref = Arc::clone(&setting_from_status);
+            let update_visibility = update_sub_features_visibility.clone();
+            off_btn.connect_toggled(move |btn| {
+                update_visibility();
+                if btn.is_active() && !setting_ref.load(Ordering::Relaxed) {
+                    let tx = tx.clone();
+                    glib::spawn_future_local(async move {
+                        let _ = tx.send(crate::ClientCommand::SetAncMode("off".to_string())).await;
+                    });
+                }
+            });
+        }
+        {
+            let tx = tx.clone();
+            let setting_ref = Arc::clone(&setting_from_status);
+            let update_visibility = update_sub_features_visibility.clone();
+            anc_btn.connect_toggled(move |btn| {
+                update_visibility();
+                if btn.is_active() && !setting_ref.load(Ordering::Relaxed) {
+                    let tx = tx.clone();
+                    glib::spawn_future_local(async move {
+                        let _ = tx.send(crate::ClientCommand::SetAncMode("on".to_string())).await;
+                    });
+                }
+            });
+        }
+        {
+            let tx = tx.clone();
+            let setting_ref = Arc::clone(&setting_from_status);
+            let update_visibility = update_sub_features_visibility.clone();
+            trans_btn.connect_toggled(move |btn| {
+                update_visibility();
+                if btn.is_active() && !setting_ref.load(Ordering::Relaxed) {
+                    let tx = tx.clone();
+                    glib::spawn_future_local(async move {
+                        let _ = tx.send(crate::ClientCommand::SetAncMode("transparency".to_string())).await;
+                    });
+                }
+            });
+        }
+
+        // Wire up sub-feature scale changes
+        {
+            let tx = tx.clone();
+            let setting_ref = Arc::clone(&setting_from_status);
+            anc_scale.connect_value_changed(move |scale| {
+                if !setting_ref.load(Ordering::Relaxed) {
+                    let tx = tx.clone();
+                    let val = scale.value() as u8;
+                    glib::spawn_future_local(async move {
+                        let _ = tx.send(crate::ClientCommand::SetAncLevel(val)).await;
+                    });
+                }
+            });
+        }
+        {
+            let tx = tx.clone();
+            let setting_ref = Arc::clone(&setting_from_status);
+            trans_scale.connect_value_changed(move |scale| {
+                if !setting_ref.load(Ordering::Relaxed) {
+                    let tx = tx.clone();
+                    let val = scale.value() as u8;
+                    glib::spawn_future_local(async move {
+                        let _ = tx.send(crate::ClientCommand::SetAncLevel(val)).await;
+                    });
+                }
+            });
+        }
+        {
+            let tx = tx.clone();
+            let setting_ref = Arc::clone(&setting_from_status);
+            adaptive_switch.connect_state_set(move |_, state| {
+                if !setting_ref.load(Ordering::Relaxed) {
+                    let tx = tx.clone();
+                    glib::spawn_future_local(async move {
+                        let _ = tx.send(crate::ClientCommand::SetAdaptiveAnc(state)).await;
+                    });
+                }
+                glib::Propagation::Proceed
+            });
+        }
+
+        // Wire up Utility items
+        let utility_group = PreferencesGroup::new();
+        utility_group.set_title("Utilities");
 
         let find_row = ActionRow::new();
-        find_row.set_title("Find Device");
-        find_row.set_subtitle("Make earbuds beep to locate them");
-        let find_box = GtkBox::new(Orientation::Horizontal, 6);
-        let find_start = Button::with_label("Start");
-        find_start.add_css_class("suggested-action");
+        find_row.set_title("Find My Earbuds");
+        find_row.set_subtitle("Plays a loud localized acoustic ping inside selected shell casings");
+
+        let find_start = Button::with_label("Ring");
         let find_stop = Button::with_label("Stop");
         find_stop.add_css_class("destructive-action");
+
+        let find_box = GtkBox::new(Orientation::Horizontal, 6);
         find_box.append(&find_start);
         find_box.append(&find_stop);
         find_row.add_suffix(&find_box);
+        utility_group.add(&find_row);
 
         let reset_row = ActionRow::new();
         reset_row.set_title("Factory Reset");
-        reset_row.set_subtitle("Reset all settings (irreversible)");
+        reset_row.set_subtitle("Clear saved pairs and defaults");
+
         let reset_button = Button::with_label("Reset");
         reset_button.add_css_class("destructive-action");
         reset_row.add_suffix(&reset_button);
+        utility_group.add(&reset_row);
+        inner.append(&utility_group);
 
-        let extra_group = PreferencesGroup::new();
-        extra_group.set_title("Advanced Features");
-        extra_group.add(&game_row);
-        extra_group.add(&find_row);
-        extra_group.add(&reset_row);
-
-        inner.append(&batt_header);
-        inner.append(&batt_grid);
-        inner.append(&nc_header);
-        inner.append(&buttons_box);
-        inner.append(&level_box);
-        inner.append(&features_group);
-        inner.append(&extra_group);
-
-        clamp.set_child(Some(&inner));
-        let scroll = gtk4::ScrolledWindow::new();
-        scroll.set_hscrollbar_policy(gtk4::PolicyType::Never);
-        scroll.set_vexpand(true);
-        scroll.set_child(Some(&clamp));
-        container.append(&scroll);
-
-        // Thread-safe state
-        let setting_from_status = Arc::new(AtomicBool::new(false));
-        let anc_max = Rc::new(Cell::new(15u8));
-
-        // Helper to set level buttons based on numeric level
-        let set_level_buttons = {
-            let low_btn = low_btn.clone();
-            let med_btn = med_btn.clone();
-            let high_btn = high_btn.clone();
-            let anc_max = anc_max.clone();
-            let setting_ref = setting_from_status.clone();
-            Rc::new(move |level: u8| {
-                let max = anc_max.get().max(3);
-                let third = (max / 3).max(1);
-                setting_ref.store(true, Ordering::Relaxed);
-                if level <= third {
-                    low_btn.set_active(true);
-                    low_btn.add_css_class("suggested-action");
-                    med_btn.remove_css_class("suggested-action");
-                    high_btn.remove_css_class("suggested-action");
-                } else if level <= third * 2 {
-                    med_btn.set_active(true);
-                    med_btn.add_css_class("suggested-action");
-                    low_btn.remove_css_class("suggested-action");
-                    high_btn.remove_css_class("suggested-action");
-                } else {
-                    high_btn.set_active(true);
-                    high_btn.add_css_class("suggested-action");
-                    low_btn.remove_css_class("suggested-action");
-                    med_btn.remove_css_class("suggested-action");
-                }
-                setting_ref.store(false, Ordering::Relaxed);
-            })
-        };
-
-        // Helper to update battery icons and labels
-        let update_battery = {
-            let left_icon = left_icon.clone();
-            let left_val = left_val.clone();
-            let case_icon = case_icon.clone();
-            let case_val = case_val.clone();
-            let right_icon = right_icon.clone();
-            let right_val = right_val.clone();
-            Rc::new(move |bl: Option<u8>, bc: Option<u8>, br: Option<u8>| {
-                left_val.set_text(&battery_label(bl));
-                case_val.set_text(&battery_label(bc));
-                right_val.set_text(&battery_label(br));
-                left_icon.set_icon_name(Some(battery_icon(bl)));
-                case_icon.set_icon_name(Some(battery_icon(bc)));
-                right_icon.set_icon_name(Some(battery_icon(br)));
-            })
-        };
-
-        // Load saved settings
         {
-            let saved = load_settings();
-            setting_from_status.store(true, Ordering::Relaxed);
-            match saved.last_anc_mode {
-                1 => {
-                    anc_btn.set_active(true);
-                    anc_btn.add_css_class("suggested-action");
-                    level_box.set_visible(true);
-                    adaptive_switch.set_sensitive(true);
-                    adaptive_row.set_sensitive(true);
-                }
-                2 => {
-                    trans_btn.set_active(true);
-                    trans_btn.add_css_class("suggested-action");
-                    level_box.set_visible(true);
-                    adaptive_switch.set_sensitive(false);
-                    adaptive_row.set_sensitive(false);
-                }
-                _ => {
-                    off_btn.set_active(true);
-                    off_btn.add_css_class("suggested-action");
-                    level_box.set_visible(false);
-                    adaptive_switch.set_sensitive(false);
-                    adaptive_row.set_sensitive(false);
-                }
-            }
-            set_level_buttons(saved.last_anc_level);
-            adaptive_switch.set_active(saved.adaptive_anc_enabled);
-            dual_switch.set_active(saved.dual_device_enabled);
-            setting_from_status.store(false, Ordering::Relaxed);
-        }
-
-        // Initial battery fetch
-        {
-            let client = Arc::clone(&client);
-            let update_batt = update_battery.clone();
-            let batt_spin = batt_spinner.clone();
-            glib::spawn_future_local(async move {
-                if let Ok(s) = { let mut c = client.lock().await; c.get_status().await } {
-                    update_batt(s.battery_left, s.battery_case, s.battery_right);
-                }
-                batt_spin.stop();
-                batt_spin.set_visible(false);
-            });
-        }
-
-        // Refresh button
-        {
-            let client = Arc::clone(&client);
-            let update_batt = update_battery.clone();
-            let batt_spin = batt_spinner.clone();
-            refresh_btn.connect_clicked(move |btn| {
-                btn.set_sensitive(false);
-                batt_spin.set_visible(true);
-                batt_spin.start();
-                let client = Arc::clone(&client);
-                let update_batt = update_batt.clone();
-                let btn2 = btn.clone();
-                let spin2 = batt_spin.clone();
-                glib::spawn_future_local(async move {
-                    if let Ok(s) = { let mut c = client.lock().await; c.get_status().await } {
-                        update_batt(s.battery_left, s.battery_case, s.battery_right);
-                    }
-                    spin2.stop();
-                    spin2.set_visible(false);
-                    btn2.set_sensitive(true);
-                });
-            });
-        }
-
-        // Real‑time status subscription (updates battery, connected state, etc.)
-        let client_sub = Arc::clone(&client);
-        let update_batt_sub = update_battery.clone();
-        let set_level_buttons_sub = set_level_buttons.clone();
-        let setting_flag_sub = setting_from_status.clone();
-        let anc_btns_sub = (off_btn.clone(), anc_btn.clone(), trans_btn.clone());
-        let adaptive_sw_sub = adaptive_switch.clone();
-        let dual_sw_sub = dual_switch.clone();
-        let game_sw_sub = game_switch.clone();
-        let level_box_sub = level_box.clone();
-        let disconnect_revealer_sub = disconnect_revealer.clone();
-
-        glib::spawn_future_local(async move {
-            let mut sub_client = client_sub.lock().await;
-            let mut rx = match sub_client.subscribe().await {
-                Ok(r) => r,
-                Err(e) => {
-                    eprintln!("Failed to subscribe to status updates: {}", e);
-                    return;
-                }
-            };
-            drop(sub_client);
-
-            while let Ok(status) = rx.recv().await {
-                let update_batt = update_batt_sub.clone();
-                let set_level = set_level_buttons_sub.clone();
-                let setting_flag = setting_flag_sub.clone();
-                let (off_btn, anc_btn, trans_btn) = anc_btns_sub.clone();
-                let adaptive_sw = adaptive_sw_sub.clone();
-                let dual_sw = dual_sw_sub.clone();
-                let game_sw = game_sw_sub.clone();
-                let level_box_ref = level_box_sub.clone();
-                let disconnect_revealer = disconnect_revealer_sub.clone();
-
-                glib::idle_add_local(move || {
-                    // Update battery
-                    update_batt(status.battery_left, status.battery_case, status.battery_right);
-                    // Show/hide disconnect banner (informational only)
-                    let connected = status.connected;
-                    disconnect_revealer.set_reveal_child(!connected);
-                    // IMPORTANT: Do NOT disable widgets based on connected flag.
-                    // The user should be able to interact even if the service reports disconnected.
-                    if !connected {
-                        return glib::ControlFlow::Continue;
-                    }
-                    // Update UI with current device state
-                    setting_flag.store(true, Ordering::Relaxed);
-                    match status.anc_mode {
-                        Some(1) => {
-                            anc_btn.set_active(true);
-                            anc_btn.add_css_class("suggested-action");
-                            level_box_ref.set_visible(true);
-                        }
-                        Some(2) => {
-                            trans_btn.set_active(true);
-                            trans_btn.add_css_class("suggested-action");
-                            level_box_ref.set_visible(true);
-                        }
-                        _ => {
-                            off_btn.set_active(true);
-                            off_btn.add_css_class("suggested-action");
-                            level_box_ref.set_visible(false);
-                        }
-                    }
-                    set_level(status.anc_level);
-                    adaptive_sw.set_active(status.adaptive_anc.unwrap_or(false));
-                    dual_sw.set_active(status.dual_device.unwrap_or(false));
-                    game_sw.set_active(status.game_mode.unwrap_or(false));
-                    setting_flag.store(false, Ordering::Relaxed);
-                    glib::ControlFlow::Continue
-                });
-            }
-        });
-
-        // Reconnect button
-        let client_reconnect = Arc::clone(&client);
-        reconnect_btn.connect_clicked(move |_| {
-            let client = Arc::clone(&client_reconnect);
-            glib::spawn_future_local(async move {
-                let mut c = client.lock().await;
-                let _ = c.connect_device("".to_string()).await;
-            });
-        });
-
-        // ----- Signal connections (user actions) -----
-        // ANC OFF
-        {
-            let client = Arc::clone(&client);
-            let level_box_clone = level_box.clone();
-            let adaptive_sw = adaptive_switch.clone();
-            let adaptive_row = adaptive_row.clone();
-            let setting_ref = setting_from_status.clone();
-            off_btn.connect_toggled(move |btn| {
-                if !btn.is_active() {
-                    btn.remove_css_class("suggested-action");
-                    return;
-                }
-                if setting_ref.load(Ordering::Relaxed) {
-                    btn.add_css_class("suggested-action");
-                    return;
-                }
-                btn.add_css_class("suggested-action");
-                level_box_clone.set_visible(false);
-                adaptive_sw.set_sensitive(false);
-                adaptive_row.set_sensitive(false);
-                let client = Arc::clone(&client);
-                glib::spawn_future_local(async move {
-                    let mut c = client.lock().await;
-                    if let Err(e) = c.set_anc_mode("off").await {
-                        eprintln!("anc off: {}", e);
-                    }
-                });
-            });
-        }
-        // ANC ON
-        {
-            let client = Arc::clone(&client);
-            let level_box_clone = level_box.clone();
-            let adaptive_sw = adaptive_switch.clone();
-            let adaptive_row = adaptive_row.clone();
-            let setting_ref = setting_from_status.clone();
-            anc_btn.connect_toggled(move |btn| {
-                if !btn.is_active() {
-                    btn.remove_css_class("suggested-action");
-                    return;
-                }
-                if setting_ref.load(Ordering::Relaxed) {
-                    btn.add_css_class("suggested-action");
-                    return;
-                }
-                btn.add_css_class("suggested-action");
-                level_box_clone.set_visible(true);
-                adaptive_sw.set_sensitive(true);
-                adaptive_row.set_sensitive(true);
-                let client = Arc::clone(&client);
-                glib::spawn_future_local(async move {
-                    let mut c = client.lock().await;
-                    if let Err(e) = c.set_anc_mode("on").await {
-                        eprintln!("anc on: {}", e);
-                    }
-                });
-            });
-        }
-        // Transparency
-        {
-            let client = Arc::clone(&client);
-            let level_box_clone = level_box.clone();
-            let adaptive_sw = adaptive_switch.clone();
-            let adaptive_row = adaptive_row.clone();
-            let setting_ref = setting_from_status.clone();
-            trans_btn.connect_toggled(move |btn| {
-                if !btn.is_active() {
-                    btn.remove_css_class("suggested-action");
-                    return;
-                }
-                if setting_ref.load(Ordering::Relaxed) {
-                    btn.add_css_class("suggested-action");
-                    return;
-                }
-                btn.add_css_class("suggested-action");
-                level_box_clone.set_visible(true);
-                adaptive_sw.set_sensitive(false);
-                adaptive_row.set_sensitive(false);
-                let client = Arc::clone(&client);
-                glib::spawn_future_local(async move {
-                    let mut c = client.lock().await;
-                    if let Err(e) = c.set_anc_mode("transparency").await {
-                        eprintln!("anc transparency: {}", e);
-                    }
-                });
-            });
-        }
-        // Low level
-        {
-            let client = Arc::clone(&client);
-            let anc_max_ref = anc_max.clone();
-            let setting_ref = setting_from_status.clone();
-            let med_btn_clone = med_btn.clone();
-            let high_btn_clone = high_btn.clone();
-            low_btn.connect_toggled(move |btn| {
-                if !btn.is_active() {
-                    btn.remove_css_class("suggested-action");
-                    return;
-                }
-                if setting_ref.load(Ordering::Relaxed) {
-                    btn.add_css_class("suggested-action");
-                    return;
-                }
-                btn.add_css_class("suggested-action");
-                med_btn_clone.remove_css_class("suggested-action");
-                high_btn_clone.remove_css_class("suggested-action");
-                let max = anc_max_ref.get().max(3);
-                let level = (max / 3).max(1);
-                let client = Arc::clone(&client);
-                glib::spawn_future_local(async move {
-                    tokio::time::sleep(tokio::time::Duration::from_millis(400)).await;
-                    let mut c = client.lock().await;
-                    if let Err(e) = c.set_level(level).await {
-                        eprintln!("level low: {}", e);
-                    }
-                });
-            });
-        }
-        // Medium level
-        {
-            let client = Arc::clone(&client);
-            let anc_max_ref = anc_max.clone();
-            let setting_ref = setting_from_status.clone();
-            let low_btn_clone = low_btn.clone();
-            let high_btn_clone = high_btn.clone();
-            med_btn.connect_toggled(move |btn| {
-                if !btn.is_active() {
-                    btn.remove_css_class("suggested-action");
-                    return;
-                }
-                if setting_ref.load(Ordering::Relaxed) {
-                    btn.add_css_class("suggested-action");
-                    return;
-                }
-                btn.add_css_class("suggested-action");
-                low_btn_clone.remove_css_class("suggested-action");
-                high_btn_clone.remove_css_class("suggested-action");
-                let max = anc_max_ref.get().max(3);
-                let level = ((max / 3) * 2).max(2);
-                let client = Arc::clone(&client);
-                glib::spawn_future_local(async move {
-                    tokio::time::sleep(tokio::time::Duration::from_millis(400)).await;
-                    let mut c = client.lock().await;
-                    if let Err(e) = c.set_level(level).await {
-                        eprintln!("level med: {}", e);
-                    }
-                });
-            });
-        }
-        // High level
-        {
-            let client = Arc::clone(&client);
-            let anc_max_ref = anc_max.clone();
-            let setting_ref = setting_from_status.clone();
-            let low_btn_clone = low_btn.clone();
-            let med_btn_clone = med_btn.clone();
-            high_btn.connect_toggled(move |btn| {
-                if !btn.is_active() {
-                    btn.remove_css_class("suggested-action");
-                    return;
-                }
-                if setting_ref.load(Ordering::Relaxed) {
-                    btn.add_css_class("suggested-action");
-                    return;
-                }
-                btn.add_css_class("suggested-action");
-                low_btn_clone.remove_css_class("suggested-action");
-                med_btn_clone.remove_css_class("suggested-action");
-                let max = anc_max_ref.get().max(3);
-                let client = Arc::clone(&client);
-                glib::spawn_future_local(async move {
-                    tokio::time::sleep(tokio::time::Duration::from_millis(400)).await;
-                    let mut c = client.lock().await;
-                    if let Err(e) = c.set_level(max).await {
-                        eprintln!("level high: {}", e);
-                    }
-                });
-            });
-        }
-        // Adaptive ANC
-        {
-            let client = Arc::clone(&client);
-            let setting_ref = setting_from_status.clone();
-            adaptive_switch.connect_state_set(move |_, state| {
-                if setting_ref.load(Ordering::Relaxed) {
-                    return glib::Propagation::Proceed;
-                }
-                let client = Arc::clone(&client);
-                glib::spawn_future_local(async move {
-                    let mut c = client.lock().await;
-                    if let Err(e) = c.set_adaptive_anc(state).await {
-                        eprintln!("adaptive_anc: {}", e);
-                    }
-                });
-                glib::Propagation::Proceed
-            });
-        }
-        // Dual device
-        {
-            let client = Arc::clone(&client);
-            let setting_ref = setting_from_status.clone();
-            dual_switch.connect_state_set(move |_, state| {
-                if setting_ref.load(Ordering::Relaxed) {
-                    return glib::Propagation::Proceed;
-                }
-                let client = Arc::clone(&client);
-                glib::spawn_future_local(async move {
-                    let mut c = client.lock().await;
-                    if let Err(e) = c.set_dual_device(state).await {
-                        eprintln!("dual_device: {}", e);
-                    }
-                });
-                glib::Propagation::Proceed
-            });
-        }
-        // Game mode
-        {
-            let client = Arc::clone(&client);
-            let setting_ref = setting_from_status.clone();
-            game_switch.connect_state_set(move |_, state| {
-                if setting_ref.load(Ordering::Relaxed) {
-                    return glib::Propagation::Proceed;
-                }
-                let client = Arc::clone(&client);
-                glib::spawn_future_local(async move {
-                    let mut c = client.lock().await;
-                    if let Err(e) = c.set_work_mode(state).await {
-                        eprintln!("game mode: {}", e);
-                    }
-                });
-                glib::Propagation::Proceed
-            });
-        }
-        // Find device Start
-        {
-            let client = Arc::clone(&client);
+            let tx = tx.clone();
             find_start.connect_clicked(move |_| {
-                let client = Arc::clone(&client);
+                let tx = tx.clone();
                 glib::spawn_future_local(async move {
-                    let mut c = client.lock().await;
-                    if let Err(e) = c.find_device(true).await {
-                        eprintln!("find device start: {}", e);
-                    }
+                    let _ = tx.send(crate::ClientCommand::FindDevice(true)).await;
                 });
             });
         }
-        // Find device Stop
         {
-            let client = Arc::clone(&client);
+            let tx = tx.clone();
             find_stop.connect_clicked(move |_| {
-                let client = Arc::clone(&client);
+                let tx = tx.clone();
                 glib::spawn_future_local(async move {
-                    let mut c = client.lock().await;
-                    if let Err(e) = c.find_device(false).await {
-                        eprintln!("find device stop: {}", e);
-                    }
+                    let _ = tx.send(crate::ClientCommand::FindDevice(false)).await;
                 });
             });
         }
-        // Factory reset with AlertDialog
         {
-            let client = Arc::clone(&client);
+            let tx = tx.clone();
             reset_button.connect_clicked(move |_| {
-                let client = Arc::clone(&client);
+                let tx = tx.clone();
                 let dialog = AlertDialog::builder()
                     .message("Factory reset will erase all settings and disconnect the earbuds. Continue?")
                     .buttons(vec!["Cancel", "Reset"])
                     .build();
 
                 glib::spawn_future_local(async move {
-                    match dialog.choose_future(None::<&gtk4::Window>).await {
-                        Ok(index) if index == 1 => { // "Reset" is the second button (index 1)
-                            let mut c = client.lock().await;
-                            if let Err(e) = c.factory_reset().await {
-                                eprintln!("factory reset: {}", e);
-                            }
+                    if let Ok(index) = dialog.choose_future(None::<&gtk4::Window>).await {
+                        if index == 1 {
+                            let _ = tx.send(crate::ClientCommand::FactoryReset).await;
                         }
-                        _ => {}
                     }
                 });
             });
         }
 
+        {
+            let tx = tx.clone();
+            refresh_btn.connect_clicked(move |_| {
+                let tx = tx.clone();
+                glib::spawn_future_local(async move {
+                    let _ = tx.send(crate::ClientCommand::RefreshBattery).await;
+                });
+            });
+        }
+
+        clamp.set_child(Some(&inner));
+        container.append(&clamp);
         container
     }
 }

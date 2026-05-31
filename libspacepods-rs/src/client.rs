@@ -80,6 +80,10 @@ impl SpacePodsClient {
             _ => Ok((None, None, None)),
         }
     }
+    pub async fn set_custom_eq(&mut self, gains: [i8; 7]) -> Result<()> {
+        self.send_command(ServiceCommand::SetCustomEq { gains: gains.to_vec() }).await?;
+        Ok(())
+    }
 
     pub async fn get_status(&mut self) -> Result<DeviceStatus> {
         match self.send_command(ServiceCommand::GetStatus).await {

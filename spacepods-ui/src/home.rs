@@ -6,9 +6,8 @@ use libadwaita::{
 use gio::{Menu, SimpleActionGroup, SimpleAction};
 use glib::clone;
 use gtk4::MenuButton;
-use std::sync::Arc;
-use tokio::sync::Mutex;
-use libspacepods::client::SpacePodsClient;
+use tokio::sync::mpsc;
+use crate::ClientCommand;
 use crate::pages::anc_page::AncPage;
 use crate::pages::eq_page::EqPage;
 use crate::storage::load_known_devices;
@@ -17,7 +16,7 @@ pub struct HomeView;
 
 impl HomeView {
     pub fn new(
-        client: Arc<Mutex<SpacePodsClient>>,
+        tx: mpsc::Sender<ClientCommand>,
         on_add_device: impl Fn() + 'static + Clone,
     ) -> NavigationView {
         let nav_view = NavigationView::new();
@@ -25,13 +24,14 @@ impl HomeView {
         let view_stack = ViewStack::new();
         view_stack.set_vexpand(true);
 
-        let anc_page = AncPage::new(Arc::clone(&client));
+        // Pass the cloned channel transmitter down to the sub-views
+        let anc_page = AncPage::new(tx.clone());
         view_stack.add_titled_with_icon(
             &anc_page, Some("anc"), "ANC",
             "org.gnome.Settings-accessibility-hearing-symbolic",
         );
 
-        let eq_page = EqPage::new(Arc::clone(&client));
+        let eq_page = EqPage::new(tx.clone());
         view_stack.add_titled_with_icon(
             &eq_page, Some("eq"), "EQ",
             "audio-card-symbolic",
@@ -83,18 +83,17 @@ impl HomeView {
             split_btn.connect_clicked(move |_| on_add());
         }
         {
-            let client_ref = Arc::clone(&client);
+            let tx_ref = tx.clone();
             let switch_action = SimpleAction::new(
                 "switch-device",
                 Some(glib::VariantTy::STRING),
             );
             switch_action.connect_activate(move |_, param| {
                 if let Some(address) = param.and_then(|p| p.get::<String>()) {
-                    let client = Arc::clone(&client_ref);
+                    let tx = tx_ref.clone();
                     glib::spawn_future_local(async move {
-                        let mut c = client.lock().await;
-                        if let Err(e) = c.connect_device(address.clone()).await {
-                            eprintln!("Failed to switch device to {}: {}", address, e);
+                        if let Err(e) = tx.send(ClientCommand::ConnectDevice(address.clone())).await {
+                            eprintln!("Failed to dispatch switch-device command for {}: {}", address, e);
                         }
                     });
                 }
