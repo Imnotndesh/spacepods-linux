@@ -60,6 +60,33 @@ pub enum ServiceCommand {
     GetWorkMode,
     #[serde(rename = "custom_eq")]
     SetCustomEq { gains: Vec<i8> },
+    ConfigureGesture { gesture: u8, function: u8 },
+    SetLanguage { lang_id: u8 },
+    SyncDeviceTime { timestamp: u64 },
+    SetAutoShutdown { minutes: u16 },
+    SetSpatialAudio { enabled: bool },
+    Set3dSoundEffect { mode: u8 },
+    SetHearingCare { enabled: bool },
+    SetToneVolume { volume: u8 },
+    SetAdaptiveVolume { enabled: bool },
+    SetKaraokeMode { enabled: bool },
+    SetChatMode { enabled: bool },
+    SetLongEndurance { enabled: bool },
+    SetAutoAnswer { enabled: bool },
+    SetStepCounting { enabled: bool },
+    ResetSportData,
+    ClearPairingRecords,
+    #[serde(rename = "in_ear")]
+    SetInEarDetect { enabled: bool },
+
+    #[serde(rename = "led_switch")]
+    SetLedStatus { led_on: bool },
+
+    #[serde(rename = "voice_prompt")]
+    SetVoicePrompt { enabled: bool },
+
+    #[serde(rename = "remap_gesture")]
+    RemapGesture { gesture: u8, function: u8 },
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -422,6 +449,59 @@ impl SpacePodsService {
                 ServiceResponse::Success {
                     message: None,
                     data: Some(data),
+                }
+            }
+            ServiceCommand::SetInEarDetect { enabled } => {
+                match buds.features().set_in_ear_detect(enabled).await {
+                    Ok(_) => {
+                        tokio::spawn({
+                            let buds = buds.clone();
+                            let status = status.clone();
+                            async move {
+                                time::sleep(time::Duration::from_millis(200)).await;
+                            }
+                        });
+                        ServiceResponse::Success {
+                            message: Some(format!("In-ear detection {}", if enabled { "enabled" } else { "disabled" })),
+                            data: None,
+                        }
+                    }
+                    Err(e) => ServiceResponse::Error { message: format!("Failed to toggle in-ear detection: {}", e) },
+                }
+            }
+
+            ServiceCommand::SetLedStatus { led_on } => {
+                match buds.features().set_led_switch(led_on).await {
+                    Ok(_) => ServiceResponse::Success {
+                        message: Some(format!("Earbud LEDs turned {}", if led_on { "on" } else { "off" })),
+                        data: None,
+                    },
+                    Err(e) => ServiceResponse::Error { message: format!("Failed to change LED status: {}", e) },
+                }
+            }
+
+            ServiceCommand::SetVoicePrompt { enabled } => {
+                match buds.features().set_voice_prompt(enabled).await {
+                    Ok(_) => ServiceResponse::Success {
+                        message: Some(format!("Voice prompt guides {}", if enabled { "enabled" } else { "disabled" })),
+                        data: None,
+                    },
+                    Err(e) => ServiceResponse::Error { message: format!("Failed to switch voice prompts: {}", e) },
+                }
+            }
+            ServiceCommand::RemapGesture { gesture, function } => {
+                // Change buds.keys() to buds.features()
+                match buds.features().remap_gesture(gesture, function).await {
+                    Ok(_) => ServiceResponse::Success {
+                        message: Some(format!(
+                            "Gesture ID {} successfully remapped to function ID {}",
+                            gesture, function
+                        )),
+                        data: None,
+                    },
+                    Err(e) => ServiceResponse::Error {
+                        message: format!("Failed to configure key/gesture settings: {}", e),
+                    },
                 }
             }
             ServiceCommand::SetCustomEq { gains } => {

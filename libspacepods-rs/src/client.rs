@@ -39,6 +39,25 @@ impl SpacePodsClient {
         self.send_command(ServiceCommand::Connect { address }).await?;
         Ok(())
     }
+    pub async fn set_in_ear_detect(&mut self, enabled: bool) -> Result<()> {
+        self.send_command(ServiceCommand::SetInEarDetect { enabled }).await?;
+        Ok(())
+    }
+
+    pub async fn set_led_status(&mut self, led_on: bool) -> Result<()> {
+        self.send_command(ServiceCommand::SetLedStatus { led_on }).await?;
+        Ok(())
+    }
+
+    pub async fn set_voice_prompt(&mut self, enabled: bool) -> Result<()> {
+        self.send_command(ServiceCommand::SetVoicePrompt { enabled }).await?;
+        Ok(())
+    }
+
+    pub async fn remap_gesture(&mut self, gesture: u8, function: u8) -> Result<()> {
+        self.send_command(ServiceCommand::RemapGesture { gesture, function }).await?;
+        Ok(())
+    }
 
     pub async fn send_command(&mut self, cmd: ServiceCommand) -> Result<ServiceResponse> {
         let cmd_json = serde_json::to_string(&cmd).unwrap() + "\n";

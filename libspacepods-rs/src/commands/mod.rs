@@ -1,4 +1,6 @@
 mod anc;
+pub mod keys;
+pub use keys::KeySettingsController;
 pub(crate) mod eq;
 mod features;
 mod battery;

@@ -33,6 +33,52 @@ pub const TYPE_RESPONSE: u8 = 0x02;
 pub const MODE_OFF: u8 = 0;
 pub const MODE_ANC: u8 = 1;
 pub const MODE_TRANSPARENCY: u8 = 2;
+// Mapped Key Types (From KeyRequest.java)
+pub const KEY_LEFT_SINGLE_TAP: u8 = 1;
+pub const KEY_RIGHT_SINGLE_TAP: u8 = 2;
+pub const KEY_LEFT_DOUBLE_TAP: u8 = 3;
+pub const KEY_RIGHT_DOUBLE_TAP: u8 = 4;
+pub const KEY_LEFT_TRIPLE_TAP: u8 = 5;
+pub const KEY_RIGHT_TRIPLE_TAP: u8 = 6;
+pub const KEY_LEFT_LONG_PRESS: u8 = 7;
+pub const KEY_RIGHT_LONG_PRESS: u8 = 8;
+
+// Mapped Key Functions (From KeyRequest.java)
+pub const KEY_FUNCTION_NONE: u8 = 0;
+pub const KEY_FUNCTION_RECALL: u8 = 1;
+pub const KEY_FUNCTION_ASSISTANT: u8 = 2;
+pub const KEY_FUNCTION_PREVIOUS: u8 = 3;
+pub const KEY_FUNCTION_NEXT: u8 = 4;
+pub const KEY_FUNCTION_VOLUME_UP: u8 = 5;
+pub const KEY_FUNCTION_VOLUME_DOWN: u8 = 6;
+pub const KEY_FUNCTION_PLAY_PAUSE: u8 = 7;
+pub const KEY_FUNCTION_GAME_MODE: u8 = 8;
+pub const KEY_FUNCTION_ANC_MODE: u8 = 9;
+pub const CMD_LANGUAGE_SET: u8 = 0x23;       // LanguageRequest
+pub const CMD_CLEAR_PAIR: u8 = 0x28;         // ClearPairRecordRequest
+pub const CMD_SYNC_TIME: u8 = 0x32;          // SyncTimeRequest
+pub const CMD_AUTO_SHUTDOWN: u8 = 0x36;      // AutoShutdownRequest
+pub const CMD_SPATIAL_AUDIO: u8 = 0x38;      // SpaceAudioRequest
+pub const CMD_SOUND_EFFECT_3D: u8 = 0x39;    // SoundEffect3dRequest
+pub const CMD_HEARING_CARE: u8 = 0x3A;       // HearingCareRequest
+pub const CMD_TONE_VOLUME: u8 = 0x3B;        // ToneVolumeRequest
+pub const CMD_ADAPTIVE_VOL: u8 = 0x3C;       // AdaptiveVolumeRequest
+pub const CMD_KARAOKE_MODE: u8 = 0x3D;       // KaraokeRequest
+pub const CMD_CHAT_MODE: u8 = 0x3E;          // ChatModeRequest
+pub const CMD_LONG_ENDURANCE: u8 = 0x3F;     // LongEnduranceModeRequest
+pub const CMD_AUTO_ANSWER: u8 = 0x41;        // AutoAnswerRequest
+pub const CMD_STEP_COUNT: u8 = 0x43;         // StepCountSwitchRequest
+pub const CMD_RESET_SPORT: u8 = 0x44;        // ResetSportRequest
+// Missing Command IDs from Java requests
+pub const CMD_KEY_SETTINGS: u8 = 34;
+pub const CMD_IN_EAR_DETECT: u8 = 38;
+pub const CMD_VOICE_PROMPT: u8 = 43;
+pub const CMD_LED_SWITCH: u8 = 46;
+
+// TLV Query IDs for state synchronization (matching Bluetrum protocol standards)
+pub const ID_IN_EAR_DETECT: u8 = 0x26;
+pub const ID_VOICE_PROMPT: u8 = 0x2B;
+pub const ID_LED_SWITCH: u8 = 0x2E;
 
 // Characteristic UUIDs
 pub const UUID_WRITE: Uuid = Uuid::from_u128(0x0000ff17_0000_1000_8000_00805f9b34fb);
@@ -47,6 +93,41 @@ pub struct Packet {
     pub cmd_id: u8,
     pub msg_type: u8,
     pub payload: Vec<u8>,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum TouchGesture {
+    LeftSingleTap = 1,
+    RightSingleTap = 2,
+    LeftDoubleTap = 3,
+    RightDoubleTap = 4,
+    LeftTripleTap = 5,
+    RightTripleTap = 6,
+    LeftLongPress = 7,
+    RightLongPress = 8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum GestureFunction {
+    None = 0,
+    VoiceRecall = 1,
+    Assistant = 2,
+    PreviousTrack = 3,
+    NextTrack = 4,
+    VolumeUp = 5,
+    VolumeDown = 6,
+    PlayPause = 7,
+    GameMode = 8,
+    AncModeSwitch = 9,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum TouchSensitivity {
+    Normal = 0,
+    Low = 1,
+    High = 2,
 }
 
 impl Packet {
