@@ -1,15 +1,14 @@
 use uuid::Uuid;
 
-// Command IDs
+
 pub const CMD_HANDSHAKE: u8 = 0x27;
 pub const CMD_ANC_MODE: u8 = 0x2C;
 pub const CMD_ANC_GAIN: u8 = 0x30;
 pub const CMD_TRANS_GAIN: u8 = 0x31;
 pub const CMD_DUAL_DEVICE: u8 = 0x33;
 pub const CMD_EQ_SETTING: u8 = 0x20;
-pub const CMD_ENV_ADAPTIVE: u8 = 0x37;
+pub const CMD_ENV_ADAPTIVE: u8 = 55;
 
-// Info IDs (TLV tags)
 pub const ID_BATTERY: u8 = 0x01;
 pub const ID_ANC_MODE: u8 = 0x0C;
 pub const ID_ANC_GAIN: u8 = 0x11;
@@ -21,19 +20,17 @@ pub const ID_EQ_SETTING: u8 = 0x04;
 pub const ID_ENV_ADAPTIVE: u8 = 0x21;
 
 pub const CMD_FACTORY_RESET: u8 = 0x24;
+pub const CMD_MULTIPOINT: u8 = 0x2B;
 pub const CMD_WORK_MODE: u8 = 0x25;
 pub const CMD_FIND_DEVICE: u8 = 0x2A;
 pub const ID_WORK_MODE: u8 = 0x08;
 
-// Message types
 pub const TYPE_REQUEST: u8 = 0x01;
 pub const TYPE_RESPONSE: u8 = 0x02;
 
-// ANC modes
 pub const MODE_OFF: u8 = 0;
 pub const MODE_ANC: u8 = 1;
 pub const MODE_TRANSPARENCY: u8 = 2;
-// Mapped Key Types (From KeyRequest.java)
 pub const KEY_LEFT_SINGLE_TAP: u8 = 1;
 pub const KEY_RIGHT_SINGLE_TAP: u8 = 2;
 pub const KEY_LEFT_DOUBLE_TAP: u8 = 3;
@@ -43,7 +40,6 @@ pub const KEY_RIGHT_TRIPLE_TAP: u8 = 6;
 pub const KEY_LEFT_LONG_PRESS: u8 = 7;
 pub const KEY_RIGHT_LONG_PRESS: u8 = 8;
 
-// Mapped Key Functions (From KeyRequest.java)
 pub const KEY_FUNCTION_NONE: u8 = 0;
 pub const KEY_FUNCTION_RECALL: u8 = 1;
 pub const KEY_FUNCTION_ASSISTANT: u8 = 2;
@@ -54,33 +50,33 @@ pub const KEY_FUNCTION_VOLUME_DOWN: u8 = 6;
 pub const KEY_FUNCTION_PLAY_PAUSE: u8 = 7;
 pub const KEY_FUNCTION_GAME_MODE: u8 = 8;
 pub const KEY_FUNCTION_ANC_MODE: u8 = 9;
-pub const CMD_LANGUAGE_SET: u8 = 0x23;       // LanguageRequest
-pub const CMD_CLEAR_PAIR: u8 = 0x28;         // ClearPairRecordRequest
-pub const CMD_SYNC_TIME: u8 = 0x32;          // SyncTimeRequest
-pub const CMD_AUTO_SHUTDOWN: u8 = 0x36;      // AutoShutdownRequest
-pub const CMD_SPATIAL_AUDIO: u8 = 0x38;      // SpaceAudioRequest
-pub const CMD_SOUND_EFFECT_3D: u8 = 0x39;    // SoundEffect3dRequest
-pub const CMD_HEARING_CARE: u8 = 0x3A;       // HearingCareRequest
-pub const CMD_TONE_VOLUME: u8 = 0x3B;        // ToneVolumeRequest
-pub const CMD_ADAPTIVE_VOL: u8 = 0x3C;       // AdaptiveVolumeRequest
-pub const CMD_KARAOKE_MODE: u8 = 0x3D;       // KaraokeRequest
-pub const CMD_CHAT_MODE: u8 = 0x3E;          // ChatModeRequest
-pub const CMD_LONG_ENDURANCE: u8 = 0x3F;     // LongEnduranceModeRequest
-pub const CMD_AUTO_ANSWER: u8 = 0x41;        // AutoAnswerRequest
-pub const CMD_STEP_COUNT: u8 = 0x43;         // StepCountSwitchRequest
-pub const CMD_RESET_SPORT: u8 = 0x44;        // ResetSportRequest
-// Missing Command IDs from Java requests
+pub const CMD_LANGUAGE_SET: u8 = 0x23;
+pub const CMD_CLEAR_PAIR: u8 = 0x28;
+pub const CMD_SYNC_TIME: u8 = 0x32;
+pub const CMD_AUTO_SHUTDOWN: u8 = 0x36;
+pub const CMD_SPATIAL_AUDIO: u8 = 54;
+pub const CMD_3D_SOUND_EFFECT: u8 = 50;
+pub const CMD_HEARING_CARE: u8 = 0x3A;
+pub const CMD_TONE_VOLUME: u8 = 0x3B;
+pub const CMD_ADAPTIVE_VOL: u8 = 69;
+pub const CMD_KARAOKE_MODE: u8 = 0x3D;
+pub const CMD_CHAT_MODE: u8 = 0x3E;
+pub const CMD_LONG_ENDURANCE: u8 = 0x3F;
+pub const CMD_AUTO_ANSWER: u8 = 0x41;
+pub const CMD_STEP_COUNT: u8 = 0x43;
+pub const CMD_RESET_SPORT: u8 = 0x44;
+
 pub const CMD_KEY_SETTINGS: u8 = 34;
 pub const CMD_IN_EAR_DETECT: u8 = 38;
 pub const CMD_VOICE_PROMPT: u8 = 43;
 pub const CMD_LED_SWITCH: u8 = 46;
 
-// TLV Query IDs for state synchronization (matching Bluetrum protocol standards)
+
 pub const ID_IN_EAR_DETECT: u8 = 0x26;
 pub const ID_VOICE_PROMPT: u8 = 0x2B;
 pub const ID_LED_SWITCH: u8 = 0x2E;
 
-// Characteristic UUIDs
+
 pub const UUID_WRITE: Uuid = Uuid::from_u128(0x0000ff17_0000_1000_8000_00805f9b34fb);
 pub const UUID_NOTIFY: Uuid = Uuid::from_u128(0x0000ff18_0000_1000_8000_00805f9b34fb);
 pub const UUID_FAST_PAIR: Uuid = Uuid::from_u128(0x0000fe2c_0000_1000_8000_00805f9b34fb);
@@ -145,7 +141,7 @@ impl Packet {
             self.seq,
             self.cmd_id,
             self.msg_type,
-            0x00, // fragment
+            0x00,
             self.payload.len() as u8,
         ];
         bytes.extend(&self.payload);
@@ -165,7 +161,7 @@ impl Packet {
     }
 }
 
-// TLV Parser
+
 pub struct TlvParser<'a> {
     data: &'a [u8],
     pos: usize,

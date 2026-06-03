@@ -7,6 +7,12 @@ use tokio::signal;
 const DEFAULT_SOCKET: &str = "/tmp/spacepods.sock";
 #[cfg(windows)]
 const DEFAULT_SOCKET: &str = r"\\.\pipe\spacepods";
+use dialoguer::{theme::ColorfulTheme, Select};
+use std::time::Duration;
+use anyhow::{anyhow};
+use btleplug::api::Peripheral;
+use libspacepods::{DeviceScanner, SpaceBuds};
+use libspacepods::service::SpacePodsService;
 
 #[derive(Parser)]
 #[command(author, version, about = "SpacePods - Control your SpaceBuds", long_about = None)]
@@ -28,7 +34,6 @@ enum Commands {
     /// Start interactive CLI (requires service)
     Cli,
 
-    /// Execute a single command (requires service)
     Exec {
         #[command(subcommand)]
         exec_cmd: ExecCommands,
@@ -68,7 +73,6 @@ enum ExecCommands {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-
     let socket_path = cli.socket.unwrap_or_else(|| PathBuf::from(DEFAULT_SOCKET));
 
     match cli.command {
@@ -133,7 +137,50 @@ async fn main() -> Result<()> {
         }
     }
 }
+pub async fn select_and_connect_buds() -> anyhow::Result<SpaceBuds> {
+    println!("\x1b[1;36mScanning for nearby SpacePods (Service filters: FF17/FE2C)...\x1b[0m");
 
+    let peripherals = DeviceScanner::scan_devices(Duration::from_secs(3)).await
+        .context("Failed while scanning for BLE peripherals")?;
+
+    if peripherals.is_empty() {
+        return Err(anyhow!("No compatible SpacePods found in the area. Make sure they are powered and in pairing mode."));
+    }
+
+    let mut device_options = Vec::new();
+    let mut item_labels = Vec::new();
+
+    for peripheral in peripherals {
+        if let Ok(Some(props)) = peripheral.properties().await {
+            let name = props.local_name.unwrap_or_else(|| "Unknown SpaceBuds".to_string());
+            let address = peripheral.address().to_string();
+            item_labels.push(format!("{} [{}]", name, address));
+            device_options.push(address);
+        }
+    }
+
+    if item_labels.is_empty() {
+        return Err(anyhow!("Found BLE devices, but could not read valid properties/addresses."));
+    }
+
+    println!("\x1b[1;33mMultiple space devices detected in range! Please pick yours:\x1b[0m");
+    let selection = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("Select target device to tie background daemon service:")
+        .items(&item_labels)
+        .default(0)
+        .interact_opt()?;
+
+    match selection {
+        Some(index) => {
+            let chosen_address = &device_options[index];
+            println!("\x1b[1;32mTarget locked to MAC: {}. Instantiating safe gateway...\x1b[0m", chosen_address);
+
+            let buds = SpaceBuds::with_address(Some(chosen_address.clone())).await?;
+            Ok(buds)
+        }
+        None => Err(anyhow!("Selection cancelled by execution environment.")),
+    }
+}
 fn print_status(status: &libspacepods::service::DeviceStatus) {
     println!("SpacePods Status:");
     println!("  Connected: {}", if status.connected { "✓" } else { "✗" });

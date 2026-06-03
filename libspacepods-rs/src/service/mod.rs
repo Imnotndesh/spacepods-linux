@@ -6,6 +6,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use btleplug::api::Peripheral;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use crate::commands::keys::KeySettingsController;
+use crate::commands::BatteryController;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{broadcast, Mutex, RwLock};
 use tokio::time;
@@ -48,6 +50,8 @@ pub enum ServiceCommand {
 
     #[serde(rename = "dual")]
     SetDualDevice { enabled: bool },
+    #[serde(rename = "set_target")]
+    SetTargetAddress { address: String },
 
     #[serde(rename = "subscribe")]
     Subscribe,
@@ -86,6 +90,7 @@ pub enum ServiceCommand {
 
     #[serde(rename = "voice_prompt")]
     SetVoicePrompt { enabled: bool },
+    SetGesture { gesture_type: u8, action: u8 },
 
     #[serde(rename = "remap_gesture")]
     RemapGesture { gesture: u8, function: u8 },
@@ -461,10 +466,8 @@ impl SpacePodsService {
                 match buds.features().set_in_ear_detect(enabled).await {
                     Ok(_) => {
                         tokio::spawn({
-                            let buds = buds.clone();
-                            let status = status.clone();
                             async move {
-                                time::sleep(time::Duration::from_millis(200)).await;
+                                time::sleep(Duration::from_millis(200)).await;
                             }
                         });
                         ServiceResponse::Success {
@@ -483,6 +486,32 @@ impl SpacePodsService {
                         data: None,
                     },
                     Err(e) => ServiceResponse::Error { message: format!("Failed to change LED status: {}", e) },
+                }
+            }
+            ServiceCommand::SetTargetAddress { address } => {
+                match buds.update_target_address(address.clone()).await {
+                    Ok(_) => {
+                        ServiceResponse::Success {
+                            message: Some(format!("Daemon socket successfully updated target to {}", address)),
+                            data: None,
+                        }
+                    }
+                    Err(e) => ServiceResponse::Error {
+                        message: format!("Daemon connection migration failed: {}", e),
+                    },
+                }
+            }
+            ServiceCommand::SetGesture { gesture_type, action } => {
+                let keys_controller = KeySettingsController::new(buds.clone());
+
+                match keys_controller.configure_key(gesture_type, action).await {
+                    Ok(_) => ServiceResponse::Success {
+                        message: Some("Gesture remapped successfully".to_string()),
+                        data: None,
+                    },
+                    Err(e) => ServiceResponse::Error {
+                        message: format!("Failed to remap gesture: {}", e),
+                    },
                 }
             }
 
@@ -534,31 +563,38 @@ impl SpacePodsService {
                     Err(e) => ServiceResponse::Error { message: format!("Failed to set power sleep threshold: {}", e) },
                 }
             }
+            // ServiceCommand::SetDualDevice { enabled } => {
+            //     match buds.features().set_dual_device(enabled).await {
+            //         Ok(_) => {
+            //             {
+            //                 let mut status_lock = status.write().await;
+            //                 status_lock.dual_device = Option::from(enabled);
+            //             }
+            //             ServiceResponse::Success {
+            //                 message: Some(format!("Dual device pairing changed to {}", enabled)),
+            //                 data: None,
+            //             }
+            //         }
+            //         Err(e) => ServiceResponse::Error {
+            //             message: format!("Dual device execution failed: {}", e),
+            //         },
+            //     }
+            // }
 
             ServiceCommand::SetSpatialAudio { enabled } => {
                 match buds.features().set_spatial_audio(enabled).await {
                     Ok(_) => {
-                        // Spawn a fast thread loop to fetch verified status from hardware and cache it
-                        tokio::spawn({
-                            let buds = buds.clone();
-                            let status = status.clone();
-                            async move {
-                                tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-                                if let Ok(Some(is_active)) = buds.features().get_spatial_audio().await {
-                                    let mut status_lock = status.write().await;
-                                    // Make sure to add `spatial_audio: bool` to your DeviceStatus struct layout
-                                    status_lock.spatial_audio = is_active;
-                                }
-                            }
-                        });
-
+                        {
+                            let mut status_lock = status.write().await;
+                            status_lock.spatial_audio = enabled;
+                        }
                         ServiceResponse::Success {
-                            message: Some(format!("Spatial audio matrix toggled to {}", enabled)),
+                            message: Some(format!("Spatial audio successfully updated to {}", enabled)),
                             data: None,
                         }
                     }
                     Err(e) => ServiceResponse::Error {
-                        message: format!("Failed to configure spatial sound tracking: {}", e),
+                        message: format!("Spatial audio execution failed: {}", e),
                     },
                 }
             }
@@ -737,15 +773,22 @@ impl SpacePodsService {
                 }
             }
 
-            
+
             ServiceCommand::GetBattery => {
-                let status = status.read().await.clone();
-                let data = serde_json::json!({
-                    "battery_left": status.battery_left,
-                    "battery_right": status.battery_right,
-                    "battery_case": status.battery_case,
-                });
-                ServiceResponse::Success { message: None, data: Some(data) }
+                let battery_controller = BatteryController::new(buds.clone());
+
+                match battery_controller.get_levels().await {
+                    Ok(info) => ServiceResponse::Success {
+                        message: Some(format!(
+                            "Left: {:?}%, Right: {:?}%, Case: {:?}%",
+                            info.0, info.1, info.2
+                        )),
+                        data: None,
+                    },
+                    Err(e) => ServiceResponse::Error {
+                        message: format!("Failed to read battery: {}", e),
+                    },
+                }
             }
 
            ServiceCommand::Connect { address } => {

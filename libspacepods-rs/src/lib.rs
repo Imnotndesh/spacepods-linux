@@ -53,9 +53,43 @@ impl SpaceBuds {
                 return Ok(());
             }
         }
-        let peripheral = DeviceScanner::find_device(Duration::from_secs(10)).await?;
-        let conn = BleConnection::new(peripheral).await?;
-        *conn_lock = Some(conn);
+
+
+        let peripheral = if let Some(ref target_addr) = self.address {
+            println!("[Daemon] Targeting specific hardware address: {}", target_addr);
+            DeviceScanner::find_specific_device(Duration::from_secs(3), target_addr).await?
+        } else {
+
+            println!("[Daemon] No explicit target address specified, picking first responder...");
+            DeviceScanner::find_device(Duration::from_secs(3)).await?
+        };
+
+        let new_conn = BleConnection::new(peripheral).await?;
+        *conn_lock = Some(new_conn);
+        Ok(())
+    }
+    pub async fn update_target_address(&self, address: String) -> Result<()> {
+        let mut conn_lock = self.conn.lock().await;
+        if let Some(conn) = conn_lock.take() {
+            let _ = conn.disconnect().await;
+        }
+        drop(conn_lock);
+
+        let targeted_instance = Self {
+            conn: Arc::new(Mutex::new(None)),
+            address: Some(address),
+            max_retries: self.max_retries,
+        };
+
+
+        targeted_instance.connect().await?;
+
+        let mut current_conn = self.conn.lock().await;
+        let mut targeted_conn = targeted_instance.conn.lock().await;
+        if let Some(new_ble_link) = targeted_conn.take() {
+            *current_conn = Some(new_ble_link);
+        }
+
         Ok(())
     }
 

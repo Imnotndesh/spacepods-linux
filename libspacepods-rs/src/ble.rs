@@ -231,6 +231,15 @@ impl DeviceScanner {
         }
         Err(SpaceBudsError::DeviceNotFound)
     }
+    pub async fn find_specific_device(timeout: Duration, target_address: &str) -> Result<Peripheral> {
+        let peripherals = Self::scan_devices(timeout).await?;
+        for peripheral in peripherals {
+            if peripheral.address().to_string().to_lowercase() == target_address.to_lowercase() {
+                return Ok(peripheral);
+            }
+        }
+        Err(SpaceBudsError::DeviceNotFound)
+    }
 
     pub async fn scan_devices(timeout: Duration) -> Result<Vec<Peripheral>> {
         let manager = Manager::new().await?;

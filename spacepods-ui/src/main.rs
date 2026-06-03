@@ -25,6 +25,8 @@ pub enum ClientCommand {
     ReconnectDevice,
     RefreshBattery,
     ConnectDevice(String),
+    SetSpatialAudio(bool),
+    SetMultiDevice(bool),
 }
 
 fn main() -> glib::ExitCode {
@@ -68,6 +70,25 @@ fn main() -> glib::ExitCode {
                         ClientCommand::FindDevice(state) => {
                             if let Err(e) = c.find_device(state).await {
                                 canal_log_error("find_device", e);
+                            }
+                        }
+                        ClientCommand::SetSpatialAudio(enabled) => {
+                            let client_opt = worker_shared_client.lock().await;
+                            if let Some(client_arc) = &*client_opt {
+                                let mut client = client_arc.lock().await;
+                                if let Err(e) = client.set_spatial_audio(enabled).await {
+                                    canal_log_error("SetSpatialAudio", e);
+                                }
+                            }
+                        }
+
+                        ClientCommand::SetMultiDevice(enabled) => {
+                            let client_opt = worker_shared_client.lock().await;
+                            if let Some(client_arc) = &*client_opt {
+                                let mut client = client_arc.lock().await;
+                                if let Err(e) = client.set_multi_device(enabled).await {
+                                    canal_log_error("SetMultiDevice", e);
+                                }
                             }
                         }
                         ClientCommand::FactoryReset => {

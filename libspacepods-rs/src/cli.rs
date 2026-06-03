@@ -12,8 +12,11 @@ use rustyline::history::FileHistory;
 use std::borrow::Cow::{self, Borrowed, Owned};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use rustyline_derive::{Completer, Helper, Hinter, Validator};
 use tokio::sync::Mutex;
+use crate::service::ServiceCommand;
+use dialoguer::{theme::ColorfulTheme, Select};
 
 #[derive(Completer, Helper, Hinter, Validator)]
 struct CliHelper {
@@ -28,6 +31,9 @@ struct CliHelper {
 }
 
 impl Highlighter for CliHelper {
+    fn highlight<'l>(&self, line: &'l str, pos: usize) -> Cow<'l, str> {
+        self.highlighter.highlight(line, pos)
+    }
     fn highlight_prompt<'b, 's: 'b, 'p: 'b>(
         &'s self,
         prompt: &'p str,
@@ -42,9 +48,6 @@ impl Highlighter for CliHelper {
     fn highlight_hint<'h>(&self, hint: &'h str) -> Cow<'h, str> {
         Owned("\x1b[1m".to_string() + hint + "\x1b[m")
     }
-    fn highlight<'l>(&self, line: &'l str, pos: usize) -> Cow<'l, str> {
-        self.highlighter.highlight(line, pos)
-    }
     fn highlight_char(&self, line: &str, pos: usize, kind: rustyline::highlight::CmdKind) -> bool {
         self.highlighter.highlight_char(line, pos, kind)
     }
@@ -53,6 +56,7 @@ impl Highlighter for CliHelper {
 pub struct InteractiveCli {
     client: Arc<Mutex<SpacePodsClient>>,
     status: Arc<tokio::sync::RwLock<DeviceStatus>>,
+    active_device_selected: AtomicBool,
 }
 
 impl InteractiveCli {
@@ -68,6 +72,7 @@ impl InteractiveCli {
         Ok(Self {
             client,
             status: Arc::new(tokio::sync::RwLock::new(status)),
+            active_device_selected: Default::default(),
         })
     }
 
@@ -91,6 +96,10 @@ impl InteractiveCli {
         rl.bind_sequence(KeyEvent::alt('n'), EventHandler::Simple(Cmd::HistorySearchForward));
         rl.bind_sequence(KeyEvent::alt('p'), EventHandler::Simple(Cmd::HistorySearchBackward));
 
+        println!("\x1b[1;36mSpacePods Interactive Shell Initialization Completed.\x1b[0m");
+        println!("Type \x1b[1;33mscan\x1b[0m to look for devices and bind your session.");
+        println!();
+
         if rl.load_history(".spacepods_history").is_err() {
             println!("No command history found");
         }
@@ -101,8 +110,6 @@ impl InteractiveCli {
         match self.check_connection().await {
             Ok(true) => {
                 println!("Service connection: \x1b[1;32m✓\x1b[0m");
-                self.refresh_status().await?;
-                self.print_status().await;
             }
             _ => {
                 println!("Service connection: \x1b[1;31m✗\x1b[0m");
@@ -111,7 +118,12 @@ impl InteractiveCli {
         }
 
         loop {
-            let prompt = format!("\x1b[1;34mspacepods>\x1b[0m ");
+            let prompt = if self.active_device_selected.load(Ordering::SeqCst) {
+                "\x1b[1;32mspacepods (connected)>\x1b[0m ".to_string()
+            } else {
+                "\x1b[1;31mspacepods (no-target)>\x1b[0m ".to_string()
+            };
+
             if let Some(helper) = rl.helper_mut() {
                 helper.colored_prompt = prompt.clone();
             }
@@ -165,156 +177,203 @@ impl InteractiveCli {
         }
     }
 
-    async fn handle_command(&self, line: &str) -> Result<bool> {
+    pub async fn handle_command(&self, line: &str) -> Result<bool> {
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.is_empty() {
             return Ok(false);
         }
 
-        match parts[0] {
-            "exit" | "quit" => return Ok(true),
+        let cmd = parts[0];
 
-            "help" => {
-                self.print_help();
+        if cmd == "exit" || cmd == "quit" {
+            return Ok(true);
+        }
+        if cmd == "help" {
+            self.print_help();
+            return Ok(false);
+        }
+
+        if cmd == "scan" {
+            println!("\x1b[1;36mQuerying background daemon service to scan BLE space (3s)...\x1b[0m");
+
+            let mut client_lock = self.client.lock().await;
+            match client_lock.scan(3).await {
+                Ok(devices) => {
+                    if devices.is_empty() {
+                        println!("\x1b[1;31mNo compatible SpacePods devices detected nearby.\x1b[0m");
+                        return Ok(false);
+                    }
+
+                    let item_labels: Vec<String> = devices.iter()
+                        .map(|(name, addr)| format!("{} \x1b[90m[{}]\x1b[0m", name, addr))
+                        .collect();
+
+                    println!("\x1b[1;33mNearby SpacePods detected. Use Up/Down arrows to select yours:\x1b[0m");
+                    let selection = Select::with_theme(&ColorfulTheme::default())
+                        .with_prompt("Target Device Selection")
+                        .items(&item_labels)
+                        .default(0)
+                        .interact_opt()?;
+
+                    if let Some(idx) = selection {
+                        let (name, address) = &devices[idx];
+                        println!("Instructing daemon to migrate connection endpoint to {}...", address);
+
+                        match client_lock.send_command(ServiceCommand::SetTargetAddress { address: address.clone() }).await {
+                            Ok(_) => {
+                                self.active_device_selected.store(true, Ordering::SeqCst);
+                                println!("\x1b[1;32m✔ CLI Session Linked to {} [{}]. Controls Unlocked!\x1b[0m", name, address);
+
+
+                                drop(client_lock);
+                                let _ = self.refresh_status().await;
+                            }
+                            Err(e) => println!("\x1b[1;31mDaemon connection update rejected: {}\x1b[0m", e),
+                        }
+                    } else {
+                        println!("\x1b[1;33mSelection canceled.\x1b[0m");
+                    }
+                }
+                Err(e) => println!("\x1b[1;31mBLE Scanning procedure failed: {}\x1b[0m", e),
             }
+            return Ok(false);
+        }
 
+
+        if !self.active_device_selected.load(Ordering::SeqCst) {
+            println!("\x1b[1;31m[!] Access Denied: No targeted SpaceBuds assigned for this session.\x1b[0m");
+            println!("    You must execute the \x1b[1;33mscan\x1b[0m command and choose your buds first.");
+            return Ok(false);
+        }
+
+
+        match cmd {
             "status" => {
                 self.refresh_status().await?;
                 self.print_status().await;
             }
-
-            "watch" => {
-                self.watch_status().await?;
-            }
-
             "anc" => {
                 if parts.len() < 2 {
                     println!("Usage: anc <on|off|transparency>");
                     return Ok(false);
                 }
                 let mode = parts[1];
-                let mut client = self.client.lock().await;
-                client.set_anc_mode(mode).await?;
-                drop(client);
-                println!("\x1b[1;32m✓\x1b[0m ANC mode set to: {}", mode);
-                self.refresh_status().await?;
+                let mut client_lock = self.client.lock().await;
+                if let Err(e) = client_lock.set_anc_mode(mode).await {
+                    println!("Failed to set ANC mode: {}", e);
+                }
             }
-
             "level" => {
                 if parts.len() < 2 {
                     println!("Usage: level <0-15>");
                     return Ok(false);
                 }
-                let level: u8 = parts[1].parse()?;
-                let mut client = self.client.lock().await;
-                client.set_level(level).await?;
-                drop(client);
-                println!("\x1b[1;32m✓\x1b[0m Level set to: {}", level);
-                self.refresh_status().await?;
+                if let Ok(lvl) = parts[1].parse::<u8>() {
+                    let mut client_lock = self.client.lock().await;
+                    if let Err(e) = client_lock.set_level(lvl).await {
+                        println!("Failed to set level: {}", e);
+                    }
+                }
             }
-
+            "watch" => {
+                println!("\x1b[1;35mStarting live device event watch loop...\x1b[0m");
+                println!("\x1b[90m────────────────────────────────────────────────────────────────\x1b[0m");
+                if let Err(e) = self.watch_status().await {
+                    println!("\x1b[1;31mWatch loop encountered an error: {}\x1b[0m", e);
+                }
+            }
             "eq" => {
                 if parts.len() < 2 {
-                    println!("Usage: eq <preset_id>");
-                    println!("\nStandard Presets:");
-                    for (id, name, desc, _) in EQ_PRESETS.iter() {
-                        println!("  \x1b[1;33m{:<2}\x1b[0m: {} - {}", id, name, desc);
-                    }
-                    println!("\n\x1b[1;36mSpecial Presets:\x1b[0m");
-                    for (id, name, desc, _) in SPECIAL_PRESETS.iter() {
-                        println!("  \x1b[1;33m{:<2}\x1b[0m: {} - {}", id, name, desc);
-                    }
-                    println!("\nExample: eq 1  (sets Bass Boost preset)");
+                    println!("Usage: eq <preset_index_or_name> (Type 'eq list' to view available styles)");
                     return Ok(false);
                 }
-                let preset: u8 = parts[1].parse()?;
-                let mut client = self.client.lock().await;
-                client.set_eq_preset(preset).await?;
-                drop(client);
-                self.refresh_status().await?;
-                let status = self.status.read().await;
-                let preset_name = status.eq_name.as_deref().unwrap_or("Unknown");
-                println!("\x1b[1;32m✓\x1b[0m EQ preset set to: {} ({})", preset, preset_name);
-            }
 
+                if parts[1] == "list" {
+                    println!("\x1b[1;34m--- Standard EQ Presets ---\x1b[0m");
+                    for (i, name) in EQ_PRESETS.iter().enumerate() {
+                        println!("  [{:?}] {:?}", i, name);
+                    }
+                    println!("\x1b[1;34m--- Special EQ Presets ---\x1b[0m");
+                    for (i, name) in SPECIAL_PRESETS.iter().enumerate() {
+                        println!("  [{:?}] {:?}", i + EQ_PRESETS.len(), name);
+                    }
+                    return Ok(false);
+                }
+
+                let target_preset: Option<u8> = if let Ok(idx) = parts[1].parse::<u8>() {
+                    if (idx as usize) < (EQ_PRESETS.len() + SPECIAL_PRESETS.len()) {
+                        Some(idx)
+                    } else {
+                        None
+                    }
+                } else {
+                    let search_term = parts[1].to_lowercase();
+
+                    if let Some(pos) = EQ_PRESETS.iter().position(|&s| s.1.to_lowercase() == search_term) {
+                        Some(pos as u8)
+                    } else if let Some(pos) = SPECIAL_PRESETS.iter().position(|&s| s.1.to_lowercase() == search_term) {
+                        Some((pos + EQ_PRESETS.len()) as u8)
+                    } else {
+                        None
+                    }
+                };
+
+                match target_preset {
+                    Some(preset_id) => {
+                        let label = if (preset_id as usize) < EQ_PRESETS.len() {
+                            EQ_PRESETS[preset_id as usize]
+                        } else {
+                            SPECIAL_PRESETS[(preset_id as usize) - EQ_PRESETS.len()]
+                        };
+
+                        println!("Switching equalizer signature profile matrix to {:?} (ID: {:?})...", label, preset_id);
+                        let mut client_lock = self.client.lock().await;
+                        if let Err(e) = client_lock.set_eq_preset(preset_id).await {
+                            println!("Failed to push EQ preset changes: {}", e);
+                        } else {
+                            println!("\x1b[1;32mEqualizer profile shifted successfully.\x1b[0m");
+                        }
+                    }
+                    None => println!("\x1b[1;31mError: Target index or profile string name not recognized. Type 'eq list' for help.\x1b[0m"),
+                }
+            }
             "adaptive" => {
                 if parts.len() < 2 {
                     println!("Usage: adaptive <on|off>");
                     return Ok(false);
                 }
-                let enable = parts[1] == "on";
-                let mut client = self.client.lock().await;
-                client.set_adaptive_anc(enable).await?;
-                drop(client);
-                println!("\x1b[1;32m✓\x1b[0m Adaptive ANC: {}", if enable { "ON" } else { "OFF" });
-                self.refresh_status().await?;
+                let enabled = parts[1] == "on";
+                let mut client_lock = self.client.lock().await;
+                if let Err(e) = client_lock.set_adaptive_anc(enabled).await {
+                    println!("Failed to toggle adaptive feature: {}", e);
+                }
             }
-
             "dual" => {
                 if parts.len() < 2 {
                     println!("Usage: dual <on|off>");
                     return Ok(false);
                 }
-                let enable = parts[1] == "on";
-                let mut client = self.client.lock().await;
-                client.set_dual_device(enable).await?;
-                drop(client);
-                println!("\x1b[1;32m✓\x1b[0m Dual Device: {}", if enable { "ON" } else { "OFF" });
-                self.refresh_status().await?;
-            }
-
-            // --- New commands ---
-            "factoryreset" => {
-                println!("⚠️  This will reset your earbuds to factory defaults. Continue? [y/N]");
-                let mut input = String::new();
-                std::io::stdin().read_line(&mut input)?;
-                if input.trim().eq_ignore_ascii_case("y") {
-                    let mut client = self.client.lock().await;
-                    client.factory_reset().await?;
-                    println!("\x1b[1;32m✓\x1b[0m Factory reset command sent. Earbuds will restart.");
-                } else {
-                    println!("Cancelled.");
+                let enabled = parts[1] == "on";
+                let mut client_lock = self.client.lock().await;
+                if let Err(e) = client_lock.set_multi_device(enabled).await {
+                    println!("Failed to switch multipoint state: {}", e);
                 }
             }
-
-            "find" => {
-                if parts.len() < 2 {
-                    println!("Usage: find <on|off>");
+            "remap" => {
+                if parts.len() < 3 {
+                    println!("Usage: remap <gesture_type_id> <action_id>");
                     return Ok(false);
                 }
-                let enable = parts[1] == "on";
-                let mut client = self.client.lock().await;
-                client.find_device(enable).await?;
-                drop(client);
-                if enable {
-                    println!("\x1b[1;32m✓\x1b[0m Find device started (earbuds will beep)");
-                } else {
-                    println!("\x1b[1;32m✓\x1b[0m Find device stopped");
+                if let (Ok(g_type), Ok(action)) = (parts[1].parse::<u8>(), parts[2].parse::<u8>()) {
+                    let mut client_lock = self.client.lock().await;
+                    if let Err(e) = client_lock.remap_gesture(g_type, action).await {
+                        println!("Failed to update touch controls: {}", e);
+                    } else {
+                        println!("Sent gesture remapping request successfully.");
+                    }
                 }
             }
-
-            "gamemode" => {
-                if parts.len() < 2 {
-                    println!("Usage: gamemode <on|off>");
-                    return Ok(false);
-                }
-                let enable = parts[1] == "on";
-                let mut client = self.client.lock().await;
-                client.set_work_mode(enable).await?;
-                drop(client);
-                println!("\x1b[1;32m✓\x1b[0m Game mode: {}", if enable { "ON" } else { "OFF" });
-                self.refresh_status().await?;
-            }
-
-            "clear" => {
-                print!("\x1b[2J\x1b[1;1H");
-                std::io::Write::flush(&mut std::io::stdout())?;
-            }
-
-            _ => {
-                println!("Unknown command: '{}'", parts[0]);
-                println!("Type 'help' for available commands");
-            }
+            _ => println!("Unknown command. Type 'help' for available choices."),
         }
 
         Ok(false)

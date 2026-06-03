@@ -54,8 +54,8 @@ impl SpacePodsClient {
         Ok(())
     }
 
-    pub async fn remap_gesture(&mut self, gesture: u8, function: u8) -> Result<()> {
-        self.send_command(ServiceCommand::RemapGesture { gesture, function }).await?;
+    pub async fn remap_gesture(&mut self, gesture_type: u8, action: u8) -> Result<()> {
+        self.send_command(ServiceCommand::SetGesture { gesture_type, action }).await?;
         Ok(())
     }
 
@@ -88,15 +88,11 @@ impl SpacePodsClient {
         }
     }
 
-    pub async fn get_battery(&mut self) -> Result<(Option<u8>, Option<u8>, Option<u8>)> {
+    pub async fn get_battery(&mut self) -> Result<String> {
         match self.send_command(ServiceCommand::GetBattery).await? {
-            ServiceResponse::Success { data: Some(data), .. } => {
-                let left  = data["battery_left"].as_u64().map(|v| v as u8);
-                let right = data["battery_right"].as_u64().map(|v| v as u8);
-                let case_ = data["battery_case"].as_u64().map(|v| v as u8);
-                Ok((left, right, case_))
-            }
-            _ => Ok((None, None, None)),
+            ServiceResponse::Success { message, .. } => Ok(message.unwrap_or_default()),
+            ServiceResponse::Error { message } => Err(SpaceBudsError::CommandFailed(message)),
+            _ => Err(SpaceBudsError::CommandFailed("Unexpected response".to_string())),
         }
     }
     pub async fn set_custom_eq(&mut self, gains: [i8; 7]) -> Result<()> {
@@ -135,8 +131,11 @@ impl SpacePodsClient {
     }
 
     pub async fn set_adaptive_anc(&mut self, enabled: bool) -> Result<()> {
-        self.send_command(ServiceCommand::SetAdaptiveAnc { enabled }).await?;
-        Ok(())
+        match self.send_command(ServiceCommand::SetAdaptiveAnc { enabled }).await? {
+            ServiceResponse::Success { .. } => Ok(()),
+            ServiceResponse::Error { message } => Err(SpaceBudsError::CommandFailed(message)),
+            _ => Err(SpaceBudsError::CommandFailed("Unexpected response shape".to_string())),
+        }
     }
 
     pub async fn set_dual_device(&mut self, enabled: bool) -> Result<()> {
@@ -152,6 +151,23 @@ impl SpacePodsClient {
     pub async fn find_device(&mut self, enable: bool) -> Result<()> {
         self.send_command(ServiceCommand::FindDevice { enable }).await?;
         Ok(())
+    }
+    pub async fn run_device_scan(&mut self, timeout_secs: u64) -> Result<Vec<(String, String)>> {
+        match self.send_command(ServiceCommand::Scan { timeout_secs }).await? {
+            ServiceResponse::ScanResults { devices } => {
+                Ok(devices.into_iter().map(|d| (d.name, d.address)).collect())
+            }
+            ServiceResponse::Error { message } => Err(SpaceBudsError::CommandFailed(message)),
+            _ => Err(SpaceBudsError::CommandFailed("Unexpected scan response format".to_string())),
+        }
+    }
+
+    pub async fn set_active_target(&mut self, address: String) -> Result<()> {
+        match self.send_command(ServiceCommand::SetTargetAddress { address }).await? {
+            ServiceResponse::Success { .. } => Ok(()),
+            ServiceResponse::Error { message } => Err(SpaceBudsError::CommandFailed(message)),
+            _ => Err(SpaceBudsError::CommandFailed("Unexpected binding response format".to_string())),
+        }
     }
 
     pub async fn set_work_mode(&mut self, game_mode: bool) -> Result<()> {
@@ -194,6 +210,21 @@ impl SpacePodsClient {
             }
         });
         Ok(rx)
+    }
+    pub async fn set_spatial_audio(&mut self, enabled: bool) -> Result<()> {
+        match self.send_command(ServiceCommand::SetSpatialAudio { enabled }).await? {
+            ServiceResponse::Success { .. } => Ok(()),
+            ServiceResponse::Error { message } => Err(SpaceBudsError::CommandFailed(message)),
+            _ => Err(SpaceBudsError::CommandFailed("Unexpected server response shape".to_string())),
+        }
+    }
+
+    pub async fn set_multi_device(&mut self, enabled: bool) -> Result<()> {
+        match self.send_command(ServiceCommand::SetDualDevice { enabled }).await? {
+            ServiceResponse::Success { .. } => Ok(()),
+            ServiceResponse::Error { message } => Err(SpaceBudsError::CommandFailed(message)),
+            _ => Err(SpaceBudsError::CommandFailed("Unexpected server response shape".to_string())),
+        }
     }
 
     pub async fn unsubscribe(&mut self) -> Result<()> {
