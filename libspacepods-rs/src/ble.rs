@@ -24,6 +24,13 @@ pub struct BleConnection {
 impl BleConnection {
     pub async fn new(peripheral: Peripheral) -> Result<Self> {
         let peripheral = Arc::new(peripheral);
+        if !peripheral.is_connected().await.unwrap_or(false) {
+            peripheral.connect().await?;
+        }
+        if peripheral.services().is_empty() {
+            peripheral.discover_services().await?;
+            time::sleep(Duration::from_millis(500)).await;
+        }
         peripheral.connect().await?;
         peripheral.discover_services().await?;
         time::sleep(Duration::from_millis(500)).await;
@@ -232,6 +239,11 @@ impl DeviceScanner {
         Err(SpaceBudsError::DeviceNotFound)
     }
     pub async fn find_specific_device(timeout: Duration, target_address: &str) -> Result<Peripheral> {
+        if let Ok(p) = Self::find_already_connected(Some(target_address)).await {
+            println!("[BLE] Reusing existing OS connection for {}", target_address);
+            return Ok(p);
+        }
+
         let peripherals = Self::scan_devices(timeout).await?;
         for peripheral in peripherals {
             if peripheral.address().to_string().to_lowercase() == target_address.to_lowercase() {
@@ -240,26 +252,123 @@ impl DeviceScanner {
         }
         Err(SpaceBudsError::DeviceNotFound)
     }
-
-    pub async fn scan_devices(timeout: Duration) -> Result<Vec<Peripheral>> {
+    pub async fn find_already_connected(target_address: Option<&str>) -> Result<Peripheral> {
         let manager = Manager::new().await?;
         let adapters = manager.adapters().await?;
         let adapter = adapters.into_iter().next().ok_or(SpaceBudsError::DeviceNotFound)?;
-        adapter.start_scan(ScanFilter::default()).await?;
-        time::sleep(timeout).await;
         let peripherals = adapter.peripherals().await?;
-        let mut found = Vec::new();
+
         for peripheral in peripherals {
-            if let Ok(Some(properties)) = peripheral.properties().await {
-                for uuid in &properties.services {
-                    let uuid_str = uuid.to_string().to_lowercase();
-                    if uuid_str.contains("ff17") || uuid_str.contains("fe2c") {
+            if !peripheral.is_connected().await.unwrap_or(false) {
+                continue;
+            }
+
+            let address = peripheral.address().to_string();
+
+            if let Some(target) = target_address {
+                if address.to_lowercase() != target.to_lowercase() {
+                    continue;
+                }
+            }
+
+            if peripheral.services().is_empty() {
+                peripheral.discover_services().await?;
+            }
+
+            let chars = peripheral.characteristics();
+            let has_write = chars.iter().any(|c| c.uuid == UUID_WRITE);
+            let has_notify = chars.iter().any(|c| c.uuid == UUID_NOTIFY);
+
+            if has_write && has_notify {
+                return Ok(peripheral);
+            }
+
+            if let Ok(Some(props)) = peripheral.properties().await {
+                let uuids: Vec<String> = props.services.iter()
+                    .map(|u| u.to_string().to_lowercase())
+                    .collect();
+                if uuids.iter().any(|u| u.contains("ff17") || u.contains("fe2c")) {
+                    return Ok(peripheral);
+                }
+            }
+        }
+
+        Err(SpaceBudsError::DeviceNotFound)
+    }
+
+    pub async fn scan_devices(timeout: Duration) -> Result<Vec<Peripheral>> {
+        use btleplug::api::CentralEvent;
+        use futures::StreamExt;
+
+        let manager = Manager::new().await?;
+        let adapters = manager.adapters().await?;
+        let adapter = adapters.into_iter().next()
+            .ok_or(SpaceBudsError::DeviceNotFound)?;
+
+        let mut events = adapter.events().await?;
+
+        adapter.start_scan(ScanFilter::default()).await?;
+
+        let mut found_ids = std::collections::HashSet::new();
+        let mut found = Vec::new();
+        let deadline = tokio::time::Instant::now() + timeout;
+
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+
+            match tokio::time::timeout(remaining, events.next()).await {
+                Ok(Some(CentralEvent::DeviceDiscovered(id)))
+                | Ok(Some(CentralEvent::DeviceUpdated(id))) => {
+                    if found_ids.contains(&id) {
+                        continue;
+                    }
+
+                    if let Ok(peripheral) = adapter.peripheral(&id).await {
+                        if let Ok(Some(props)) = peripheral.properties().await {
+                            let uuids: Vec<String> = props.services.iter()
+                                .map(|u| u.to_string().to_lowercase())
+                                .collect();
+
+                            if uuids.iter().any(|u| u.contains("ff17") || u.contains("fe2c")) {
+                                println!("[BLE] Discovered SpacePods: {} [{}]",
+                                         props.local_name.as_deref().unwrap_or("Unknown"),
+                                         peripheral.address()
+                                );
+                                found_ids.insert(id);
+                                found.push(peripheral);
+                            }
+                        }
+                    }
+                }
+                Ok(Some(_)) => continue,
+                Ok(None) => break,
+                Err(_) => break,
+            }
+        }
+
+        adapter.stop_scan().await?;
+        let cached = adapter.peripherals().await.unwrap_or_default();
+        for peripheral in cached {
+            let id = peripheral.id();
+            if found_ids.contains(&id) {
+                continue;
+            }
+            if peripheral.is_connected().await.unwrap_or(false) {
+                if let Ok(Some(props)) = peripheral.properties().await {
+                    let uuids: Vec<String> = props.services.iter()
+                        .map(|u| u.to_string().to_lowercase())
+                        .collect();
+                    if uuids.iter().any(|u| u.contains("ff17") || u.contains("fe2c")) {
+                        found_ids.insert(id);
                         found.push(peripheral);
-                        break;
                     }
                 }
             }
         }
+
         Ok(found)
     }
 

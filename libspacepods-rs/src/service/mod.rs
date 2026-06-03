@@ -246,38 +246,56 @@ impl SpacePodsService {
         subscribers: Arc<Mutex<Vec<tokio::sync::mpsc::UnboundedSender<DeviceStatus>>>>,
     ) {
         let mut reconnect_delay = Duration::from_secs(1);
-        let status_clone = status.clone();
-        let status_tx_clone = status_tx.clone();
-        let subscribers_clone = subscribers.clone();
         let mut battery_interval = time::interval(Duration::from_secs(30));
-
-        Self::refresh_full_status(&buds, &status, &status_tx, &subscribers).await;
-        time::sleep(Duration::from_secs(3)).await;
-        Self::refresh_battery_only(&buds, &status_clone, &status_tx_clone, &subscribers_clone).await;
+        let mut full_refresh_interval = time::interval(Duration::from_secs(60));
 
         while *running.lock().await {
+            // Don't attempt anything until a target address is actually set
+            if buds.address().is_none() {
+                time::sleep(Duration::from_secs(2)).await;
+                continue;
+            }
+
             let connected = buds.is_connected().await;
 
             if connected {
                 reconnect_delay = Duration::from_secs(1);
-                tokio::select! {
+
+                // Initial full refresh if we just connected
+                Self::refresh_full_status(&buds, &status, &status_tx, &subscribers).await;
+
+                // Then just maintain
+                loop {
+                    if buds.address().is_none() { break; } // target was cleared
+
+                    tokio::select! {
                     _ = battery_interval.tick() => {
+                        if !buds.is_connected().await { break; }
                         Self::refresh_battery_only(&buds, &status, &status_tx, &subscribers).await;
                     }
-                    _ = tokio::signal::ctrl_c() => break,
+                    _ = full_refresh_interval.tick() => {
+                        if !buds.is_connected().await { break; }
+                        Self::refresh_full_status(&buds, &status, &status_tx, &subscribers).await;
+                    }
+                    _ = tokio::signal::ctrl_c() => return,
+                }
                 }
             } else {
-                let mut status_lock = status.write().await;
-                status_lock.connected = false;
-                let current_status = status_lock.clone();
-                drop(status_lock);
-                let _ = status_tx.send(current_status.clone());
-                Self::broadcast_to_subscribers(&subscribers, current_status).await;
+                // Mark disconnected in status
+                {
+                    let mut status_lock = status.write().await;
+                    status_lock.connected = false;
+                    let current_status = status_lock.clone();
+                    drop(status_lock);
+                    let _ = status_tx.send(current_status.clone());
+                    Self::broadcast_to_subscribers(&subscribers, current_status).await;
+                }
 
-                let _ = buds.reconnect().await;
-                Self::refresh_full_status(&buds, &status, &status_tx, &subscribers).await;
+                println!("[Daemon] Device disconnected, retrying in {:?}...", reconnect_delay);
                 time::sleep(reconnect_delay).await;
                 reconnect_delay = (reconnect_delay * 2).min(Duration::from_secs(30));
+
+                let _ = buds.reconnect().await;
             }
         }
     }
@@ -455,11 +473,46 @@ impl SpacePodsService {
             }
 
             ServiceCommand::GetStatus => {
-                let status = status.read().await.clone();
-                let data = serde_json::to_value(status).unwrap_or(serde_json::Value::Null);
-                ServiceResponse::Success {
-                    message: None,
-                    data: Some(data),
+                if buds.is_connected().await {
+                    let anc_mode = buds.anc().get_mode().await.unwrap_or(None);
+                    let (level, max_level) = buds.anc().get_level().await.unwrap_or((0, 0));
+                    let eq_state = buds.eq().get_state().await.unwrap_or(None);
+                    let adaptive = buds.features().get_adaptive_anc().await.unwrap_or(None);
+                    let dual = buds.features().get_dual_device().await.unwrap_or(None);
+                    let game_mode = buds.work_mode().get_game_mode().await.unwrap_or(None);
+                    let battery = buds
+                        .with_connection(|conn| async move { conn.get_battery_level().await })
+                        .await
+                        .unwrap_or((None, None, None));
+
+                    let mut status_lock = status.write().await;
+                    status_lock.connected = true;
+                    status_lock.address = buds.address();
+                    status_lock.anc_mode = anc_mode;
+                    status_lock.anc_level = level;
+                    status_lock.anc_max = max_level;
+                    status_lock.game_mode = game_mode;
+                    if let Some(eq) = eq_state {
+                        status_lock.eq_mode = Some(eq.mode);
+                        status_lock.eq_name = Some(eq.name);
+                    }
+                    status_lock.adaptive_anc = adaptive;
+                    status_lock.dual_device = dual;
+                    status_lock.battery_left = battery.0;
+                    status_lock.battery_right = battery.1;
+                    status_lock.battery_case = battery.2;
+                    let snapshot = status_lock.clone();
+                    drop(status_lock);
+
+                    let data = serde_json::to_value(snapshot).unwrap_or(serde_json::Value::Null);
+                    ServiceResponse::Success { message: None, data: Some(data) }
+                } else {
+                    let mut status_lock = status.write().await;
+                    status_lock.connected = false;
+                    let snapshot = status_lock.clone();
+                    drop(status_lock);
+                    let data = serde_json::to_value(snapshot).unwrap_or(serde_json::Value::Null);
+                    ServiceResponse::Success { message: None, data: Some(data) }
                 }
             }
             ServiceCommand::SetInEarDetect { enabled } => {

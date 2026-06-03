@@ -12,13 +12,11 @@ impl DeviceInfoController {
         Self { buds }
     }
 
-    /// Request multiple info tags in one round trip.
-    /// Returns a vector of (tag, value_bytes).
     pub async fn get_multiple(&self, tags: &[u8]) -> Result<Vec<(u8, Vec<u8>)>> {
         let mut payload = vec![0xFF, 0x00];
         for &tag in tags {
             payload.push(tag);
-            payload.push(0x00); // length 0 = query
+            payload.push(0x00);
         }
         self.buds
             .with_connection(|conn| async move {
