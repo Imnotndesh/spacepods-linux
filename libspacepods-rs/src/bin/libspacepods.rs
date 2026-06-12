@@ -43,7 +43,7 @@ enum ExecCommands {
     /// Set ANC mode
     Anc {
         #[arg(value_parser = ["on", "off", "transparency"])]
-        mode: String
+        mode: String,
     },
 
     /// Set ANC/transparency level
@@ -55,13 +55,13 @@ enum ExecCommands {
     /// Set adaptive ANC
     Adaptive {
         #[arg(value_parser = ["on", "off"])]
-        state: String
+        state: String,
     },
 
     /// Set dual device mode
     Dual {
         #[arg(value_parser = ["on", "off"])]
-        state: String
+        state: String,
     },
 }
 
@@ -72,9 +72,9 @@ async fn main() -> Result<()> {
     let socket_path = cli.socket.unwrap_or_else(|| PathBuf::from(DEFAULT_SOCKET));
 
     match cli.command {
-       Commands::Service => {
+        Commands::Service => {
             println!("Starting SpacePods service...");
-            let mut service = libspacepods::service::SpacePodsService::new(Some(socket_path)).await;
+            let mut service = libspacepods::ipc::SpacePodsService::new(Some(socket_path)).await;
 
             tokio::select! {
                 _ = service.run() => {},
@@ -88,16 +88,16 @@ async fn main() -> Result<()> {
         }
 
         Commands::Cli => {
-            // Interactive CLI - requires service
-            let cli = libspacepods::cli::InteractiveCli::new(Some(socket_path)).await
+            let cli = libspacepods::cli::InteractiveCli::new(Some(socket_path))
+                .await
                 .context("Failed to connect to SpacePods service. Is it running?")?;
             cli.run().await?;
             Ok(())
         }
 
         Commands::Exec { exec_cmd } => {
-            // Single command - requires service
-            let mut client = libspacepods::client::SpacePodsClient::connect(Some(socket_path)).await
+            let mut client = libspacepods::ipc::SpacePodsClient::connect(Some(socket_path))
+                .await
                 .context("Failed to connect to SpacePods service. Is it running?")?;
 
             match exec_cmd {
@@ -107,25 +107,25 @@ async fn main() -> Result<()> {
                 }
                 ExecCommands::Anc { mode } => {
                     client.set_anc_mode(&mode).await?;
-                    println!("✓ ANC mode set to: {}", mode);
+                    println!("\u{2713} ANC mode set to: {}", mode);
                 }
                 ExecCommands::Level { level } => {
                     client.set_level(level).await?;
-                    println!("✓ Level set to: {}", level);
+                    println!("\u{2713} Level set to: {}", level);
                 }
                 ExecCommands::Eq { preset } => {
                     client.set_eq_preset(preset).await?;
-                    println!("✓ EQ preset set to: {}", preset);
+                    println!("\u{2713} EQ preset set to: {}", preset);
                 }
                 ExecCommands::Adaptive { state } => {
                     let enable = state == "on";
                     client.set_adaptive_anc(enable).await?;
-                    println!("✓ Adaptive ANC: {}", state.to_uppercase());
+                    println!("\u{2713} Adaptive ANC: {}", state.to_uppercase());
                 }
                 ExecCommands::Dual { state } => {
                     let enable = state == "on";
                     client.set_dual_device(enable).await?;
-                    println!("✓ Dual Device: {}", state.to_uppercase());
+                    println!("\u{2713} Dual Device: {}", state.to_uppercase());
                 }
             }
 
@@ -134,28 +134,23 @@ async fn main() -> Result<()> {
     }
 }
 
-fn print_status(status: &libspacepods::service::DeviceStatus) {
+fn print_status(status: &libspacepods::ipc::DeviceStatus) {
     println!("SpacePods Status:");
-    println!("  Connected: {}", if status.connected { "✓" } else { "✗" });
-    if let Some(addr) = &status.address {
+    println!("  Connected: {}", if status.connection.connected { "\u{2713}" } else { "\u{2717}" });
+    if let Some(ref addr) = status.connection.address {
         println!("  Address: {}", addr);
     }
-    println!("  ANC Mode: {}", match status.anc_mode {
-        Some(0) => "OFF",
-        Some(1) => "ANC",
-        Some(2) => "TRANSPARENCY",
-        _ => "UNKNOWN",
-    });
-    println!("  Level: {}/{}", status.anc_level, status.anc_max);
-    if let Some(name) = &status.eq_name {
-        println!("  EQ: {}", name);
+    println!("  ANC Mode: {}", status.anc.mode);
+    println!("  Level: {}/{}", status.anc.level, status.anc.max_level);
+    if let Some(ref eq) = status.eq {
+        println!("  EQ: {} - {}", eq.name, eq.description);
     }
-    println!("  Adaptive ANC: {}", match status.adaptive_anc {
+    println!("  Adaptive ANC: {}", match status.features.adaptive_anc {
         Some(true) => "ON",
         Some(false) => "OFF",
         None => "UNKNOWN",
     });
-    println!("  Dual Device: {}", match status.dual_device {
+    println!("  Dual Device: {}", match status.features.dual_device {
         Some(true) => "ON",
         Some(false) => "OFF",
         None => "UNKNOWN",

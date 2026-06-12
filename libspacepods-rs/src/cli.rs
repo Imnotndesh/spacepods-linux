@@ -1,12 +1,12 @@
-use crate::client::SpacePodsClient;
-use crate::service::DeviceStatus;
+use crate::ipc::client::SpacePodsClient;
+use crate::ipc::protocol::DeviceStatus;
+use crate::commands::eq::EqPreset;
 use anyhow::{Context, Result};
-use crate::commands::eq::{EQ_PRESETS, SPECIAL_PRESETS};
-use rustyline::config::{ Config, EditMode};
+use rustyline::config::{Config, EditMode};
 use rustyline::error::ReadlineError;
 use rustyline::highlight::{Highlighter, MatchingBracketHighlighter};
-use rustyline::hint::{HistoryHinter};
-use rustyline::validate::{MatchingBracketValidator};
+use rustyline::hint::HistoryHinter;
+use rustyline::validate::MatchingBracketValidator;
 use rustyline::{Cmd, CompletionType, Editor, EventHandler, KeyEvent};
 use rustyline::history::FileHistory;
 use std::borrow::Cow::{self, Borrowed, Owned};
@@ -55,7 +55,7 @@ impl Highlighter for CliHelper {
 
 pub struct InteractiveCli {
     client: Arc<Mutex<SpacePodsClient>>,
-    status: Arc<tokio::sync::RwLock<DeviceStatus>>, // Use RwLock instead of Mutex
+    status: Arc<tokio::sync::RwLock<DeviceStatus>>,
 }
 
 impl InteractiveCli {
@@ -66,7 +66,6 @@ impl InteractiveCli {
 
         let client = Arc::new(Mutex::new(client));
 
-        // Get initial status
         let status = {
             let mut client_lock = client.lock().await;
             client_lock.get_status().await?
@@ -98,7 +97,6 @@ impl InteractiveCli {
         rl.bind_sequence(KeyEvent::alt('n'), EventHandler::Simple(Cmd::HistorySearchForward));
         rl.bind_sequence(KeyEvent::alt('p'), EventHandler::Simple(Cmd::HistorySearchBackward));
 
-        // Load history
         if rl.load_history(".spacepods_history").is_err() {
             println!("No command history found");
         }
@@ -106,15 +104,14 @@ impl InteractiveCli {
         println!("\x1b[1;32mSpacePods Interactive CLI\x1b[0m");
         println!("Type 'help' for commands, 'exit' to quit");
 
-        // Check connection and show initial status
         match self.check_connection().await {
             Ok(true) => {
-                println!("Service connection: \x1b[1;32m✓\x1b[0m");
+                println!("Service connection: \x1b[1;32m\u{2713}\x1b[0m");
                 self.refresh_status().await?;
                 self.print_status().await;
             }
             _ => {
-                println!("Service connection: \x1b[1;31m✗\x1b[0m");
+                println!("Service connection: \x1b[1;31m\u{2717}\x1b[0m");
                 println!("Cannot connect to SpacePods service. Is it running?");
             }
         }
@@ -204,8 +201,8 @@ impl InteractiveCli {
                 let mode = parts[1];
                 let mut client = self.client.lock().await;
                 client.set_anc_mode(mode).await?;
-                drop(client); // Release lock before refresh
-                println!("\x1b[1;32m✓\x1b[0m ANC mode set to: {}", mode);
+                drop(client);
+                println!("\x1b[1;32m\u{2713}\x1b[0m ANC mode set to: {}", mode);
                 self.refresh_status().await?;
             }
 
@@ -218,7 +215,7 @@ impl InteractiveCli {
                 let mut client = self.client.lock().await;
                 client.set_level(level).await?;
                 drop(client);
-                println!("\x1b[1;32m✓\x1b[0m Level set to: {}", level);
+                println!("\x1b[1;32m\u{2713}\x1b[0m Level set to: {}", level);
                 self.refresh_status().await?;
             }
 
@@ -226,12 +223,12 @@ impl InteractiveCli {
                 if parts.len() < 2 {
                     println!("Usage: eq <preset_id>");
                     println!("\nStandard Presets:");
-                    for (id, name, desc, _) in EQ_PRESETS.iter() {
-                        println!("  \x1b[1;33m{:<2}\x1b[0m: {} - {}", id, name, desc);
+                    for p in crate::commands::eq::EQ_PRESETS {
+                        println!("  \x1b[1;33m{:<2}\x1b[0m: {} - {}", p.id, p.name, p.description);
                     }
                     println!("\n\x1b[1;36mSpecial Presets:\x1b[0m");
-                    for (id, name, desc, _) in SPECIAL_PRESETS.iter() {
-                        println!("  \x1b[1;33m{:<2}\x1b[0m: {} - {}", id, name, desc);
+                    for p in crate::commands::eq::SPECIAL_PRESETS {
+                        println!("  \x1b[1;33m{:<2}\x1b[0m: {} - {}", p.id, p.name, p.description);
                     }
                     println!("\nExample: eq 1  (sets Bass Boost preset)");
                     return Ok(false);
@@ -245,9 +242,10 @@ impl InteractiveCli {
                 self.refresh_status().await?;
 
                 let status = self.status.read().await;
-                let preset_name = status.eq_name.as_deref().unwrap_or("Unknown");
-                println!("\x1b[1;32m✓\x1b[0m EQ preset set to: {} ({})", preset, preset_name);
+                let preset_name = status.eq.as_ref().map(|e| e.name.as_str()).unwrap_or("Unknown");
+                println!("\x1b[1;32m\u{2713}\x1b[0m EQ preset set to: {} ({})", preset, preset_name);
             }
+
             "adaptive" => {
                 if parts.len() < 2 {
                     println!("Usage: adaptive <on|off>");
@@ -257,7 +255,7 @@ impl InteractiveCli {
                 let mut client = self.client.lock().await;
                 client.set_adaptive_anc(enable).await?;
                 drop(client);
-                println!("\x1b[1;32m✓\x1b[0m Adaptive ANC: {}", if enable { "ON" } else { "OFF" });
+                println!("\x1b[1;32m\u{2713}\x1b[0m Adaptive ANC: {}", if enable { "ON" } else { "OFF" });
                 self.refresh_status().await?;
             }
 
@@ -270,7 +268,7 @@ impl InteractiveCli {
                 let mut client = self.client.lock().await;
                 client.set_dual_device(enable).await?;
                 drop(client);
-                println!("\x1b[1;32m✓\x1b[0m Dual Device: {}", if enable { "ON" } else { "OFF" });
+                println!("\x1b[1;32m\u{2713}\x1b[0m Dual Device: {}", if enable { "ON" } else { "OFF" });
                 self.refresh_status().await?;
             }
 
@@ -302,28 +300,25 @@ impl InteractiveCli {
     async fn print_status(&self) {
         let status = self.status.read().await;
 
-        println!("\x1b[1;36m╔════════════════════════════════════╗\x1b[0m");
-        println!("\x1b[1;36m║         SpacePods Status          ║\x1b[0m");
-        println!("\x1b[1;36m╚════════════════════════════════════╝\x1b[0m");
+        println!("\x1b[1;36m\u{2554}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2557}\x1b[0m");
+        println!("\x1b[1;36m\u{2551}         SpacePods Status          \u{2551}\x1b[0m");
+        println!("\x1b[1;36m\u{255a}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{255d}\x1b[0m");
 
-        println!("  Connected    : {}", if status.connected {
-            "\x1b[1;32m✓\x1b[0m"
+        println!("  Connected    : {}", if status.connection.connected {
+            "\x1b[1;32m\u{2713}\x1b[0m"
         } else {
-            "\x1b[1;31m✗\x1b[0m"
+            "\x1b[1;31m\u{2717}\x1b[0m"
         });
 
-        if let Some(addr) = &status.address {
+        if let Some(ref addr) = status.connection.address {
             println!("  Address      : {}", addr);
         }
 
-        // Battery status with icons
-        match (status.battery_left, status.battery_right, status.battery_case) {
+        // Battery
+        let b = &status.battery;
+        match (b.left, b.right, b.case) {
             (Some(l), Some(r), Some(c)) => {
-                let l_icon = if l > 80 { "🔋" } else if l > 20 { "🔋" } else { "🪫" };
-                let r_icon = if r > 80 { "🔋" } else if r > 20 { "🔋" } else { "🪫" };
-                let c_icon = if c > 80 { "🔋" } else if c > 20 { "🔋" } else { "🪫" };
-                println!("  Battery      : {} L:{}%  {} R:{}%  {} Case:{}%",
-                         l_icon, l, r_icon, r, c_icon, c);
+                println!("  Battery      : L:{}%  R:{}%  Case:{}%", l, r, c);
             }
             (Some(l), Some(r), None) => {
                 println!("  Battery      : L:{}%  R:{}%", l, r);
@@ -334,34 +329,23 @@ impl InteractiveCli {
             _ => {}
         }
 
-        // ANC Mode with icon
-        let anc_icon = match status.anc_mode {
-            Some(0) => "🔇",
-            Some(1) => "🎧",
-            Some(2) => "👂",
-            _ => "❓",
-        };
-        println!("  ANC Mode     : {} {}", anc_icon, match status.anc_mode {
-            Some(0) => "OFF",
-            Some(1) => "ANC",
-            Some(2) => "TRANSPARENCY",
-            _ => "UNKNOWN",
-        });
+        // ANC
+        println!("  ANC Mode     : {}", status.anc.mode);
+        println!("  Level        : {}/{}", status.anc.level, status.anc.max_level);
 
-        println!("  Level        : {}/{}", status.anc_level, status.anc_max);
-
-        if let Some(name) = &status.eq_name {
-            let eq_icon = "🎛️";
-            println!("  EQ           : {} {}", eq_icon, name);
+        // EQ
+        if let Some(ref eq) = status.eq {
+            println!("  EQ           : {} ({})", eq.name, eq.description);
         }
 
-        println!("  Adaptive ANC : {}", match status.adaptive_anc {
+        // Features
+        println!("  Adaptive ANC : {}", match status.features.adaptive_anc {
             Some(true) => "\x1b[1;32mON\x1b[0m",
             Some(false) => "\x1b[1;33mOFF\x1b[0m",
             None => "UNKNOWN",
         });
 
-        println!("  Dual Device  : {}", match status.dual_device {
+        println!("  Dual Device  : {}", match status.features.dual_device {
             Some(true) => "\x1b[1;32mON\x1b[0m",
             Some(false) => "\x1b[1;33mOFF\x1b[0m",
             None => "UNKNOWN",
@@ -388,7 +372,7 @@ impl InteractiveCli {
                     *status_lock = status;
                     drop(status_lock);
 
-                    print!("\x1b[2J\x1b[1;1H"); // Clear screen
+                    print!("\x1b[2J\x1b[1;1H");
                     self.print_status().await;
                 }
                 Ok::<_, anyhow::Error>(())
@@ -401,15 +385,15 @@ impl InteractiveCli {
     }
 
     fn print_help(&self) {
-        println!("\x1b[1;36m╔════════════════════════════════════╗\x1b[0m");
-        println!("\x1b[1;36m║        Available Commands         ║\x1b[0m");
-        println!("\x1b[1;36m╚════════════════════════════════════╝\x1b[0m");
+        println!("\x1b[1;36m\u{2554}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2557}\x1b[0m");
+        println!("\x1b[1;36m\u{2551}        Available Commands         \u{2551}\x1b[0m");
+        println!("\x1b[1;36m\u{255a}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{255d}\x1b[0m");
         println!();
         println!("  \x1b[1;33mstatus\x1b[0m              - Show device status");
         println!("  \x1b[1;33mwatch\x1b[0m               - Live watch status updates");
         println!("  \x1b[1;33manc <on|off|transparency>\x1b[0m - Set ANC mode");
         println!("  \x1b[1;33mlevel <0-15>\x1b[0m        - Set ANC/transparency level");
-        println!("  \x1b[1;33meq <0-6>\x1b[0m            - Set EQ preset");
+        println!("  \x1b[1;33meq <0-13>\x1b[0m            - Set EQ preset");
         println!("  \x1b[1;33madaptive <on|off>\x1b[0m   - Set adaptive ANC");
         println!("  \x1b[1;33mdual <on|off>\x1b[0m       - Set dual device mode");
         println!("  \x1b[1;33mclear\x1b[0m               - Clear screen");

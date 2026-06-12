@@ -1,90 +1,93 @@
-use crate::ble::BleConnection;
-use crate::errors::Result;
-use crate::protocol::{
-    CMD_DUAL_DEVICE, CMD_ENV_ADAPTIVE, CMD_HANDSHAKE,
-    ID_DUAL_DEVICE, ID_ENV_ADAPTIVE, TlvParser,
-};
-use crate::SpaceBuds;
+use crate::commands::BleCommand;
+use crate::protocol::{TlvParser, CMD_DUAL_DEVICE, CMD_ENV_ADAPTIVE, CMD_HANDSHAKE, ID_DUAL_DEVICE, ID_ENV_ADAPTIVE};
+use crate::{Error, Result};
 use std::time::Duration;
-use tokio::sync::MutexGuard;
 
-pub struct FeatureController {
-    buds: SpaceBuds,
+// ── FeatureCommand ──
+
+#[derive(Debug, Clone)]
+pub enum FeatureCommand {
+    GetAdaptiveAnc,
+    SetAdaptiveAnc(bool),
+    GetDualDevice,
+    SetDualDevice(bool),
 }
 
-impl FeatureController {
-    pub fn new(buds: SpaceBuds) -> Self {
-        Self { buds }
+#[derive(Debug, Clone)]
+pub enum FeatureResponse {
+    AdaptiveAnc(bool),
+    DualDevice(bool),
+    Ack,
+}
+
+impl BleCommand for FeatureCommand {
+    type Response = FeatureResponse;
+
+    fn cmd_id(&self) -> u8 {
+        match self {
+            Self::GetAdaptiveAnc | Self::GetDualDevice => CMD_HANDSHAKE,
+            Self::SetAdaptiveAnc(_) => CMD_ENV_ADAPTIVE,
+            Self::SetDualDevice(_) => CMD_DUAL_DEVICE,
+        }
     }
 
-    async fn get_connection(&self) -> Result<MutexGuard<'_, Option<BleConnection>>> {
-        self.buds.ensure_connected().await?;
-        Ok(self.buds.conn.lock().await)
+    fn encode(&self) -> Vec<u8> {
+        match self {
+            Self::GetAdaptiveAnc => vec![0xFF, 0x00, ID_ENV_ADAPTIVE, 0x00],
+            Self::SetAdaptiveAnc(enabled) => vec![if *enabled { 0x01 } else { 0x00 }],
+            Self::GetDualDevice => vec![0xFF, 0x00, ID_DUAL_DEVICE, 0x00],
+            Self::SetDualDevice(enabled) => vec![0x01, 0x02, if *enabled { 0x01 } else { 0x00 }],
+        }
     }
 
-    // Adaptive ANC
-    pub async fn get_adaptive_anc(&self) -> Result<Option<bool>> {
-        let conn_guard = self.get_connection().await?;
-        let conn = conn_guard.as_ref().unwrap();
+    fn decode(&self, payload: &[u8]) -> Result<Self::Response> {
+        match self {
+            Self::GetAdaptiveAnc => {
+                let mut parser = TlvParser::new(payload);
+                let val = parser.get_int(ID_ENV_ADAPTIVE).unwrap_or(0);
+                Ok(FeatureResponse::AdaptiveAnc(val == 1))
+            }
+            Self::GetDualDevice => {
+                let mut parser = TlvParser::new(payload);
+                let val = parser.get_int(ID_DUAL_DEVICE).unwrap_or(0);
+                Ok(FeatureResponse::DualDevice(val == 1))
+            }
+            Self::SetAdaptiveAnc(_) | Self::SetDualDevice(_) => Ok(FeatureResponse::Ack),
+        }
+    }
+}
 
-        let result = conn.query(
-            CMD_HANDSHAKE,
-            vec![0xFF, 0x00, ID_ENV_ADAPTIVE, 0x00],
-            |packet| {
-                if packet.cmd_id == CMD_HANDSHAKE {
-                    let mut parser = TlvParser::new(&packet.payload);
-                    parser.get_int(ID_ENV_ADAPTIVE).map(|v| v == 1)
-                } else {
-                    None
-                }
-            },
-            Duration::from_secs(3),
-        ).await?;
+// ── FeatureController ──
 
-        Ok(result)
+pub struct FeatureController<'a> {
+    pub(crate) buds: &'a crate::SpaceBuds,
+}
+
+impl FeatureController<'_> {
+    pub async fn get_adaptive_anc(&self) -> Result<bool> {
+        let resp = self.buds.manager.send(&FeatureCommand::GetAdaptiveAnc).await?;
+        match resp {
+            FeatureResponse::AdaptiveAnc(v) => Ok(v),
+            _ => Err(Error::Parse("Unexpected response for get_adaptive_anc")),
+        }
     }
 
     pub async fn set_adaptive_anc(&self, enable: bool) -> Result<()> {
-        let payload = vec![if enable { 0x01 } else { 0x00 }];
-
-        let conn_guard = self.get_connection().await?;
-        let conn = conn_guard.as_ref().unwrap();
-        conn.command(CMD_ENV_ADAPTIVE, payload).await?;
-
+        self.buds.manager.send(&FeatureCommand::SetAdaptiveAnc(enable)).await?;
         tokio::time::sleep(Duration::from_millis(300)).await;
         Ok(())
     }
 
-    // Dual Device (Multi-point)
-    pub async fn get_dual_device(&self) -> Result<Option<bool>> {
-        let conn_guard = self.get_connection().await?;
-        let conn = conn_guard.as_ref().unwrap();
-
-        let result = conn.query(
-            CMD_HANDSHAKE,
-            vec![0xFF, 0x00, ID_DUAL_DEVICE, 0x00],
-            |packet| {
-                if packet.cmd_id == CMD_HANDSHAKE {
-                    let mut parser = TlvParser::new(&packet.payload);
-                    parser.get_int(ID_DUAL_DEVICE).map(|v| v == 1)
-                } else {
-                    None
-                }
-            },
-            Duration::from_secs(3),
-        ).await?;
-
-        Ok(result)
+    pub async fn get_dual_device(&self) -> Result<bool> {
+        let resp = self.buds.manager.send(&FeatureCommand::GetDualDevice).await?;
+        match resp {
+            FeatureResponse::DualDevice(v) => Ok(v),
+            _ => Err(Error::Parse("Unexpected response for get_dual_device")),
+        }
     }
 
     pub async fn set_dual_device(&self, enable: bool) -> Result<()> {
-        // Payload format: [0x01, 0x02, status]
-        let payload = vec![0x01, 0x02, if enable { 0x01 } else { 0x00 }];
-
-        let conn_guard = self.get_connection().await?;
-        let conn = conn_guard.as_ref().unwrap();
-        conn.command(CMD_DUAL_DEVICE, payload).await?;
-
+        self.buds.manager.send(&FeatureCommand::SetDualDevice(enable)).await?;
         tokio::time::sleep(Duration::from_millis(300)).await;
         Ok(())
     }

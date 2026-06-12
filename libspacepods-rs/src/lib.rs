@@ -1,143 +1,177 @@
-// lib.rs
-pub mod ble;
-mod errors;
-mod protocol;
-mod commands;
-pub mod service;
-pub mod client;
+pub mod protocol;
+pub mod errors;
+pub mod connection;
+pub mod commands;
+pub mod ipc;
 pub mod cli;
 
-pub use ble::{BleConnection, DeviceScanner};
-pub use errors::{SpaceBudsError, Result};
+pub use errors::{Error, Result};
 pub use protocol::*;
+pub use connection::*;
 pub use commands::*;
+pub use ipc::*;
 
-use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
-use tokio::time;
 
+/// Top-level handle to a pair of SpaceBuds.
+///
+/// Provides access to controllers for ANC, EQ, and features.
+/// All BLE operations go through the internal ConnectionManager.
+///
+/// # Example
+///
+/// ```no_run
+/// use spacepods::SpaceBuds;
+///
+/// # async fn example() -> Result<(), spacepods::Error> {
+/// let buds = SpaceBuds::builder()
+///     .scan_timeout(Duration::from_secs(5))
+///     .max_retries(3)
+///     .auto_connect(true)
+///     .build()
+///     .await?;
+///
+/// let mode = buds.anc().get_mode().await?;
+/// println!("Current ANC mode: {}", mode);
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Clone)]
 pub struct SpaceBuds {
-    conn: Arc<Mutex<Option<BleConnection>>>,
-    address: Option<String>,
-    max_retries: usize,
+    pub(crate) manager: connection::ConnectionManager,
 }
 
 impl SpaceBuds {
+    /// Create a new `SpaceBuds` instance with default settings.
+    /// Automatically connects to the nearest device.
     pub async fn new() -> Result<Self> {
-        Self::with_address(None).await
+        Self::builder().auto_connect(true).build().await
     }
+
+    /// Create a disconnected instance (lazy connection).
     pub fn new_disconnected() -> Self {
-    Self {
-        conn: Arc::new(Mutex::new(None)),
-        address: None,
-        max_retries: 3,
+        Self {
+            manager: connection::ConnectionManager::new(
+                connection::ConnectionConfig::default(),
+            ),
+        }
+    }
+
+    /// Get a builder for fine-grained configuration.
+    pub fn builder() -> SpaceBudsBuilder {
+        SpaceBudsBuilder::new()
+    }
+
+    /// Connect to the device.
+    pub async fn connect(&self) -> Result<()> {
+        self.manager.connect().await
+    }
+
+    /// Disconnect from the device.
+    pub async fn disconnect(&self) -> Result<()> {
+        self.manager.disconnect().await
+    }
+
+    /// Reconnect to the device.
+    pub async fn reconnect(&self) -> Result<()> {
+        self.manager.reconnect().await
+    }
+
+    /// Check if connected.
+    pub async fn is_connected(&self) -> bool {
+        self.manager.is_connected().await
+    }
+
+    /// Get the device address.
+    pub async fn address(&self) -> Option<String> {
+        self.manager.address().await
+    }
+
+    // ── Controllers (borrowing, not cloning) ──
+
+    /// Access ANC controls.
+    pub fn anc(&self) -> commands::AncController<'_> {
+        commands::AncController { buds: self }
+    }
+
+    /// Access EQ controls.
+    pub fn eq(&self) -> commands::EqController<'_> {
+        commands::EqController { buds: self }
+    }
+
+    /// Access feature controls (adaptive ANC, dual device).
+    pub fn features(&self) -> commands::FeatureController<'_> {
+        commands::FeatureController { buds: self }
+    }
+
+    /// Subscribe to connection state changes.
+    pub fn subscribe_state(&self) -> tokio::sync::broadcast::Receiver<protocol::ConnectionState> {
+        self.manager.subscribe_state()
+    }
+
+    /// Get current connection state.
+    pub fn state(&self) -> protocol::ConnectionState {
+        self.manager.state()
     }
 }
-    pub async fn with_address(address: Option<String>) -> Result<Self> {
-        let buds = Self {
-            conn: Arc::new(Mutex::new(None)),
-            address,
-            max_retries: 3,
+
+// ── Builder ──
+
+/// Builder for configuring and constructing a `SpaceBuds` instance.
+pub struct SpaceBudsBuilder {
+    config: connection::ConnectionConfig,
+    auto_connect: bool,
+}
+
+impl SpaceBudsBuilder {
+    pub fn new() -> Self {
+        Self {
+            config: connection::ConnectionConfig::default(),
+            auto_connect: false,
+        }
+    }
+
+    /// Set the BLE scan timeout.
+    pub fn scan_timeout(mut self, timeout: Duration) -> Self {
+        self.config.scan_timeout = timeout;
+        self
+    }
+
+    /// Set the maximum number of reconnection retries.
+    pub fn max_retries(mut self, retries: usize) -> Self {
+        self.config.max_retries = retries;
+        self
+    }
+
+    /// Set the delay between reconnection attempts.
+    pub fn reconnect_delay(mut self, delay: Duration) -> Self {
+        self.config.reconnect_delay = delay;
+        self
+    }
+
+    /// Whether to automatically connect on build.
+    pub fn auto_connect(mut self, enabled: bool) -> Self {
+        self.auto_connect = enabled;
+        self
+    }
+
+    /// Build the `SpaceBuds` instance.
+    /// If `auto_connect` is true, also connects to the device.
+    pub async fn build(self) -> Result<SpaceBuds> {
+        let buds = SpaceBuds {
+            manager: connection::ConnectionManager::new(self.config),
         };
 
-        buds.connect().await?;
+        if self.auto_connect {
+            buds.manager.connect().await?;
+        }
+
         Ok(buds)
     }
+}
 
-    pub async fn connect(&self) -> Result<()> {
-        let mut conn_lock = self.conn.lock().await;
-
-        // Check if already connected
-        if let Some(conn) = conn_lock.as_ref() {
-            if conn.is_connected().await {
-                return Ok(());
-            }
-        }
-
-        // Find and connect to device
-        let peripheral = if let Some(_addr) = &self.address {
-            // TODO: Connect to specific address
-            DeviceScanner::find_device(Duration::from_secs(10)).await?
-        } else {
-            DeviceScanner::find_device(Duration::from_secs(10)).await?
-        };
-
-        let conn = BleConnection::new(peripheral).await?;
-        *conn_lock = Some(conn.clone());
-
-        Ok(())
-    }
-    pub async fn with_connection<F, Fut, T>(&self, f: F) -> Result<T>
-    where
-        F: FnOnce(BleConnection) -> Fut,
-        Fut: std::future::Future<Output = Result<T>>,
-    {
-        self.ensure_connected().await?;
-        let conn_lock = self.conn.lock().await;
-        let conn = conn_lock.as_ref().unwrap().clone();
-        drop(conn_lock);
-        f(conn).await
-    }
-
-    pub async fn ensure_connected(&self) -> Result<()> {
-        let conn_lock = self.conn.lock().await;
-
-        if let Some(conn) = conn_lock.as_ref() {
-            if conn.is_connected().await {
-                return Ok(());
-            }
-        }
-
-        drop(conn_lock);
-        self.connect().await
-    }
-
-    pub async fn disconnect(&self) -> Result<()> {
-        let mut conn_lock = self.conn.lock().await;
-        if let Some(conn) = conn_lock.take() {
-            conn.disconnect().await?;
-        }
-        Ok(())
-    }
-
-    pub async fn reconnect(&self) -> Result<()> {
-        self.disconnect().await?;
-        time::sleep(Duration::from_secs(1)).await;
-        match self.connect().await {
-            Ok(_) => Ok(()),
-            Err(_e) => {
-                if let Some(conn) = self.conn.lock().await.as_ref() {
-                    conn.reconnect_with_rediscovery().await?;
-                }
-                Ok(())
-            }
-        }
-    }
-
-    pub fn anc(&self) -> AncController {
-        AncController::new(self.clone())
-    }
-
-    pub fn eq(&self) -> EqController {
-        EqController::new(self.clone())
-    }
-
-    pub fn features(&self) -> FeatureController {
-        FeatureController::new(self.clone())
-    }
-
-    pub async fn is_connected(&self) -> bool {
-        let conn_lock = self.conn.lock().await;
-        if let Some(conn) = conn_lock.as_ref() {
-            conn.is_connected().await
-        } else {
-            false
-        }
-    }
-
-    pub fn address(&self) -> Option<String> {
-        self.address.clone()
+impl Default for SpaceBudsBuilder {
+    fn default() -> Self {
+        Self::new()
     }
 }
