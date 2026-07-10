@@ -126,7 +126,8 @@ impl AncPage {
                         anc_btn.set_sensitive(true);
                         trans_btn.set_sensitive(true);
 
-                        let mode = s.anc_mode.unwrap_or(0);
+                        // ── Fixed: nested fields ──
+                        let mode = s.anc.mode as u8;
                         current_mode.set(mode);
                         match mode {
                             0 => {
@@ -153,14 +154,16 @@ impl AncPage {
                             _ => {}
                         }
 
-                        let max = s.anc_max.max(1) as f64;
+                        // ── Fixed: nested fields ──
+                        let max = s.anc.max_level.max(1) as f64;
                         slider.set_range(1.0, max);
-                        slider.set_value(s.anc_level as f64);
+                        slider.set_value(s.anc.level as f64);
 
-                        if let Some(v) = s.adaptive_anc {
+                        // ── Fixed: nested fields ──
+                        if let Some(v) = s.features.adaptive_anc {
                             adaptive_switch.set_active(v);
                         }
-                        if let Some(v) = s.dual_device {
+                        if let Some(v) = s.features.dual_device {
                             dual_switch.set_active(v);
                         }
 

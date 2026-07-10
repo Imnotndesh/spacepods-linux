@@ -153,9 +153,11 @@ impl SetupPage {
                                 spinner_box.set_visible(true);
                             }
                             Ok(devices) => {
-                                *scanned_ref.borrow_mut() = devices.clone();
+                                *scanned_ref.borrow_mut() = devices.iter().map(|d| (d.name.clone(), d.address.clone())).collect();
 
-                                for (name, address) in &devices {
+                                for device in &devices {
+                                    let name = &device.name;
+                                    let address = &device.address;
                                     let row = ListBoxRow::new();
                                     let hbox = Box::new(Orientation::Horizontal, 12);
                                     hbox.set_margin_top(10);

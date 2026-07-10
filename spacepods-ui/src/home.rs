@@ -12,6 +12,7 @@ use libspacepods::client::SpacePodsClient;
 use crate::pages::anc_page::AncPage;
 use crate::pages::eq_page::EqPage;
 use crate::storage::load_known_devices;
+use crate::pages::special_page::SpecialPage;
 
 pub struct HomeView;
 
@@ -36,6 +37,12 @@ impl HomeView {
             &eq_page, Some("eq"), "EQ",
             "audio-card-symbolic",
         );
+        let special_page = SpecialPage::new();
+        view_stack.add_titled_with_icon(
+            &special_page, Some("gestures"), "Gestures",
+            "input-touchpad-symbolic",
+        );
+
         view_stack.set_visible_child_name("anc");
 
         let view_switcher = ViewSwitcher::new();

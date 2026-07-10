@@ -66,9 +66,10 @@ impl InteractiveCli {
 
         let client = Arc::new(Mutex::new(client));
 
+        // Get initial status — service may be disconnected, that's fine
         let status = {
             let mut client_lock = client.lock().await;
-            client_lock.get_status().await?
+            client_lock.get_status().await.unwrap_or(DeviceStatus::default_disconnected())
         };
 
         Ok(Self {
@@ -107,12 +108,13 @@ impl InteractiveCli {
         match self.check_connection().await {
             Ok(true) => {
                 println!("Service connection: \x1b[1;32m\u{2713}\x1b[0m");
-                self.refresh_status().await?;
+                self.refresh_status().await.unwrap_or(());
                 self.print_status().await;
             }
             _ => {
                 println!("Service connection: \x1b[1;31m\u{2717}\x1b[0m");
                 println!("Cannot connect to SpacePods service. Is it running?");
+                return Ok(());
             }
         }
 
@@ -193,6 +195,67 @@ impl InteractiveCli {
                 self.watch_status().await?;
             }
 
+            // ── Scan for devices ──
+            "scan" => {
+                let timeout: u64 = if parts.len() > 1 {
+                    parts[1].parse().unwrap_or(10)
+                } else {
+                    10
+                };
+                let mut client = self.client.lock().await;
+                println!("Scanning for SpaceBuds devices ({}s)...", timeout);
+                match client.scan(timeout).await {
+                    Ok(devices) => {
+                        if devices.is_empty() {
+                            println!("No SpaceBuds devices found.");
+                        } else {
+                            println!("\nFound {} device(s):", devices.len());
+                            for (i, d) in devices.iter().enumerate() {
+                                println!("  {}. {}  ({})", i + 1, d.name, d.address);
+                            }
+                            println!("\nUse 'connect <address>' to connect to a device.");
+                        }
+                    }
+                    Err(e) => {
+                        println!("Scan failed: {}", e);
+                    }
+                }
+            }
+
+            // ── Connect to a device ──
+            "connect" => {
+                if parts.len() < 2 {
+                    println!("Usage: connect <address>");
+                    println!("       Use 'scan' first to find devices and their addresses.");
+                    return Ok(false);
+                }
+                let address = parts[1..].join(" ");
+                let mut client = self.client.lock().await;
+                println!("Connecting to {}...", address);
+                match client.connect_device(address).await {
+                    Ok(_) => {
+                        println!("\x1b[1;32m\u{2713}\x1b[0m Connected!");
+                        // Give the service a moment to populate status
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        drop(client);
+                        self.refresh_status().await?;
+                        self.print_status().await;
+                    }
+                    Err(e) => {
+                        println!("\x1b[1;31mFailed to connect: {}\x1b[0m", e);
+                    }
+                }
+            }
+
+            // ── Disconnect ──
+            "disconnect" => {
+                // The service doesn't have a disconnect command directly;
+                // we can just refresh to show disconnected state.
+                self.refresh_status().await?;
+                self.print_status().await;
+            }
+
+            // ── Feature commands (require service connection to BLE) ──
             "anc" => {
                 if parts.len() < 2 {
                     println!("Usage: anc <on|off|transparency>");
@@ -230,7 +293,7 @@ impl InteractiveCli {
                     for p in crate::commands::eq::SPECIAL_PRESETS {
                         println!("  \x1b[1;33m{:<2}\x1b[0m: {} - {}", p.id, p.name, p.description);
                     }
-                    println!("\nExample: eq 1  (sets Bass Boost preset)");
+                    println!("\nExample: eq 1");
                     return Ok(false);
                 }
 
@@ -307,7 +370,7 @@ impl InteractiveCli {
         println!("  Connected    : {}", if status.connection.connected {
             "\x1b[1;32m\u{2713}\x1b[0m"
         } else {
-            "\x1b[1;31m\u{2717}\x1b[0m"
+            "\x1b[1;31m\u{2717}\x1b[0m Use 'scan' then 'connect <address>'"
         });
 
         if let Some(ref addr) = status.connection.address {
@@ -389,6 +452,8 @@ impl InteractiveCli {
         println!("\x1b[1;36m\u{2551}        Available Commands         \u{2551}\x1b[0m");
         println!("\x1b[1;36m\u{255a}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{255d}\x1b[0m");
         println!();
+        println!("  \x1b[1;33mscan [timeout]\x1b[0m       - Scan for SpaceBuds devices");
+        println!("  \x1b[1;33mconnect <address>\x1b[0m     - Connect to a device by address");
         println!("  \x1b[1;33mstatus\x1b[0m              - Show device status");
         println!("  \x1b[1;33mwatch\x1b[0m               - Live watch status updates");
         println!("  \x1b[1;33manc <on|off|transparency>\x1b[0m - Set ANC mode");
@@ -399,8 +464,8 @@ impl InteractiveCli {
         println!("  \x1b[1;33mclear\x1b[0m               - Clear screen");
         println!("  \x1b[1;33mexit|quit\x1b[0m           - Exit CLI");
         println!();
-        println!("  \x1b[1;90mTip: Use up/down arrows for history\x1b[0m");
-        println!("  \x1b[1;90m     Tab for command completion\x1b[0m");
+        println!("  \x1b[1;90mWorkflow: scan -> connect <addr> -> anc/eq/level/etc.\x1b[0m");
+        println!("  \x1b[1;90mThe connection lives in the service, shared by all clients.\x1b[0m");
         println!();
     }
 }

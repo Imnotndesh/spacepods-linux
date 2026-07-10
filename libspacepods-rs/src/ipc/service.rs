@@ -18,6 +18,7 @@ use tokio::time;
 /// - Single background task polls device status periodically
 /// - Each client connection is handled in a spawn'd task
 /// - Status updates are pushed to subscribed clients via the notification channel
+/// - Battery tracking has been removed — the OS Bluetooth stack handles this.
 pub struct SpacePodsService {
     buds: SpaceBuds,
     status: Arc<RwLock<DeviceStatus>>,
@@ -32,7 +33,6 @@ impl SpacePodsService {
         let (status_tx, _) = broadcast::channel(32);
         let status = Arc::new(RwLock::new(DeviceStatus::default_disconnected()));
         let socket_path = socket_path.unwrap_or_else(|| PathBuf::from(DEFAULT_SOCKET_PATH));
-
         Self {
             buds,
             status,
@@ -110,7 +110,6 @@ impl SpacePodsService {
         running: Arc<Mutex<bool>>,
     ) {
         let mut reconnect_delay = Duration::from_secs(1);
-        let mut battery_interval = time::interval(Duration::from_secs(60));
 
         // Initial refresh
         Self::refresh_full_status(&buds, &status, &status_tx).await;
@@ -122,8 +121,9 @@ impl SpacePodsService {
                 reconnect_delay = Duration::from_secs(1);
 
                 tokio::select! {
-                    _ = battery_interval.tick() => {
-                        Self::refresh_battery_only(&buds, &status, &status_tx).await;
+                    // Periodic full status refresh (no battery polling — OS handles it)
+                    _ = time::sleep(Duration::from_secs(30)) => {
+                        Self::refresh_full_status(&buds, &status, &status_tx).await;
                     }
                     _ = tokio::signal::ctrl_c() => {
                         break;
@@ -161,12 +161,6 @@ impl SpacePodsService {
         let eq_state = buds.eq().get_state().await.unwrap_or(None);
         let adaptive = buds.features().get_adaptive_anc().await.ok();
         let dual = buds.features().get_dual_device().await.ok();
-        let battery = buds
-            .manager
-            .get_battery_level()
-            .await
-            .unwrap_or(crate::protocol::BatteryLevel::new(None, None, None));
-
 
         let mut status_lock = status.write().await;
 
@@ -190,34 +184,7 @@ impl SpacePodsService {
         status_lock.features.adaptive_anc = adaptive;
         status_lock.features.dual_device = dual;
 
-        status_lock.battery.left = battery.left;
-        status_lock.battery.right = battery.right;
-        status_lock.battery.case = battery.case;
-
-        let new_status = status_lock.clone();
-        let _ = status_tx.send(new_status);
-    }
-
-    async fn refresh_battery_only(
-        buds: &SpaceBuds,
-        status: &Arc<RwLock<DeviceStatus>>,
-        status_tx: &broadcast::Sender<DeviceStatus>,
-    ) {
-        if !buds.is_connected().await {
-            return;
-        }
-
-        let battery = buds
-            .manager
-            .get_battery_level()
-            .await
-            .unwrap_or(crate::protocol::BatteryLevel::new(None, None, None));
-
-
-        let mut status_lock = status.write().await;
-        status_lock.battery.left = battery.left;
-        status_lock.battery.right = battery.right;
-        status_lock.battery.case = battery.case;
+        // Battery is intentionally not tracked here — the OS surfaces it.
 
         let new_status = status_lock.clone();
         let _ = status_tx.send(new_status);
@@ -324,23 +291,13 @@ impl SpacePodsService {
 
             ServiceCommand::Scan { timeout_secs } => {
                 match DeviceScanner::scan_devices(Duration::from_secs(timeout_secs)).await {
-                    Ok(peripherals) => {
-                        let mut devices = Vec::new();
-                        for p in peripherals {
-                            if let Ok(Some(props)) = p.properties().await {
-                                devices.push(ScannedDevice {
-                                    name: props.local_name.unwrap_or_else(|| "Unknown".to_string()),
-                                    address: p.address().to_string(),
-                                });
-                            }
-                        }
-                        IpcResult::ScanResults { devices }
-                    }
+                    Ok(devices) => IpcResult::ScanResults { devices },
                     Err(e) => IpcResult::Error {
                         message: format!("Scan failed: {}", e),
                     },
                 }
             }
+
 
             ServiceCommand::Connect { .. } => {
                 if buds.is_connected().await {

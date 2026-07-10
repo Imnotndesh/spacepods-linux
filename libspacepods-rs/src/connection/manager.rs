@@ -30,7 +30,8 @@ struct Inner {
 }
 
 /// Manages the BLE connection lifecycle with a state machine.
-/// All access goes through `send()` or `with_connection()`, never directly.
+/// All access goes through `send()`.
+/// Battery tracking has been removed — the OS Bluetooth stack handles this.
 pub struct ConnectionManager {
     inner: Arc<RwLock<Inner>>,
     config: ConnectionConfig,
@@ -53,8 +54,6 @@ impl ConnectionManager {
     // ── State management ──
 
     pub fn state(&self) -> ConnectionState {
-        // Cheap read-lock just for the state
-        // In practice we clone the state which is a Copy enum
         self.inner.try_read().map(|i| i.state.clone()).unwrap_or(ConnectionState::Disconnected)
     }
 
@@ -180,27 +179,8 @@ impl ConnectionManager {
             cmd.decode(&[])
         }
     }
-    /// Read the current battery level from the device.
-    pub async fn get_battery_level(&self) -> Result<crate::protocol::BatteryLevel> {
-        self.ensure_connected().await?;
-        let inner = self.inner.read().await;
-        let conn = inner.connection.as_ref().ok_or(Error::NotConnected)?;
-        conn.get_battery_level().await
-    }
 
-
-    /// Run a closure with access to the raw `BleConnection`.
-    /// Used for operations not covered by `BleCommand` (e.g., battery reads).
-    pub async fn with_connection<F, Fut, T>(&self, f: F) -> Result<T>
-    where
-        F: FnOnce(&BleConnection) -> Fut,
-        Fut: std::future::Future<Output = Result<T>>,
-    {
-        self.ensure_connected().await?;
-        let inner = self.inner.read().await;
-        let conn = inner.connection.as_ref().ok_or(Error::NotConnected)?;
-        f(conn).await
-    }
+    // ── Convenience ──
 
     /// Check if currently connected.
     pub async fn is_connected(&self) -> bool {
@@ -215,14 +195,6 @@ impl ConnectionManager {
     pub async fn address(&self) -> Option<String> {
         let inner = self.inner.read().await;
         inner.connection.as_ref().map(|c| c.address())
-    }
-
-    /// Subscribe to battery level updates.
-    pub async fn battery_rx(&self) -> Result<broadcast::Receiver<crate::protocol::BatteryLevel>> {
-        self.ensure_connected().await?;
-        let inner = self.inner.read().await;
-        let conn = inner.connection.as_ref().ok_or(Error::NotConnected)?;
-        Ok(conn.battery_rx())
     }
 }
 

@@ -12,7 +12,6 @@ pub enum TrayCommand {
     Hide,
 }
 
-
 #[derive(Clone)]
 pub struct TrayHandle {
     sender: Sender<TrayCommand>,
@@ -33,11 +32,12 @@ impl TrayHandle {
             }
         }
     }
-    
+
     pub fn set_anc_mode(&self, mode: u8) {
         self.tray_service
             .update(|t| t.anc_mode = mode as usize);
     }
+
     pub fn set_eq_preset(&self, preset: u8) {
         self.tray_service
             .update(|t| t.eq_preset = preset as usize);
@@ -63,7 +63,6 @@ pub async fn spawn_tray() -> (TrayHandle, Receiver<TrayCommand>) {
 
     (handle, rx)
 }
-
 
 #[derive(Debug)]
 pub struct SpacePodsTray {
@@ -92,12 +91,15 @@ impl ksni::Tray for SpacePodsTray {
     fn id(&self) -> String {
         "spacepods".into()
     }
+
     fn title(&self) -> String {
         "SpacePods".into()
     }
+
     fn icon_name(&self) -> String {
         "audio-headset-symbolic".into()
     }
+
     fn tool_tip(&self) -> ksni::ToolTip {
         ksni::ToolTip {
             icon_name: "audio-headset-symbolic".into(),
@@ -115,6 +117,7 @@ impl ksni::Tray for SpacePodsTray {
         use ksni::menu::*;
 
         vec![
+            // ── Show window ──
             StandardItem {
                 label: "Show SpacePods".into(),
                 icon_name: "window-restore-symbolic".into(),
@@ -123,16 +126,18 @@ impl ksni::Tray for SpacePodsTray {
                 }),
                 ..Default::default()
             }
-            .into(),
+                .into(),
 
             MenuItem::Separator,
 
-            StandardItem{
+            // ── ANC Mode header with symbolic icon ──
+            StandardItem {
                 label: "ANC Mode".into(),
+                icon_name: "org.gnome.Settings-accessibility-hearing-symbolic".into(),
                 enabled: false,
                 ..Default::default()
             }
-            .into(),
+                .into(),
             RadioGroup {
                 selected: self.anc_mode,
                 select: Box::new(|this: &mut Self, idx| {
@@ -148,16 +153,18 @@ impl ksni::Tray for SpacePodsTray {
                     })
                     .collect(),
             }
-            .into(),
+                .into(),
 
             MenuItem::Separator,
 
-            StandardItem{
+            // ── EQ Preset header with symbolic icon ──
+            StandardItem {
                 label: "EQ Preset".into(),
+                icon_name: "audio-card-symbolic".into(),
                 enabled: false,
                 ..Default::default()
             }
-            .into(),
+                .into(),
             RadioGroup {
                 selected: self.eq_preset,
                 select: Box::new(|this: &mut Self, idx| {
@@ -173,10 +180,11 @@ impl ksni::Tray for SpacePodsTray {
                     })
                     .collect(),
             }
-            .into(),
+                .into(),
 
             MenuItem::Separator,
 
+            // ── Window controls ──
             StandardItem {
                 label: "Hide window".into(),
                 icon_name: "window-minimize-symbolic".into(),
@@ -185,7 +193,7 @@ impl ksni::Tray for SpacePodsTray {
                 }),
                 ..Default::default()
             }
-            .into(),
+                .into(),
 
             MenuItem::Separator,
 
@@ -197,7 +205,7 @@ impl ksni::Tray for SpacePodsTray {
                 }),
                 ..Default::default()
             }
-            .into(),
+                .into(),
         ]
     }
 }
