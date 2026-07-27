@@ -1,7 +1,12 @@
 use crate::commands::BleCommand;
 use crate::connection::ble::BleConnection;
 use crate::connection::scanner::DeviceScanner;
-use crate::protocol::{ConnectionState, Packet, CMD_HANDSHAKE};
+use crate::protocol::{ConnectionState, Packet, TlvParser, CMD_HANDSHAKE,
+    ID_ANC_MODE, ID_ANC_GAIN, ID_ANC_MAX, ID_TRANS_GAIN, ID_TRANS_MAX,
+    ID_EQ_SETTING, ID_ENV_ADAPTIVE, ID_DUAL_DEVICE, ID_KEY_SETTINGS,
+    ID_WORK_MODE, ID_IN_EAR_STATUS, ID_AUTO_ANSWER,
+    ID_TONE_VOLUME, ID_HEARING_CARE, ID_VOICE_PROMPT,
+};
 use crate::{Error, Result};
 use std::sync::Arc;
 use std::time::Duration;
@@ -204,6 +209,34 @@ impl ConnectionManager {
             conn.detect_product_id().await
         } else {
             None
+        }
+    }
+
+    /// Query multiple device info IDs at once and return raw TLV payload bytes.
+    pub async fn query_device_info(&self, info_ids: &[u8]) -> Result<Vec<u8>> {
+        // Build payload: [0xFF, 0x00, id1, 0x00, id2, 0x00, ...]
+        let mut payload = vec![0xFF, 0x00];
+        for &id in info_ids {
+            payload.push(id);
+            payload.push(0x00);
+        }
+
+        self.ensure_connected().await?;
+        let inner = self.inner.read().await;
+        let conn = inner.connection.as_ref().ok_or(Error::NotConnected)?;
+
+        let seq = conn.next_seq().await;
+        let packet = Packet::new_request(seq, CMD_HANDSHAKE, payload);
+        conn.write(&packet).await?;
+
+        let mut rx = conn.response_rx();
+        tokio::select! {
+            Ok(pkt) = rx.recv() => {
+                Ok(pkt.payload)
+            }
+            _ = tokio::time::sleep(Duration::from_secs(5)) => {
+                Err(Error::Timeout(Duration::from_secs(5)))
+            }
         }
     }
 }

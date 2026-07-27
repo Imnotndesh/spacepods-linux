@@ -16,6 +16,10 @@ struct Cli {
     #[arg(short, long, value_name = "SOCKET")]
     socket: Option<PathBuf>,
 
+    /// Log level: info, warn, full (default: info)
+    #[arg(long, value_name = "LEVEL", default_value = "info")]
+    log_level: String,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -68,6 +72,10 @@ enum ExecCommands {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    // Set log level before anything else
+    libspacepods::log::set_log_level(libspacepods::log::LogLevel::from_str(&cli.log_level));
+    libspacepods::log::info("DAEMON", &format!("Starting with log-level={}", cli.log_level));
 
     let socket_path = cli.socket.unwrap_or_else(|| PathBuf::from(DEFAULT_SOCKET));
 

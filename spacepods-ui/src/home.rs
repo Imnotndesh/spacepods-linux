@@ -141,13 +141,14 @@ impl HomeView {
         let mut row_to_id: Vec<(ListBoxRow, &'static str)> = Vec::new();
 
         for page in &pages {
-            // Filter: skip pages gated by features the device doesn't support
-            if let Some(feature) = &page.feature {
-                let supported = ctx.has_feature(*feature);
-                Log::full("HOME", &format!("Page '{}' needs {:?} → supported={}", page.id, feature, supported));
-                if !supported {
-                    Log::warn("HOME", &format!("Hiding page '{}' — device lacks {:?}", page.id, feature));
-                    continue;
+            if product_id.is_some() {
+                if let Some(feature) = &page.feature {
+                    let supported = ctx.has_feature(*feature);
+                    Log::full("HOME", &format!("Page '{}' needs {:?} → supported={}", page.id, feature, supported));
+                    if !supported {
+                        Log::warn("HOME", &format!("Hiding page '{}' — device lacks {:?}", page.id, feature));
+                        continue;
+                    }
                 }
             }
             let needs_header = match (&current_section, &page.section) {
@@ -220,8 +221,7 @@ impl HomeView {
                 }
             });
         }
-
-        // ── Sidebar ──
+        
         let sidebar_header = HeaderBar::builder()
             .show_title(false)
             .build();
@@ -239,8 +239,7 @@ impl HomeView {
         let sidebar_toolbar = ToolbarView::new();
         sidebar_toolbar.add_top_bar(&sidebar_header);
         sidebar_toolbar.set_content(Some(&sidebar_content));
-
-        // ── Content side ──
+        
         let content_header = HeaderBar::new();
         let content_title = libadwaita::WindowTitle::new("", "");
         content_header.set_title_widget(Some(&content_title));
@@ -259,8 +258,7 @@ impl HomeView {
         split_view.set_content(Some(&content_toolbar));
 
         toast_overlay.set_child(Some(&split_view));
-
-        // ── Breakpoint ──
+        
         let condition = BreakpointCondition::new_length(
             libadwaita::BreakpointConditionLengthType::MaxWidth,
             680.0,

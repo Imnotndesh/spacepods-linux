@@ -20,7 +20,6 @@ impl GamingPage {
         ));
         status_page.set_vexpand(true);
 
-        // ── Game Mode toggle ──
         let gaming_group = PreferencesGroup::new();
         gaming_group.set_title("Low Latency Mode");
 
@@ -33,7 +32,6 @@ impl GamingPage {
         game_switch_row.set_activatable_widget(Some(&game_switch));
         gaming_group.add(&game_switch_row);
 
-        // ── Status indicator ──
         let status_label = Label::new(Some("Game Mode is OFF"));
         status_label.add_css_class("dim-label");
         status_label.set_halign(gtk4::Align::Center);
@@ -55,7 +53,6 @@ impl GamingPage {
                     "Game Mode is OFF — Normal audio mode"
                 });
 
-                // Send game mode command (CMD_WORK_MODE = 0x25)
                 let payload = if active { vec![0x01] } else { vec![0x00] };
                 let cc = libspacepods::ipc::ServiceCommand::Custom {
                     command_id: 0x25,
@@ -84,7 +81,6 @@ impl GamingPage {
             });
         }
 
-        // ── Layout ──
         let content = Box::new(Orientation::Vertical, 12);
         content.set_margin_top(24);
         content.set_margin_bottom(32);

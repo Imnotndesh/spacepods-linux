@@ -32,8 +32,7 @@ impl SpatialAudioPage {
         space_switch_row.add_suffix(&space_switch);
         space_switch_row.set_activatable_widget(Some(&space_switch));
         space_group.add(&space_switch_row);
-
-        // ── Status ──
+        
         let status_label = Label::new(Some("Spatial Audio is OFF"));
         status_label.add_css_class("dim-label");
         status_label.set_halign(gtk4::Align::Center);
@@ -52,8 +51,7 @@ impl SpatialAudioPage {
                 } else {
                     "Spatial Audio is OFF — Standard stereo"
                 });
-
-                // Send space audio command (CMD_SPACE_AUDIO = 0x36)
+                
                 let payload = if active { vec![0x01] } else { vec![0x00] };
                 let cc = libspacepods::ipc::ServiceCommand::Custom {
                     command_id: 0x36,
@@ -77,8 +75,7 @@ impl SpatialAudioPage {
                 glib::Propagation::Proceed
             });
         }
-
-        // ── Layout ──
+        
         let content = Box::new(Orientation::Vertical, 12);
         content.set_margin_top(24);
         content.set_margin_bottom(32);

@@ -18,8 +18,7 @@ impl HearingPage {
             "Monitor and protect your hearing with smart volume management."
         ));
         status_page.set_vexpand(true);
-
-        // ── Volume limit ──
+        
         let volume_group = PreferencesGroup::new();
         volume_group.set_title("Volume Management");
 
@@ -31,8 +30,7 @@ impl HearingPage {
         adapt_vol_row.add_suffix(&adapt_switch);
         adapt_vol_row.set_activatable_widget(Some(&adapt_switch));
         volume_group.add(&adapt_vol_row);
-
-        // ── Tone Volume ──
+        
         let tone_group = PreferencesGroup::new();
         tone_group.set_title("Tone Settings");
 
@@ -46,9 +44,7 @@ impl HearingPage {
         tone_vol_scale.set_valign(gtk4::Align::Center);
         tone_vol_row.add_suffix(&tone_vol_scale);
         tone_group.add(&tone_vol_row);
-
-        // Only send once the user releases the slider — not on every tick
-        // while dragging.
+        
         {
             let ctx = ctx.clone();
             let tone_vol_row = tone_vol_row.clone();
@@ -58,7 +54,7 @@ impl HearingPage {
             gc.connect_released(move |_, _, _, _| {
                 let level = scale_for_release.value() as u8;
                 let cc = libspacepods::ipc::ServiceCommand::Custom {
-                    command_id: 0x46, // CMD_TONE_VOLUME
+                    command_id: 0x46,
                     payload: vec![level],
                 };
                 set_busy(&[&tone_vol_row], true);
@@ -77,8 +73,7 @@ impl HearingPage {
             });
             tone_vol_scale.add_controller(gc);
         }
-
-        // ── In-Ear Detection ──
+        
         let detect_group = PreferencesGroup::new();
         detect_group.set_title("Wear Detection");
 
@@ -106,7 +101,7 @@ impl HearingPage {
             answer_switch.connect_state_set(move |sw, active| {
                 let payload = vec![if active { 0x01 } else { 0x00 }];
                 let cc = libspacepods::ipc::ServiceCommand::Custom {
-                    command_id: 0x47, // CMD_AUTO_ANSWER
+                    command_id: 0x47,
                     payload,
                 };
                 let sw = sw.clone();
@@ -124,8 +119,7 @@ impl HearingPage {
                 glib::Propagation::Proceed
             });
         }
-
-        // ── Voice Prompts ──
+        
         let voice_group = PreferencesGroup::new();
         voice_group.set_title("Voice Prompts");
 
@@ -162,8 +156,7 @@ impl HearingPage {
                 glib::Propagation::Proceed
             });
         }
-
-        // ── Wire up commands ──
+        
         {
             let ctx = ctx.clone();
             let adapt_vol_row = adapt_vol_row.clone();
@@ -219,8 +212,7 @@ impl HearingPage {
                 glib::Propagation::Proceed
             });
         }
-
-        // ── Layout ──
+        
         let content = Box::new(Orientation::Vertical, 12);
         content.set_margin_top(16);
         content.set_margin_bottom(32);

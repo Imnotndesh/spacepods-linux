@@ -1,120 +1,99 @@
 use gtk4::prelude::*;
-use gtk4::{Box, Orientation, DropDown, Image};
+use gtk4::{Box, Orientation, DropDown};
 use libadwaita::prelude::*;
 use libadwaita::{PreferencesGroup, ActionRow, Clamp};
 use std::rc::Rc;
-use std::cell::RefCell;
+use glib::clone;
 
 use crate::context::AppContext;
+use crate::log::Log;
+
+// ── Protocol constants (from KeyRequest.java) ──
+
+const CMD_KEY: u8 = 0x22;
+
+const KEY_LEFT_SINGLE: u8 = 1;
+const KEY_RIGHT_SINGLE: u8 = 2;
+const KEY_LEFT_DOUBLE: u8 = 3;
+const KEY_RIGHT_DOUBLE: u8 = 4;
+const KEY_LEFT_TRIPLE: u8 = 5;
+const KEY_RIGHT_TRIPLE: u8 = 6;
+const KEY_LEFT_LONG: u8 = 7;
+const KEY_RIGHT_LONG: u8 = 8;
+
+const FUNC_NONE: u8 = 0;
+const FUNC_CALLBACK: u8 = 1;
+const FUNC_ASSISTANT: u8 = 2;
+const FUNC_PREVIOUS: u8 = 3;
+const FUNC_NEXT: u8 = 4;
+const FUNC_VOL_UP: u8 = 5;
+const FUNC_VOL_DOWN: u8 = 6;
+const FUNC_PLAY_PAUSE: u8 = 7;
+const FUNC_GAME_MODE: u8 = 8;
+const FUNC_ANC_SWITCH: u8 = 9;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum GestureAction {
-    NoAction,
-    ToggleAnc,
-    CycleAnc,
-    VolumeUp,
-    VolumeDown,
-    PlayPause,
-    NextTrack,
-    PrevTrack,
-    VoiceAssistant,
-    AmbientSound,
-    QuickAmbient,
-    LaunchApp,
+struct KeyAction {
+    label: &'static str,
+    func: u8,
 }
 
-impl GestureAction {
-    fn label(&self) -> &'static str {
-        match self {
-            Self::NoAction => "No action",
-            Self::ToggleAnc => "Toggle ANC",
-            Self::CycleAnc => "Cycle ANC modes",
-            Self::VolumeUp => "Volume up",
-            Self::VolumeDown => "Volume down",
-            Self::PlayPause => "Play / Pause",
-            Self::NextTrack => "Next track",
-            Self::PrevTrack => "Previous track",
-            Self::VoiceAssistant => "Voice assistant",
-            Self::AmbientSound => "Ambient sound",
-            Self::QuickAmbient => "Quick ambient",
-            Self::LaunchApp => "Launch app",
-        }
-    }
-
+impl KeyAction {
     fn all() -> Vec<Self> {
-        use GestureAction::*;
         vec![
-            NoAction, ToggleAnc, CycleAnc, VolumeUp, VolumeDown,
-            PlayPause, NextTrack, PrevTrack, VoiceAssistant,
-            AmbientSound, QuickAmbient, LaunchApp,
+            Self { label: "No action", func: FUNC_NONE },
+            Self { label: "Toggle ANC", func: FUNC_ANC_SWITCH },
+            Self { label: "Play / Pause", func: FUNC_PLAY_PAUSE },
+            Self { label: "Next track", func: FUNC_NEXT },
+            Self { label: "Previous track", func: FUNC_PREVIOUS },
+            Self { label: "Volume up", func: FUNC_VOL_UP },
+            Self { label: "Volume down", func: FUNC_VOL_DOWN },
+            Self { label: "Voice assistant", func: FUNC_ASSISTANT },
+            Self { label: "Game mode", func: FUNC_GAME_MODE },
+            Self { label: "Answer call", func: FUNC_CALLBACK },
         ]
     }
 }
 
-/// The gesture types we can configure per ear.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum GestureType {
-    SingleTap,
-    DoubleTap,
-    TripleTap,
-    LongPress,
+#[derive(Debug, Clone, Copy)]
+struct GestureSlot {
+    label: &'static str,
+    key_type: u8,
 }
 
-impl GestureType {
-    fn label(&self) -> &'static str {
-        match self {
-            Self::SingleTap => "Single tap",
-            Self::DoubleTap => "Double tap",
-            Self::TripleTap => "Triple tap",
-            Self::LongPress => "Long press",
-        }
-    }
-
+impl GestureSlot {
     fn all() -> Vec<Self> {
-        use GestureType::*;
-        vec![SingleTap, DoubleTap, TripleTap, LongPress]
+        vec![
+            Self { label: "Single tap", key_type: 0 }, // placeholder, set per-ear below
+            Self { label: "Double tap", key_type: 0 },
+            Self { label: "Triple tap", key_type: 0 },
+            Self { label: "Long press", key_type: 0 },
+        ]
     }
 }
 
-/// Per-ear configuration store.
-struct EarConfig {
-    single_tap: GestureAction,
-    double_tap: GestureAction,
-    triple_tap: GestureAction,
-    long_press: GestureAction,
+fn left_slots() -> Vec<GestureSlot> {
+    vec![
+        GestureSlot { label: "Single tap", key_type: KEY_LEFT_SINGLE },
+        GestureSlot { label: "Double tap", key_type: KEY_LEFT_DOUBLE },
+        GestureSlot { label: "Triple tap", key_type: KEY_LEFT_TRIPLE },
+        GestureSlot { label: "Long press",   key_type: KEY_LEFT_LONG },
+    ]
 }
 
-impl EarConfig {
-    fn default_left() -> Rc<RefCell<Self>> {
-        Rc::new(RefCell::new(Self {
-            single_tap: GestureAction::NoAction,
-            double_tap: GestureAction::ToggleAnc,
-            triple_tap: GestureAction::VoiceAssistant,
-            long_press: GestureAction::QuickAmbient,
-        }))
-    }
-
-    fn default_right() -> Rc<RefCell<Self>> {
-        Rc::new(RefCell::new(Self {
-            single_tap: GestureAction::PlayPause,
-            double_tap: GestureAction::NextTrack,
-            triple_tap: GestureAction::PrevTrack,
-            long_press: GestureAction::VoiceAssistant,
-        }))
-    }
+fn right_slots() -> Vec<GestureSlot> {
+    vec![
+        GestureSlot { label: "Single tap", key_type: KEY_RIGHT_SINGLE },
+        GestureSlot { label: "Double tap", key_type: KEY_RIGHT_DOUBLE },
+        GestureSlot { label: "Triple tap", key_type: KEY_RIGHT_TRIPLE },
+        GestureSlot { label: "Long press",   key_type: KEY_RIGHT_LONG },
+    ]
 }
 
 pub struct SpecialPage;
 
 impl SpecialPage {
-    /// `ctx` isn't hit by a daemon round-trip yet (gesture mapping is still
-    /// local-only), but it's threaded through like every other page so a
-    /// future "send gesture map to daemon" call has consistent toast/error
-    /// handling for free instead of silently swallowing failures.
     pub fn new(ctx: Rc<AppContext>) -> gtk4::Widget {
-        let left_config = EarConfig::default_left();
-        let right_config = EarConfig::default_right();
-
         let content = Box::new(Orientation::Vertical, 24);
         content.set_margin_top(16);
         content.set_margin_bottom(32);
@@ -125,35 +104,13 @@ impl SpecialPage {
         let left_group = PreferencesGroup::new();
         left_group.set_title("Left Earbud");
         left_group.set_description(Some("Configure what happens when you interact with the left earbud"));
-
-        let left_header = Box::new(Orientation::Horizontal, 8);
-        left_header.set_halign(gtk4::Align::Start);
-        let left_icon = Image::from_icon_name("audio-headset-left-symbolic");
-        left_icon.set_pixel_size(24);
-        left_icon.add_css_class("dim-label");
-        left_header.append(&left_icon);
-        let left_label = gtk4::Label::new(Some("Left Earbud"));
-        left_label.add_css_class("heading");
-        left_header.append(&left_label);
-
-        Self::populate_gesture_rows(&left_group, &left_config, ctx.clone());
+        Self::populate_group(&left_group, &left_slots(), ctx.clone());
 
         // ── Right ear ──
         let right_group = PreferencesGroup::new();
         right_group.set_title("Right Earbud");
         right_group.set_description(Some("Configure what happens when you interact with the right earbud"));
-
-        let right_header = Box::new(Orientation::Horizontal, 8);
-        right_header.set_halign(gtk4::Align::Start);
-        let right_icon = Image::from_icon_name("audio-headset-right-symbolic");
-        right_icon.set_pixel_size(24);
-        right_icon.add_css_class("dim-label");
-        right_header.append(&right_icon);
-        let right_label = gtk4::Label::new(Some("Right Earbud"));
-        right_label.add_css_class("heading");
-        right_header.append(&right_label);
-
-        Self::populate_gesture_rows(&right_group, &right_config, ctx.clone());
+        Self::populate_group(&right_group, &right_slots(), ctx.clone());
 
         content.append(&left_group);
         content.append(&right_group);
@@ -171,51 +128,76 @@ impl SpecialPage {
         scroll.upcast()
     }
 
-    fn populate_gesture_rows(group: &PreferencesGroup, config: &Rc<RefCell<EarConfig>>, ctx: Rc<AppContext>) {
-        let all_actions = GestureAction::all();
-        let labels: Vec<&str> = all_actions.iter().map(|a| a.label()).collect();
+    fn populate_group(group: &PreferencesGroup, slots: &[GestureSlot], ctx: Rc<AppContext>) {
+        let all_actions = KeyAction::all();
+        let labels: Vec<&str> = all_actions.iter().map(|a| a.label).collect();
+        let slots_vec: Vec<GestureSlot> = slots.to_vec();
 
-        for gesture in GestureType::all() {
-            let row = ActionRow::new();
-            row.set_title(gesture.label());
-
-            let dropdown = DropDown::from_strings(&labels);
-            dropdown.add_css_class("flat");
-
-            // Set current value
-            let current = {
-                let cfg = config.borrow();
-                match gesture {
-                    GestureType::SingleTap => cfg.single_tap,
-                    GestureType::DoubleTap => cfg.double_tap,
-                    GestureType::TripleTap => cfg.triple_tap,
-                    GestureType::LongPress => cfg.long_press,
-                }
+        // Query daemon for current key settings
+        glib::spawn_future_local(clone!(
+            #[weak] group,
+            #[strong] ctx,
+        async move {
+            let current_map = match libspacepods::client::SpacePodsClient::connect(None).await {
+                Ok(mut client) => match client.get_status().await {
+                    Ok(s) => s.key_settings.unwrap_or_default(),
+                    Err(_) => std::collections::HashMap::new(),
+                },
+                Err(_) => std::collections::HashMap::new(),
             };
-            let idx = all_actions.iter().position(|a| *a == current).unwrap_or(0);
-            dropdown.set_selected(idx as u32);
+            Log::full("GESTURE", &format!("Current key settings: {:?}", current_map));
 
-            // Wire up changes — clone actions per closure
-            let cfg = Rc::clone(config);
-            let g = gesture;
-            let actions_clone = all_actions.clone();  // <── clone per iteration
-            let ctx = ctx.clone();
-            dropdown.connect_selected_item_notify(move |dd| {
-                let i = dd.selected() as usize;
-                if i < actions_clone.len() {
-                    let mut c = cfg.borrow_mut();
-                    match g {
-                        GestureType::SingleTap => c.single_tap = actions_clone[i],
-                        GestureType::DoubleTap => c.double_tap = actions_clone[i],
-                        GestureType::TripleTap => c.triple_tap = actions_clone[i],
-                        GestureType::LongPress => c.long_press = actions_clone[i],
+            // Build dropdowns in order; set values from status
+            for slot in &slots_vec {
+                let row = ActionRow::new();
+                row.set_title(slot.label);
+
+                let dropdown = DropDown::from_strings(&labels);
+                dropdown.add_css_class("flat");
+
+                // Set current value from device
+                if let Some(&func) = current_map.get(&slot.key_type) {
+                    if let Some(idx) = all_actions.iter().position(|a| a.func == func) {
+                        dropdown.set_selected(idx as u32);
                     }
-                    ctx.toast(&format!("{} set to {}", g.label(), actions_clone[i].label()));
                 }
-            });
 
-            row.add_suffix(&dropdown);
-            group.add(&row);
-        }
+                let key_type = slot.key_type;
+                let actions = all_actions.clone();
+                let ctx = ctx.clone();
+
+                dropdown.connect_selected_item_notify(move |dd| {
+                    let i = dd.selected() as usize;
+                    if i >= actions.len() {
+                        return;
+                    }
+                    let action = &actions[i];
+                    let payload = vec![key_type, 0x01, action.func];
+                    Log::info("GESTURE",
+                        &format!("Setting {:?} to {} (payload {:02x?})", key_type, action.label, payload));
+
+                    let cc = libspacepods::ipc::ServiceCommand::Custom {
+                        command_id: CMD_KEY,
+                        payload,
+                    };
+                    let ctx = ctx.clone();
+                    let label = action.label;
+                    glib::spawn_future_local(async move {
+                        match libspacepods::client::SpacePodsClient::connect(None).await {
+                            Ok(mut client) => {
+                                match client.send_command_raw(cc).await {
+                                    Ok(_) => ctx.success(&format!("{} set", label)),
+                                    Err(e) => ctx.error(format!("Gesture failed: {}", e)),
+                                }
+                            }
+                            Err(e) => ctx.daemon_unreachable(e),
+                        }
+                    });
+                });
+
+                row.add_suffix(&dropdown);
+                group.add(&row);
+            }
+        }));
     }
 }

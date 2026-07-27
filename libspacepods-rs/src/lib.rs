@@ -5,6 +5,7 @@ pub mod commands;
 pub mod ipc;
 pub mod cli;
 pub mod device_profile;
+pub mod log;
 
 pub use errors::{Error, Result};
 pub use protocol::*;
@@ -91,6 +92,11 @@ impl SpaceBuds {
     /// Try to detect the product ID from BLE advertisement manufacturer data.
     pub async fn detect_product_id(&self) -> Option<u16> {
         self.manager.detect_product_id().await
+    }
+
+    /// Query multiple device info IDs at once.
+    pub async fn query_device_info(&self, info_ids: &[u8]) -> Result<Vec<u8>> {
+        self.manager.query_device_info(info_ids).await
     }
 
     /// Send a raw BLE command by command ID and payload.

@@ -49,11 +49,9 @@ impl AncPage {
         let mode_spinner = Spinner::new();
         mode_spinner.set_visible(false);
         mode_spinner.set_halign(gtk4::Align::Center);
-
-        // ── Noise Control group ──
+        
         let anc_group = PreferencesGroup::new();
-
-        // ── Intensity selector — Low / Medium / High radio buttons ──
+        
         let low_btn = ToggleButton::with_label("Low");
         let med_btn = ToggleButton::with_label("Medium");
         let high_btn = ToggleButton::with_label("High");
@@ -74,7 +72,6 @@ impl AncPage {
         intensity_btns.append(&med_btn);
         intensity_btns.append(&high_btn);
 
-        // ── Feature toggles ──
         let features_group = PreferencesGroup::new();
         features_group.set_title("Additional Features");
 
@@ -100,7 +97,6 @@ impl AncPage {
         dual_row.set_sensitive(false);
         features_group.add(&dual_row);
 
-        // ── Find My Earbuds ──
         let find_ear_row = ActionRow::new();
         find_ear_row.set_title("Find My Earbuds");
         find_ear_row.set_subtitle("Ring your earbuds to locate them");
@@ -110,7 +106,6 @@ impl AncPage {
         find_ear_row.add_suffix(&find_ear_btn);
         features_group.add(&find_ear_row);
 
-        // ── Offline state ──
         let offline_status = StatusPage::new();
         offline_status.set_icon_name(Some("network-offline-symbolic"));
         offline_status.set_title("Daemon Unreachable");
@@ -118,7 +113,20 @@ impl AncPage {
         offline_status.set_visible(false);
         offline_status.set_vexpand(true);
 
+        // ── Battery display ──
+        let battery_label = Label::new(Some("Battery: …"));
+        battery_label.add_css_class("caption");
+        battery_label.set_halign(gtk4::Align::Center);
+        battery_label.set_margin_top(4);
+
+        let refresh_btn = gtk4::Button::with_label("Refresh");
+        refresh_btn.add_css_class("flat");
+        refresh_btn.set_halign(gtk4::Align::Center);
+        refresh_btn.set_margin_top(4);
+
         container.append(&title);
+        container.append(&battery_label);
+        container.append(&refresh_btn);
         container.append(&mode_row);
         container.append(&mode_spinner);
         container.append(&anc_group);
@@ -128,11 +136,9 @@ impl AncPage {
 
         clamp.set_child(Some(&container));
 
-        // ── Shared reactive state ──
         let applying = Rc::new(Cell::new(false));
         let current_mode = Rc::new(Cell::new(0u8));
 
-        // ── Initial status fetch ──
         glib::spawn_future_local(clone!(
             #[strong] off_btn, #[strong] anc_btn, #[strong] trans_btn,
             #[strong] low_btn, #[strong] med_btn, #[strong] high_btn,
@@ -141,14 +147,28 @@ impl AncPage {
             #[strong] mode_spinner, #[strong] mode_row,
             #[strong] offline_status, #[strong] features_group, #[strong] anc_group,
             #[strong] applying, #[strong] current_mode, #[strong] ctx,
+            #[strong] battery_label,
             async move {
                 use libspacepods::client::SpacePodsClient;
                 match SpacePodsClient::connect(None).await {
                     Ok(mut client) => match client.get_status().await {
                         Ok(s) => {
-                            Log::info("ANC", &format!("Status received: mode={:?} level={} max={} adaptive={:?} dual={:?}",
+                            Log::info("ANC", &format!("Status received: mode={:?} level={} max={} adaptive={:?} dual={:?} battery={:?}",
                                 s.anc.mode, s.anc.level, s.anc.max_level,
-                                s.features.adaptive_anc, s.features.dual_device));
+                                s.features.adaptive_anc, s.features.dual_device,
+                                (&s.battery.left, &s.battery.right, &s.battery.case)));
+
+                            // Battery display
+                            let mut parts = Vec::new();
+                            if let Some(l) = s.battery.left { parts.push(format!("L: {}%", l)); }
+                            if let Some(r) = s.battery.right { parts.push(format!("R: {}%", r)); }
+                            if let Some(c) = s.battery.case { parts.push(format!("Case: {}%", c)); }
+                            if parts.is_empty() {
+                                battery_label.set_text("Battery: unknown");
+                            } else {
+                                battery_label.set_text(&format!("Battery: {}", parts.join(" · ")));
+                            }
+
                             for b in [&off_btn, &anc_btn, &trans_btn] { b.set_sensitive(true); }
 
                             let mode = s.anc.mode as u8;
@@ -163,7 +183,6 @@ impl AncPage {
                             applying.set(false);
                             Self::apply_mode_ui(mode, &low_btn, &med_btn, &high_btn, &adaptive_switch, &adaptive_row);
 
-                            // Map daemon level (1-5) to Low/Medium/High
                             match s.anc.level as u8 {
                                 1..=2 => low_btn.set_active(true),
                                 3 => med_btn.set_active(true),
@@ -200,7 +219,66 @@ impl AncPage {
                 }
             }
         ));
-        
+
+        // ── Refresh button ──
+        {
+            let btns = vec![
+                off_btn.clone(), anc_btn.clone(), trans_btn.clone(),
+                low_btn.clone(), med_btn.clone(), high_btn.clone(),
+            ];
+            let rows = vec![adaptive_row.clone(), dual_row.clone()];
+            let asw = adaptive_switch.clone();
+            let dsw = dual_switch.clone();
+            let bl = battery_label.clone();
+            let am = applying.clone();
+            let cm = current_mode.clone();
+            let ctx = ctx.clone();
+            refresh_btn.connect_clicked(move |_| {
+                let btns = btns.clone();
+                let asw = asw.clone();
+                let dsw = dsw.clone();
+                let bl = bl.clone();
+                let am = am.clone();
+                let cm = cm.clone();
+                let ctx = ctx.clone();
+                glib::spawn_future_local(async move {
+                    use libspacepods::client::SpacePodsClient;
+                    match SpacePodsClient::connect(None).await {
+                        Ok(mut client) => match client.get_status().await {
+                            Ok(s) => {
+                                let mut parts = Vec::new();
+                                if let Some(l) = s.battery.left { parts.push(format!("L: {}%", l)); }
+                                if let Some(r) = s.battery.right { parts.push(format!("R: {}%", r)); }
+                                if let Some(c) = s.battery.case { parts.push(format!("Case: {}%", c)); }
+                                bl.set_text(if parts.is_empty() { "Battery: unknown" } else { "Battery: …" });
+                                if !parts.is_empty() {
+                                    bl.set_text(&format!("Battery: {}", parts.join(" · ")));
+                                }
+
+                                let mode = s.anc.mode as u8;
+                                cm.set(mode);
+                                am.set(true);
+                                for b in &btns { b.set_sensitive(mode != 0); }
+                                // Map level to intensity
+                                match s.anc.level {
+                                    1..=2 => btns[3].set_active(true),
+                                    3 => btns[4].set_active(true),
+                                    4..=5 => btns[5].set_active(true),
+                                    _ => {}
+                                }
+                                am.set(false);
+                                if let Some(v) = s.features.adaptive_anc { asw.set_active(v); }
+                                if let Some(v) = s.features.dual_device { dsw.set_active(v); }
+                                ctx.success("Status refreshed");
+                            }
+                            Err(e) => ctx.error(format!("Status: {}", e)),
+                        },
+                        Err(e) => ctx.daemon_unreachable(e),
+                    }
+                });
+            });
+        }
+
         Self::connect_mode(&off_btn, 0, "off", &low_btn, &med_btn, &high_btn,
                            &adaptive_switch, &adaptive_row, &mode_spinner,
                            &applying, &current_mode, ctx.clone());
@@ -211,7 +289,6 @@ impl AncPage {
                            &adaptive_switch, &adaptive_row, &mode_spinner,
                            &applying, &current_mode, ctx.clone());
 
-        // ── Intensity buttons ──
         {
             let ctx = ctx.clone();
             let applying = applying.clone();
@@ -248,8 +325,7 @@ impl AncPage {
                 if b.is_active() { send_level(5); }
             });
         }
-
-        // ── Adaptive switch ──
+        
         {
             let ctx = ctx.clone();
             let applying = applying.clone();
@@ -300,8 +376,7 @@ impl AncPage {
                 glib::Propagation::Proceed
             });
         }
-
-        // ── Find My Earbuds button ──
+        
         {
             let ctx = ctx.clone();
             let finding = std::rc::Rc::new(std::cell::Cell::new(false));
@@ -320,7 +395,6 @@ impl AncPage {
                             .map(|mut c| glib::spawn_future_local(async move { let _ = c.send_command_raw(libspacepods::ipc::ServiceCommand::Custom { command_id: 0x2A, payload }).await; }));
                     });
                 } else {
-                    // Start finding
                     finding.set(true);
                     btn.set_label("Stop Ringing");
                     btn.remove_css_class("destructive-action");

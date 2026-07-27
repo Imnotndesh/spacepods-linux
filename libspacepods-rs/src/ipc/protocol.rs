@@ -114,6 +114,9 @@ pub struct DeviceStatus {
     pub features: FeatureInfo,
     #[serde(default)]
     pub product_id: Option<u16>,
+    /// Current key/gesture mappings: key_type -> function
+    #[serde(default)]
+    pub key_settings: Option<std::collections::HashMap<u8, u8>>,
 }
 
 impl DeviceStatus {
@@ -140,6 +143,7 @@ impl DeviceStatus {
                 dual_device: None,
             },
             product_id: None,
+            key_settings: None,
         }
     }
 }
