@@ -1,25 +1,17 @@
 use gtk4::prelude::*;
 use gtk4::{Box, Label, Orientation, ScrolledWindow};
 use libadwaita::prelude::*;
-use libadwaita::{
-    ActionRow, Clamp, HeaderBar, NavigationPage, PreferencesGroup, SwitchRow,
-};
-use std::cell::Cell;
-use std::rc::Rc;
+use libadwaita::{ActionRow, Clamp, PreferencesGroup, SwitchRow};
 
-use crate::tray::{TrayCommand, TrayHandle};
 use crate::storage::{load_settings, update_settings};
-use crate::service::{self, check_daemon_running, spawn_daemon, kill_daemon};
+use crate::service::{self, check_daemon_running};
 
 pub struct SettingsPage;
 
 impl SettingsPage {
-    pub fn navigation_page(tray_handle: Rc<Option<TrayHandle>>) -> NavigationPage {
+    pub fn page() -> gtk4::Widget {
         let saved_settings = load_settings();
 
-        let header = HeaderBar::new();
-        let title_widget = libadwaita::WindowTitle::new("Settings", "");
-        header.set_title_widget(Some(&title_widget));
         let clamp = Clamp::new();
         clamp.set_maximum_size(600);
         clamp.set_tightening_threshold(480);
@@ -43,158 +35,44 @@ impl SettingsPage {
         });
 
         general_group.add(&autostart_row);
-        let tray_group = PreferencesGroup::new();
-        tray_group.set_title("System Tray");
-        tray_group.set_description(Some(
-            "Requires a desktop environment that supports the StatusNotifierItem specification \
-             (GNOME Shell with AppIndicator extension, KDE Plasma, etc.)",
-        ));
 
-        let tray_row = SwitchRow::new();
-        tray_row.set_title("Enable tray icon");
-        tray_row.set_subtitle("Show SpacePods in the system notification area");
-        tray_row.set_active(saved_settings.tray_enabled);
-        let close_tray_row = SwitchRow::new();
-        close_tray_row.set_title("Minimise to tray on close");
-        close_tray_row.set_subtitle("Closing the window hides it instead of quitting");
-        close_tray_row.set_active(saved_settings.close_to_tray);
-        close_tray_row.set_sensitive(saved_settings.tray_enabled);
-
-        {
-            let close_tray_row_ref = close_tray_row.clone();
-            let tray_handle_ref = tray_handle.clone();
-            tray_row.connect_active_notify(move |row| {
-                let enabled = row.is_active();
-                close_tray_row_ref.set_sensitive(enabled);
-                update_settings(|s| s.tray_enabled = enabled);
-
-                if let Some(ref handle) = *tray_handle_ref {
-                    if enabled {
-                        handle.send(TrayCommand::Show);
-                    } else {
-                        handle.send(TrayCommand::Hide);
-                        close_tray_row_ref.set_active(false);
-                    }
-                }
-            });
-        }
-        {
-            let close_to_tray = Cell::new(false);
-            close_tray_row.connect_active_notify(move |row| {
-                let enabled = row.is_active();
-                close_to_tray.set(enabled);
-                update_settings(|s| s.close_to_tray = enabled);
-            });
-        }
-
-        tray_group.add(&tray_row);
-        tray_group.add(&close_tray_row);
         let service_group = PreferencesGroup::new();
         service_group.set_title("Background Service");
         service_group.set_description(Some(
-            "The SpacePods daemon handles Bluetooth communication. \
-             It must be running for the app to function.",
+            "The SpacePods daemon (libspacepods) handles Bluetooth communication. \
+             Start it from a terminal: `libspacepods service`",
         ));
 
         let service_row = ActionRow::new();
         service_row.set_title("SpacePods daemon");
-        service_row.set_subtitle("Manages the BLE connection to your earbuds");
 
         let service_status = Label::new(Some("Checking…"));
         service_status.add_css_class("dim-label");
         service_status.add_css_class("caption");
         service_status.set_valign(gtk4::Align::Center);
 
-        let start_btn = gtk4::Button::with_label("Start");
-        start_btn.add_css_class("suggested-action");
-        start_btn.add_css_class("pill");
-        start_btn.set_valign(gtk4::Align::Center);
-
-        let stop_btn = gtk4::Button::with_label("Stop");
-        stop_btn.add_css_class("destructive-action");
-        stop_btn.add_css_class("pill");
-        stop_btn.set_valign(gtk4::Align::Center);
-        stop_btn.set_visible(false);
-
-        let restart_btn = gtk4::Button::with_label("Restart");
-        restart_btn.add_css_class("pill");
-        restart_btn.set_valign(gtk4::Align::Center);
-        restart_btn.set_visible(false);
-
-        // Check actual daemon status on open
+        // Check daemon status on open
         {
-            let service_status_r = service_status.clone();
-            let start_btn_r = start_btn.clone();
-            let stop_btn_r = stop_btn.clone();
-            let restart_btn_r = restart_btn.clone();
+            let status_label = service_status.clone();
             glib::spawn_future_local(async move {
                 let running = check_daemon_running().await;
-                update_daemon_ui(&service_status_r, &start_btn_r, &stop_btn_r, &restart_btn_r, running);
-            });
-        }
-
-        {
-            let service_status_r = service_status.clone();
-            let start_btn_r = start_btn.clone();
-            let stop_btn_r = stop_btn.clone();
-            let restart_btn_r = restart_btn.clone();
-            start_btn.connect_clicked(move |_| {
-                let ss = service_status_r.clone();
-                let sb = start_btn_r.clone();
-                let stb = stop_btn_r.clone();
-                let rb = restart_btn_r.clone();
-                glib::spawn_future_local(async move {
-                    spawn_daemon();
-                    tokio::time::sleep(tokio::time::Duration::from_millis(900)).await;
-                    let running = check_daemon_running().await;
-                    update_daemon_ui(&ss, &sb, &stb, &rb, running);
-                });
-            });
-        }
-        {
-            let service_status_r = service_status.clone();
-            let start_btn_r = start_btn.clone();
-            let stop_btn_r = stop_btn.clone();
-            let restart_btn_r = restart_btn.clone();
-            stop_btn.connect_clicked(move |_| {
-                kill_daemon();
-                let ss = service_status_r.clone();
-                let sb = start_btn_r.clone();
-                let stb = stop_btn_r.clone();
-                let rb = restart_btn_r.clone();
-                glib::spawn_future_local(async move {
-                    tokio::time::sleep(tokio::time::Duration::from_millis(400)).await;
-                    let running = check_daemon_running().await;
-                    update_daemon_ui(&ss, &sb, &stb, &rb, running);
-                });
-            });
-        }
-        {
-            let service_status_r = service_status.clone();
-            let start_btn_r = start_btn.clone();
-            let stop_btn_r = stop_btn.clone();
-            let restart_btn_r = restart_btn.clone();
-            restart_btn.connect_clicked(move |_| {
-                kill_daemon();
-                let ss = service_status_r.clone();
-                let sb = start_btn_r.clone();
-                let stb = stop_btn_r.clone();
-                let rb = restart_btn_r.clone();
-                glib::spawn_future_local(async move {
-                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-                    spawn_daemon();
-                    tokio::time::sleep(tokio::time::Duration::from_millis(900)).await;
-                    let running = check_daemon_running().await;
-                    update_daemon_ui(&ss, &sb, &stb, &rb, running);
-                });
+                if running {
+                    status_label.set_text("Running");
+                    status_label.remove_css_class("dim-label");
+                    status_label.remove_css_class("error");
+                    status_label.add_css_class("success");
+                } else {
+                    status_label.set_text("Not running");
+                    status_label.remove_css_class("success");
+                    status_label.remove_css_class("dim-label");
+                    status_label.add_css_class("error");
+                }
             });
         }
 
         service_row.add_suffix(&service_status);
-        service_row.add_suffix(&start_btn);
-        service_row.add_suffix(&stop_btn);
-        service_row.add_suffix(&restart_btn);
         service_group.add(&service_row);
+
         let about_group = PreferencesGroup::new();
         about_group.set_title("About");
 
@@ -207,7 +85,7 @@ impl SettingsPage {
 
         let source_row = ActionRow::new();
         source_row.set_title("Source code");
-        source_row.set_subtitle("github.com/your-user/spacepods");
+        source_row.set_subtitle("github.com/Imnotndesh/spacepods-linux");
         source_row.set_activatable(true);
         source_row.connect_activated(|_| {
             let _ = gtk4::UriLauncher::new("https://github.com/Imnotndesh/spacepods-linux")
@@ -219,8 +97,8 @@ impl SettingsPage {
 
         about_group.add(&version_row);
         about_group.add(&source_row);
+
         content.append(&general_group);
-        content.append(&tray_group);
         content.append(&service_group);
         content.append(&about_group);
         clamp.set_child(Some(&content));
@@ -229,37 +107,7 @@ impl SettingsPage {
         scroll.set_hscrollbar_policy(gtk4::PolicyType::Never);
         scroll.set_vexpand(true);
         scroll.set_child(Some(&clamp));
-        let toolbar_view = libadwaita::ToolbarView::new();
-        toolbar_view.add_top_bar(&header);
-        toolbar_view.set_content(Some(&scroll));
 
-        let page = NavigationPage::new(&toolbar_view, "Settings");
-        page
-    }
-}
-
-fn update_daemon_ui(
-    status: &Label,
-    start: &gtk4::Button,
-    stop: &gtk4::Button,
-    restart: &gtk4::Button,
-    running: bool,
-) {
-    if running {
-        status.set_text("Running");
-        status.remove_css_class("dim-label");
-        status.remove_css_class("error");
-        status.add_css_class("success");
-        start.set_visible(false);
-        stop.set_visible(true);
-        restart.set_visible(true);
-    } else {
-        status.set_text("Stopped");
-        status.remove_css_class("success");
-        status.remove_css_class("dim-label");
-        status.add_css_class("error");
-        start.set_visible(true);
-        stop.set_visible(false);
-        restart.set_visible(false);
+        scroll.upcast()
     }
 }

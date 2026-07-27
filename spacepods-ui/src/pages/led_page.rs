@@ -63,34 +63,24 @@ impl LedPage {
         color_group.add(&color_row);
 
         // ── Brightness ──
-        let brightness_group = PreferencesGroup::new();
-        brightness_group.set_title("Brightness");
-
-        let brightness_row = ActionRow::new();
-        brightness_row.set_title("Brightness Level");
-        brightness_row.set_subtitle("Adjust LED intensity");
         let brightness_scale = Scale::with_range(Orientation::Horizontal, 0.0, 100.0, 5.0);
         brightness_scale.set_hexpand(true);
         brightness_scale.set_draw_value(true);
         brightness_scale.set_value(70.0);
-        brightness_scale.set_valign(gtk4::Align::Center);
-        brightness_row.add_suffix(&brightness_scale);
-        brightness_group.add(&brightness_row);
+        brightness_scale.set_margin_start(16);
+        brightness_scale.set_margin_end(16);
+        brightness_scale.set_margin_top(8);
+        brightness_scale.set_margin_bottom(8);
 
         // ── Speed ──
-        let speed_group = PreferencesGroup::new();
-        speed_group.set_title("Animation Speed");
-
-        let speed_row = ActionRow::new();
-        speed_row.set_title("Speed");
-        speed_row.set_subtitle("How fast the LED animation plays");
         let speed_scale = Scale::with_range(Orientation::Horizontal, 1.0, 10.0, 1.0);
         speed_scale.set_hexpand(true);
         speed_scale.set_draw_value(true);
         speed_scale.set_value(5.0);
-        speed_scale.set_valign(gtk4::Align::Center);
-        speed_row.add_suffix(&speed_scale);
-        speed_group.add(&speed_row);
+        speed_scale.set_margin_start(16);
+        speed_scale.set_margin_end(16);
+        speed_scale.set_margin_top(8);
+        speed_scale.set_margin_bottom(8);
 
         // ── Preview note ──
         let preview_label = Label::new(Some("Note: LED controls may not be supported on all devices."));
@@ -107,8 +97,8 @@ impl LedPage {
         content.set_margin_end(16);
         content.append(&mode_group);
         content.append(&color_group);
-        content.append(&brightness_group);
-        content.append(&speed_group);
+        content.append(&brightness_scale);
+        content.append(&speed_scale);
         content.append(&preview_label);
 
         let clamp = Clamp::new();

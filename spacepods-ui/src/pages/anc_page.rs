@@ -2,7 +2,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 use glib::clone;
 use gtk4::prelude::*;
-use gtk4::{Box, Label, Orientation, Scale, Switch, ToggleButton, Spinner};
+use gtk4::{Box, Label, Orientation, Switch, ToggleButton, Spinner};
 use libadwaita::{ActionRow, PreferencesGroup, Clamp, StatusPage};
 use libadwaita::prelude::*;
 
@@ -27,8 +27,7 @@ impl AncPage {
         title.add_css_class("title-1");
         title.set_halign(gtk4::Align::Start);
 
-        // ── Mode row (real state machine instead of three loosely
-        // grouped toggle buttons fighting over "suggested-action") ──
+        // ── Mode row ──
         let off_btn = ToggleButton::with_label("Off");
         let anc_btn = ToggleButton::with_label("ANC");
         let trans_btn = ToggleButton::with_label("Transparency");
@@ -46,44 +45,38 @@ impl AncPage {
         mode_row.append(&anc_btn);
         mode_row.append(&trans_btn);
 
-        let mode_status = Label::new(Some("Loading current mode…"));
-        mode_status.add_css_class("dim-label");
-        mode_status.add_css_class("caption");
-        mode_status.set_halign(gtk4::Align::Center);
-
         let mode_spinner = Spinner::new();
         mode_spinner.set_visible(false);
+        mode_spinner.set_halign(gtk4::Align::Center);
 
-        let mode_status_row = Box::new(Orientation::Horizontal, 6);
-        mode_status_row.set_halign(gtk4::Align::Center);
-        mode_status_row.append(&mode_spinner);
-        mode_status_row.append(&mode_status);
+        // ── Noise Control group ──
+        let anc_group = PreferencesGroup::new();
 
-        // ── Intensity slider ──
-        let slider_card = libadwaita::Bin::new();
-        slider_card.add_css_class("card");
-        slider_card.set_visible(false);
-        let slider_inner = Box::new(Orientation::Vertical, 6);
-        slider_inner.set_margin_top(14);
-        slider_inner.set_margin_bottom(14);
-        slider_inner.set_margin_start(16);
-        slider_inner.set_margin_end(16);
+        // ── Intensity selector — Low / Medium / High radio buttons ──
+        let low_btn = ToggleButton::with_label("Low");
+        let med_btn = ToggleButton::with_label("Medium");
+        let high_btn = ToggleButton::with_label("High");
+        med_btn.set_group(Some(&low_btn));
+        high_btn.set_group(Some(&low_btn));
+        for b in [&low_btn, &med_btn, &high_btn] {
+            b.add_css_class("pill");
+            b.set_sensitive(false);
+        }
+        med_btn.set_active(true);
 
-        let slider_label = Label::new(Some("Intensity"));
-        slider_label.set_halign(gtk4::Align::Start);
-        slider_label.add_css_class("caption-heading");
-
-        let slider = Scale::with_range(Orientation::Horizontal, 1.0, 15.0, 1.0);
-        slider.set_draw_value(true);
-        slider.set_hexpand(true);
-        slider.set_value(3.0);
-        slider.set_sensitive(false);
-
-        slider_inner.append(&slider_label);
-        slider_inner.append(&slider);
-        slider_card.set_child(Some(&slider_inner));
+        let intensity_btns = Box::new(Orientation::Horizontal, 6);
+        intensity_btns.add_css_class("linked");
+        intensity_btns.set_halign(gtk4::Align::Center);
+        intensity_btns.set_margin_top(4);
+        intensity_btns.set_margin_bottom(8);
+        intensity_btns.append(&low_btn);
+        intensity_btns.append(&med_btn);
+        intensity_btns.append(&high_btn);
 
         // ── Feature toggles ──
+        let features_group = PreferencesGroup::new();
+        features_group.set_title("Additional Features");
+
         let adaptive_row = ActionRow::new();
         adaptive_row.set_title("Adaptive ANC");
         adaptive_row.set_subtitle("Dynamically adjust based on environment");
@@ -93,6 +86,7 @@ impl AncPage {
         adaptive_row.set_activatable_widget(Some(&adaptive_switch));
         adaptive_switch.set_sensitive(false);
         adaptive_row.set_sensitive(false);
+        features_group.add(&adaptive_row);
 
         let dual_row = ActionRow::new();
         dual_row.set_title("Dual Device (Multi-point)");
@@ -103,15 +97,19 @@ impl AncPage {
         dual_row.set_activatable_widget(Some(&dual_switch));
         dual_switch.set_sensitive(false);
         dual_row.set_sensitive(false);
-
-        let features_group = PreferencesGroup::new();
-        features_group.set_title("Additional Features");
-        features_group.add(&adaptive_row);
         features_group.add(&dual_row);
 
-        // ── Offline state (shown instead of everything above if the
-        // daemon can't be reached at all — was previously just a label
-        // buried under disabled controls) ──
+        // ── Find My Earbuds ──
+        let find_ear_row = ActionRow::new();
+        find_ear_row.set_title("Find My Earbuds");
+        find_ear_row.set_subtitle("Ring your earbuds to locate them");
+        let find_ear_btn = gtk4::Button::with_label("Ring");
+        find_ear_btn.add_css_class("destructive-action");
+        find_ear_btn.set_valign(gtk4::Align::Center);
+        find_ear_row.add_suffix(&find_ear_btn);
+        features_group.add(&find_ear_row);
+
+        // ── Offline state ──
         let offline_status = StatusPage::new();
         offline_status.set_icon_name(Some("network-offline-symbolic"));
         offline_status.set_title("Daemon Unreachable");
@@ -121,29 +119,26 @@ impl AncPage {
 
         container.append(&title);
         container.append(&mode_row);
-        container.append(&mode_status_row);
-        container.append(&slider_card);
+        container.append(&mode_spinner);
+        container.append(&anc_group);
+        container.append(&intensity_btns);
         container.append(&features_group);
         container.append(&offline_status);
 
         clamp.set_child(Some(&container));
 
         // ── Shared reactive state ──
-        // `applying` guards against re-entrant daemon calls while one is
-        // already in flight (fixes the old bug where fast clicking could
-        // fire overlapping commands and leave the UI's idea of the mode
-        // out of sync with the earbuds).
         let applying = Rc::new(Cell::new(false));
         let current_mode = Rc::new(Cell::new(0u8));
 
         // ── Initial status fetch ──
         glib::spawn_future_local(clone!(
             #[strong] off_btn, #[strong] anc_btn, #[strong] trans_btn,
-            #[strong] slider, #[strong] slider_card,
+            #[strong] low_btn, #[strong] med_btn, #[strong] high_btn,
             #[strong] adaptive_switch, #[strong] adaptive_row,
             #[strong] dual_switch, #[strong] dual_row,
-            #[strong] mode_status, #[strong] mode_row,
-            #[strong] offline_status, #[strong] features_group,
+            #[strong] mode_spinner, #[strong] mode_row,
+            #[strong] offline_status, #[strong] features_group, #[strong] anc_group,
             #[strong] applying, #[strong] current_mode, #[strong] ctx,
             async move {
                 use libspacepods::client::SpacePodsClient;
@@ -154,7 +149,7 @@ impl AncPage {
 
                             let mode = s.anc.mode as u8;
                             current_mode.set(mode);
-                            applying.set(true); // suppress toggled-handler side effects
+                            applying.set(true);
                             match mode {
                                 0 => off_btn.set_active(true),
                                 1 => anc_btn.set_active(true),
@@ -162,12 +157,15 @@ impl AncPage {
                                 _ => {}
                             }
                             applying.set(false);
-                            Self::apply_mode_ui(mode, &mode_status, &slider_card, &adaptive_switch, &adaptive_row);
+                            Self::apply_mode_ui(mode, &low_btn, &med_btn, &high_btn, &adaptive_switch, &adaptive_row);
 
-                            let max = s.anc.max_level.max(1) as f64;
-                            slider.set_range(1.0, max);
-                            slider.set_value(s.anc.level as f64);
-                            slider.set_sensitive(mode != 0);
+                            // Map daemon level (1-5) to Low/Medium/High
+                            match s.anc.level as u8 {
+                                1..=2 => low_btn.set_active(true),
+                                3 => med_btn.set_active(true),
+                                4..=5 => high_btn.set_active(true),
+                                _ => {}
+                            }
 
                             if let Some(v) = s.features.adaptive_anc {
                                 adaptive_switch.set_active(v);
@@ -182,6 +180,7 @@ impl AncPage {
                         }
                         Err(e) => {
                             mode_row.set_visible(false);
+                            anc_group.set_visible(false);
                             features_group.set_visible(false);
                             offline_status.set_visible(true);
                             ctx.daemon_unreachable(e);
@@ -189,6 +188,7 @@ impl AncPage {
                     },
                     Err(e) => {
                         mode_row.set_visible(false);
+                        anc_group.set_visible(false);
                         features_group.set_visible(false);
                         offline_status.set_visible(true);
                         ctx.daemon_unreachable(e);
@@ -198,34 +198,22 @@ impl AncPage {
         ));
 
         // ── Mode buttons ──
-        Self::connect_mode(&off_btn, 0, "off", &slider, &slider_card,
-                           &adaptive_switch, &adaptive_row, &mode_status, &mode_spinner,
+        Self::connect_mode(&off_btn, 0, "off", &low_btn, &med_btn, &high_btn,
+                           &adaptive_switch, &adaptive_row, &mode_spinner,
                            &applying, &current_mode, ctx.clone());
-        Self::connect_mode(&anc_btn, 1, "anc", &slider, &slider_card,
-                           &adaptive_switch, &adaptive_row, &mode_status, &mode_spinner,
+        Self::connect_mode(&anc_btn, 1, "anc", &low_btn, &med_btn, &high_btn,
+                           &adaptive_switch, &adaptive_row, &mode_spinner,
                            &applying, &current_mode, ctx.clone());
-        Self::connect_mode(&trans_btn, 2, "transparency", &slider, &slider_card,
-                           &adaptive_switch, &adaptive_row, &mode_status, &mode_spinner,
+        Self::connect_mode(&trans_btn, 2, "transparency", &low_btn, &med_btn, &high_btn,
+                           &adaptive_switch, &adaptive_row, &mode_spinner,
                            &applying, &current_mode, ctx.clone());
 
-        // ── Slider: only send once the user releases the handle, not on
-        // every intermediate value while dragging (old code hammered the
-        // daemon on every pixel of drag). ──
+        // ── Intensity buttons ──
         {
             let ctx = ctx.clone();
             let applying = applying.clone();
-            slider.connect_value_changed(move |_| {
-                // value display updates live via set_draw_value; the actual
-                // command is sent from the button-release handler below.
-                let _ = &applying; // no-op hook kept for symmetry/clarity
-            });
-            let gc = gtk4::GestureClick::new();
-            gc.set_button(0);
-            let slider_for_release = slider.clone();
-            let ctx_release = ctx.clone();
-            gc.connect_released(move |_, _, _, _| {
-                let level = slider_for_release.value() as u8;
-                let ctx = ctx_release.clone();
+            let send_level = move |level: u8| {
+                let ctx = ctx.clone();
                 glib::spawn_future_local(async move {
                     if let Ok(mut client) = libspacepods::client::SpacePodsClient::connect(None).await {
                         if let Err(e) = client.set_level(level).await {
@@ -235,11 +223,30 @@ impl AncPage {
                         ctx.daemon_unreachable("connection failed");
                     }
                 });
+            };
+
+            let applying1 = applying.clone();
+            let low_send = send_level.clone();
+            low_btn.connect_toggled(move |b| {
+                if applying1.get() { return; }
+                if b.is_active() { low_send(1); }
             });
-            slider.add_controller(gc);
+
+            let applying2 = applying.clone();
+            let med_send = send_level.clone();
+            med_btn.connect_toggled(move |b| {
+                if applying2.get() { return; }
+                if b.is_active() { med_send(3); }
+            });
+
+            let applying3 = applying.clone();
+            high_btn.connect_toggled(move |b| {
+                if applying3.get() { return; }
+                if b.is_active() { send_level(5); }
+            });
         }
 
-        // ── Adaptive switch — revert on failure instead of lying about state ──
+        // ── Adaptive switch ──
         {
             let ctx = ctx.clone();
             let applying = applying.clone();
@@ -265,7 +272,7 @@ impl AncPage {
             });
         }
 
-        // ── Dual device switch — same revert-on-failure treatment ──
+        // ── Dual device switch ──
         {
             let ctx = ctx.clone();
             let applying = applying.clone();
@@ -291,58 +298,109 @@ impl AncPage {
             });
         }
 
+        // ── Find My Earbuds button ──
+        {
+            let ctx = ctx.clone();
+            let finding = std::rc::Rc::new(std::cell::Cell::new(false));
+            find_ear_btn.connect_clicked(move |btn| {
+                let is_active = finding.get();
+                if is_active {
+                    // Stop finding
+                    finding.set(false);
+                    btn.set_label("Ring");
+                    btn.remove_css_class("suggested-action");
+                    btn.add_css_class("destructive-action");
+                    let payload = vec![0x00];
+                    let ctx = ctx.clone();
+                    glib::spawn_future_local(async move {
+                        let _ = libspacepods::client::SpacePodsClient::connect(None).await
+                            .map(|mut c| glib::spawn_future_local(async move { let _ = c.send_command_raw(libspacepods::ipc::ServiceCommand::Custom { command_id: 0x2A, payload }).await; }));
+                    });
+                } else {
+                    // Start finding
+                    finding.set(true);
+                    btn.set_label("Stop Ringing");
+                    btn.remove_css_class("destructive-action");
+                    btn.add_css_class("suggested-action");
+                    let payload = vec![0x01];
+                    let ctx = ctx.clone();
+                    let finding = finding.clone();
+                    let btn_ref = btn.clone();
+                    glib::spawn_future_local(async move {
+                        let result = match libspacepods::client::SpacePodsClient::connect(None).await {
+                            Ok(mut client) => client.send_command_raw(
+                                libspacepods::ipc::ServiceCommand::Custom {
+                                    command_id: 0x2A,
+                                    payload,
+                                }
+                            ).await,
+                            Err(e) => Err(e),
+                        };
+                        if let Err(e) = result {
+                            ctx.error(format!("Couldn't ring earbuds: {}", e));
+                            finding.set(false);
+                            btn_ref.set_label("Ring");
+                            btn_ref.remove_css_class("suggested-action");
+                            btn_ref.add_css_class("destructive-action");
+                        }
+                    });
+                }
+            });
+        }
+
         clamp.upcast()
     }
 
     fn apply_mode_ui(
         mode: u8,
-        mode_status: &Label,
-        slider_card: &libadwaita::Bin,
+        low_btn: &ToggleButton,
+        med_btn: &ToggleButton,
+        high_btn: &ToggleButton,
         adaptive_switch: &Switch,
         adaptive_row: &ActionRow,
     ) {
-        let name = match mode { 0 => "OFF", 1 => "ANC", 2 => "TRANSPARENCY", _ => "UNKNOWN" };
-        mode_status.set_text(&format!("Current mode: {}", name));
-        slider_card.set_visible(mode != 0);
+        let sensitive = mode != 0;
+        low_btn.set_sensitive(sensitive);
+        med_btn.set_sensitive(sensitive);
+        high_btn.set_sensitive(sensitive);
         adaptive_switch.set_sensitive(mode == 1);
         adaptive_row.set_sensitive(mode == 1);
     }
 
     fn connect_mode(
         btn: &ToggleButton, mode_id: u8, mode_name: &'static str,
-        slider: &Scale, slider_card: &libadwaita::Bin,
+        low_btn: &ToggleButton, med_btn: &ToggleButton, high_btn: &ToggleButton,
         adaptive_switch: &Switch, adaptive_row: &ActionRow,
-        mode_status: &Label, mode_spinner: &Spinner,
+        mode_spinner: &Spinner,
         applying: &Rc<Cell<bool>>, current_mode: &Rc<Cell<u8>>,
         ctx: Rc<AppContext>,
     ) {
-        let slider = slider.clone();
-        let slider_card = slider_card.clone();
+        let low = low_btn.clone();
+        let med = med_btn.clone();
+        let high = high_btn.clone();
         let asw = adaptive_switch.clone();
         let ar = adaptive_row.clone();
-        let ms = mode_status.clone();
         let spinner = mode_spinner.clone();
+        let btn_owned = btn.clone();
+        let btn_for_cb = btn.clone();
         let applying = Rc::clone(applying);
         let current_mode = Rc::clone(current_mode);
         let cmd = mode_name.to_string();
 
-        btn.connect_toggled(move |b| {
+        btn_owned.connect_toggled(move |b| {
             if !b.is_active() {
                 b.remove_css_class("suggested-action");
                 return;
             }
             b.add_css_class("suggested-action");
             if applying.get() {
-                // We're just reflecting a status fetch, not a user click.
-                Self::apply_mode_ui(mode_id, &ms, &slider_card, &asw, &ar);
-                slider.set_sensitive(mode_id != 0);
+                Self::apply_mode_ui(mode_id, &low, &med, &high, &asw, &ar);
                 return;
             }
 
             let previous_mode = current_mode.get();
             current_mode.set(mode_id);
-            Self::apply_mode_ui(mode_id, &ms, &slider_card, &asw, &ar);
-            slider.set_sensitive(mode_id != 0);
+            Self::apply_mode_ui(mode_id, &low, &med, &high, &asw, &ar);
 
             spinner.set_visible(true);
             spinner.start();
@@ -350,10 +408,11 @@ impl AncPage {
 
             let mc = cmd.clone();
             let ctx = ctx.clone();
-            let btn_ref = b.clone();
+            let btn_ref = btn_for_cb.clone();
             let spinner_ref = spinner.clone();
-            let ms_ref = ms.clone();
-            let slider_card_ref = slider_card.clone();
+            let low_ref = low.clone();
+            let med_ref = med.clone();
+            let high_ref = high.clone();
             let asw_ref = asw.clone();
             let ar_ref = ar.clone();
             let current_mode_ref = current_mode.clone();
@@ -368,9 +427,8 @@ impl AncPage {
 
                 if let Err(e) = result {
                     ctx.error(format!("Couldn't switch ANC mode: {}", e));
-                    // Roll the UI back to the mode we knew was actually active.
                     current_mode_ref.set(previous_mode);
-                    Self::apply_mode_ui(previous_mode, &ms_ref, &slider_card_ref, &asw_ref, &ar_ref);
+                    Self::apply_mode_ui(previous_mode, &low_ref, &med_ref, &high_ref, &asw_ref, &ar_ref);
                 }
             });
         });

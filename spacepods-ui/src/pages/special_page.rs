@@ -1,9 +1,7 @@
 use gtk4::prelude::*;
 use gtk4::{Box, Orientation, DropDown, Image};
 use libadwaita::prelude::*;
-use libadwaita::{
-    HeaderBar, NavigationPage, PreferencesGroup, ActionRow, Clamp, ToolbarView,
-};
+use libadwaita::{PreferencesGroup, ActionRow, Clamp};
 use std::rc::Rc;
 use std::cell::RefCell;
 
@@ -113,14 +111,9 @@ impl SpecialPage {
     /// local-only), but it's threaded through like every other page so a
     /// future "send gesture map to daemon" call has consistent toast/error
     /// handling for free instead of silently swallowing failures.
-    pub fn new(ctx: Rc<AppContext>) -> NavigationPage {
+    pub fn new(ctx: Rc<AppContext>) -> gtk4::Widget {
         let left_config = EarConfig::default_left();
         let right_config = EarConfig::default_right();
-
-        let header = HeaderBar::new();
-        header.set_title_widget(Some(
-            &libadwaita::WindowTitle::new("Gestures", "Configure ear tap actions"),
-        ));
 
         let content = Box::new(Orientation::Vertical, 24);
         content.set_margin_top(16);
@@ -175,11 +168,7 @@ impl SpecialPage {
         scroll.set_vexpand(true);
         scroll.set_child(Some(&clamp));
 
-        let toolbar_view = ToolbarView::new();
-        toolbar_view.add_top_bar(&header);
-        toolbar_view.set_content(Some(&scroll));
-
-        NavigationPage::new(&toolbar_view, "Gestures")
+        scroll.upcast()
     }
 
     fn populate_gesture_rows(group: &PreferencesGroup, config: &Rc<RefCell<EarConfig>>, ctx: Rc<AppContext>) {

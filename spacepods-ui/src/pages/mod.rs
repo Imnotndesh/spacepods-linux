@@ -4,7 +4,6 @@ pub mod eq_page;
 pub mod settings_page;
 pub mod loading_page;
 pub(crate) mod special_page;
-pub(crate) mod find_page;
 pub(crate) mod led_page;
 pub(crate) mod gaming_page;
 pub(crate) mod spatial_page;

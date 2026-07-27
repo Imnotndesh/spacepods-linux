@@ -2,17 +2,14 @@ use std::rc::Rc;
 use gtk4::prelude::*;
 use gtk4::{Box, Label, Orientation, Switch};
 use libadwaita::prelude::*;
-use libadwaita::{HeaderBar, ToolbarView, PreferencesGroup, ActionRow, Clamp, WindowTitle, StatusPage};
+use libadwaita::{PreferencesGroup, ActionRow, Clamp, StatusPage};
 
 use crate::context::{AppContext, set_busy};
 
 pub struct GamingPage;
 
 impl GamingPage {
-    pub fn new(ctx: Rc<AppContext>) -> ToolbarView {
-        let header = HeaderBar::new();
-        let title_widget = WindowTitle::new("Gaming Mode", "Optimize for low-latency gaming");
-        header.set_title_widget(Some(&title_widget));
+    pub fn new(ctx: Rc<AppContext>) -> gtk4::Widget {
 
         let status_page = StatusPage::new();
         status_page.set_icon_name(Some("input-gaming-symbolic"));
@@ -101,10 +98,6 @@ impl GamingPage {
         clamp.set_maximum_size(500);
         clamp.set_child(Some(&content));
 
-        let toolbar_view = ToolbarView::new();
-        toolbar_view.add_top_bar(&header);
-        toolbar_view.set_content(Some(&clamp));
-
-        toolbar_view
+        clamp.upcast()
     }
 }

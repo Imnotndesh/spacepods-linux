@@ -11,7 +11,6 @@ use std::cell::{Cell, RefCell};
 use std::fs;
 use std::path::PathBuf;
 use std::rc::Rc;
-use crate::storage::update_settings;
 use crate::context::AppContext;
 
 const BUILTIN_PRESETS: [(u8, &str, [i8; 7]); 6] = [
@@ -151,7 +150,7 @@ impl EqPage {
                         in_custom_ref.set(false);
                         *gains_ref.borrow_mut() = gains_copy;
                         drawing_ref.queue_draw();
-                        update_settings(|s| s.last_eq_preset = preset_id);
+                        // preset saved locally
                         let ctx = ctx.clone();
                         glib::spawn_future_local(async move {
                             let result = match libspacepods::client::SpacePodsClient::connect(None).await {
@@ -278,7 +277,7 @@ impl EqPage {
                         sliders_card_ref.set_visible(true);
                         drawing_ref.queue_draw();
                         // When entering custom mode, set last_eq_preset to 6 (custom)
-                        update_settings(|s| s.last_eq_preset = 6);
+                        // custom mode entry
                     } else {
                         b.remove_css_class("suggested-action");
                         sliders_card_ref.set_visible(false);
@@ -326,7 +325,6 @@ impl EqPage {
                 name_entry_ref.set_text("");
                 sliders_card_ref.set_visible(false);
                 edit_btn_ref.set_active(false);
-                update_settings(|s| s.last_eq_preset = 6);
                 ctx.success(format!("Saved preset \"{}\"", name));
             });
         }
@@ -397,9 +395,6 @@ fn add_custom_preset_button(
                     in_custom_ref.set(false);
                     *gains_ref.borrow_mut() = gains_copy;
                     drawing_ref.queue_draw();
-                    // Custom presets have no daemon-side preset ID; mark
-                    // "custom" (6) locally so restore-on-launch behaves.
-                    update_settings(|s| s.last_eq_preset = 6);
                 } else {
                     b.remove_css_class("suggested-action");
                 }

@@ -1,21 +1,15 @@
 use gtk4::prelude::*;
 use gtk4::{Box, Label, Orientation, Image, ListBox, ListBoxRow, SelectionMode};
 use libadwaita::{
-    HeaderBar, NavigationView, NavigationPage, ToolbarView, ToastOverlay,
-    NavigationSplitView, Breakpoint, BreakpointCondition, ApplicationWindow,
+    HeaderBar, ToolbarView, ToastOverlay, OverlaySplitView,
+    Breakpoint, BreakpointCondition, ApplicationWindow,
 };
 use libadwaita::prelude::*;
-use std::rc::Rc;
-use std::sync::Arc;
-use tokio::sync::Mutex;
-
-use crate::tray::TrayHandle;
 use crate::context::AppContext;
 use crate::pages::anc_page::AncPage;
 use crate::pages::eq_page::EqPage;
 use crate::pages::special_page::SpecialPage;
 use crate::pages::settings_page::SettingsPage;
-use crate::pages::find_page::FindPage;
 use crate::pages::gaming_page::GamingPage;
 use crate::pages::spatial_page::SpatialAudioPage;
 use crate::pages::hearing_page::HearingPage;
@@ -50,22 +44,16 @@ impl Section {
 
 /// Main home view.
 ///
-/// Layout follows the GNOME HIG "utility pane" pattern:
-/// `AdwToastOverlay` (feedback for every page) wrapping an
-/// `AdwNavigationSplitView` (sidebar + content, each a real `AdwNavigationPage`
-/// so back-gestures and titles work for free) with an `AdwBreakpoint` that
-/// collapses the sidebar into a stack on narrow windows/mobile widths,
-/// instead of the old fixed-width overlay box.
+/// Layout: `AdwToastOverlay` wrapping an `AdwNavigationSplitView`
+/// (sidebar + content). No outer `AdwNavigationView` — the split view
+/// itself contains `AdwNavigationPage` children. A breakpoint collapses
+/// the sidebar on narrow windows.
 pub struct HomeView;
 
 impl HomeView {
     pub fn new(
         window: &ApplicationWindow,
-        tray_handle: Rc<Option<TrayHandle>>,
-        _client: Arc<Mutex<libspacepods::ipc::SpacePodsClient>>,
-    ) -> NavigationView {
-        let nav_view = NavigationView::new();
-
+    ) -> ToastOverlay {
         let toast_overlay = ToastOverlay::new();
         let ctx = AppContext::new(toast_overlay.clone());
 
@@ -96,7 +84,7 @@ impl HomeView {
                 title: "Gestures",
                 icon: "input-touchpad-symbolic",
                 section: Section::Controls,
-                widget: SpecialPage::new(ctx.clone()).upcast(),
+                widget: SpecialPage::new(ctx.clone()),
             },
             PageDef {
                 id: "gaming",
@@ -104,13 +92,6 @@ impl HomeView {
                 icon: "input-gaming-symbolic",
                 section: Section::Controls,
                 widget: GamingPage::new(ctx.clone()).upcast(),
-            },
-            PageDef {
-                id: "find",
-                title: "Find Earbuds",
-                icon: "find-location-symbolic",
-                section: Section::Controls,
-                widget: FindPage::new(ctx.clone()).upcast(),
             },
             PageDef {
                 id: "hearing",
@@ -124,7 +105,7 @@ impl HomeView {
                 title: "Settings",
                 icon: "settings-symbolic",
                 section: Section::Settings,
-                widget: SettingsPage::navigation_page(tray_handle.clone()).upcast(),
+                widget: SettingsPage::page(),
             },
         ];
 
@@ -187,16 +168,17 @@ impl HomeView {
             row_to_id.push((row, page.id));
         }
 
-        // Select the first real (non-header) row by default.
         if let Some((first_row, first_id)) = row_to_id.first() {
             sidebar_list.select_row(Some(first_row));
             content_stack.set_visible_child_name(first_id);
         }
 
-        // ── Wire selection -> content stack, and auto-collapse sidebar
-        // back to content when a row is picked while collapsed (phone-style
-        // navigation, matches AdwNavigationSplitView expectations) ──
-        let split_view = NavigationSplitView::new();
+        // ── Wire selection -> content stack ──
+        let split_view = OverlaySplitView::builder()
+            .min_sidebar_width(220.0)
+            .max_sidebar_width(280.0)
+            .sidebar_width_fraction(0.28)
+            .build();
         {
             let stack = content_stack.clone();
             let row_to_id = row_to_id.clone();
@@ -207,33 +189,14 @@ impl HomeView {
                     stack.set_visible_child_name(id);
                     if let Some(sv) = split_view_weak.upgrade() {
                         if sv.is_collapsed() {
-                            sv.set_show_content(true);
+                            sv.set_show_sidebar(false);
                         }
                     }
                 }
             });
         }
 
-        // ── Sidebar header (app identity) ──
-        let sidebar_header_box = Box::new(Orientation::Horizontal, 8);
-        sidebar_header_box.set_margin_top(4);
-        sidebar_header_box.set_margin_bottom(4);
-        sidebar_header_box.set_margin_start(8);
-        sidebar_header_box.set_margin_end(8);
-        let app_icon = Image::from_icon_name("audio-headset-symbolic");
-        app_icon.set_pixel_size(20);
-        sidebar_header_box.append(&app_icon);
-        let device_name = Label::new(Some("SpaceBuds"));
-        device_name.add_css_class("heading");
-        device_name.set_halign(gtk4::Align::Start);
-        device_name.set_hexpand(true);
-        sidebar_header_box.append(&device_name);
-        let status_dot = Image::from_icon_name("bluetooth-active-symbolic");
-        status_dot.set_pixel_size(14);
-        status_dot.add_css_class("success");
-        status_dot.set_tooltip_text(Some("Connected"));
-        sidebar_header_box.append(&status_dot);
-
+        // ── Sidebar ──
         let sidebar_header = HeaderBar::builder()
             .show_title(false)
             .build();
@@ -246,35 +209,33 @@ impl HomeView {
         sidebar_scroll.set_child(Some(&sidebar_list));
 
         let sidebar_content = Box::new(Orientation::Vertical, 0);
-        sidebar_content.append(&sidebar_header_box);
-        sidebar_content.append(&gtk4::Separator::new(Orientation::Horizontal));
         sidebar_content.append(&sidebar_scroll);
 
         let sidebar_toolbar = ToolbarView::new();
         sidebar_toolbar.add_top_bar(&sidebar_header);
         sidebar_toolbar.set_content(Some(&sidebar_content));
 
-        let sidebar_page = NavigationPage::new(&sidebar_toolbar, "Sidebar");
-        sidebar_page.set_width_request(220);
-
         // ── Content side ──
         let content_header = HeaderBar::new();
+        let content_title = libadwaita::WindowTitle::new("", "");
+        content_header.set_title_widget(Some(&content_title));
+        content_header.set_show_back_button(false);
+
+        let content_scroll = gtk4::ScrolledWindow::new();
+        content_scroll.set_hscrollbar_policy(gtk4::PolicyType::Never);
+        content_scroll.set_vexpand(true);
+        content_scroll.set_child(Some(&content_stack));
+
         let content_toolbar = ToolbarView::new();
         content_toolbar.add_top_bar(&content_header);
-        content_toolbar.set_content(Some(&content_stack));
+        content_toolbar.set_content(Some(&content_scroll));
 
-        let content_page = NavigationPage::new(&content_toolbar, "SpacePods");
-
-        split_view.set_sidebar(Some(&sidebar_page));
-        split_view.set_content(Some(&content_page));
-        split_view.set_min_sidebar_width(220.0);
-        split_view.set_max_sidebar_width(300.0);
-        split_view.set_sidebar_width_fraction(0.28);
+        split_view.set_sidebar(Some(&sidebar_toolbar));
+        split_view.set_content(Some(&content_toolbar));
 
         toast_overlay.set_child(Some(&split_view));
 
-        // ── Reactive breakpoint: below 680px, collapse to a single pane
-        // (GNOME HIG adaptive behaviour — same pattern as Settings/Files) ──
+        // ── Breakpoint ──
         let condition = BreakpointCondition::new_length(
             libadwaita::BreakpointConditionLengthType::MaxWidth,
             680.0,
@@ -284,11 +245,6 @@ impl HomeView {
         breakpoint.add_setter(&split_view, "collapsed", Some(&true.to_value()));
         window.add_breakpoint(breakpoint);
 
-        let main_page = NavigationPage::builder()
-            .title("SpacePods")
-            .child(&toast_overlay)
-            .build();
-        nav_view.push(&main_page);
-        nav_view
+        toast_overlay
     }
 }

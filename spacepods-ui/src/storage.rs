@@ -54,8 +54,6 @@ pub struct AppSettings {
     pub last_eq_preset: u8,
     pub adaptive_anc_enabled: bool,
     pub dual_device_enabled: bool,
-    pub tray_enabled: bool,
-    pub close_to_tray: bool,
     pub autostart: bool,
 }
 
@@ -67,8 +65,6 @@ impl Default for AppSettings {
             last_eq_preset: 0,
             adaptive_anc_enabled: false,
             dual_device_enabled: false,
-            tray_enabled: false,
-            close_to_tray: false,
             autostart: false,
         }
     }

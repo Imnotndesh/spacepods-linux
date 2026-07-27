@@ -3,7 +3,6 @@ mod home;
 mod pages;
 mod service;
 mod storage;
-mod tray;
 mod context;
 
 fn main() -> glib::ExitCode {
