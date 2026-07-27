@@ -55,6 +55,12 @@ pub enum DetailFeature {
     Ldac,
     SoundEffect3D,
     HearingCare,
+    AreaTap,
+    ClearPairRecord,
+    BluetoothName,
+    InEarDetection,
+    AutoAnswer,
+    FindDevice,
 }
 
 // ── Device Profile ──
@@ -183,6 +189,21 @@ fn generic_profile() -> DeviceProfile {
             DetailFeature::HearingCare,
             DetailFeature::DefaultEqHavyBass,
             DetailFeature::ShowDiscoverUi,
+            DetailFeature::SpaceAudio,
+            DetailFeature::SoundEffect3D,
+            DetailFeature::AreaTap,
+            DetailFeature::Led,
+            DetailFeature::DualDeviceSwitch,
+            DetailFeature::ChatMode,
+            DetailFeature::LongEndurance,
+            DetailFeature::VoicePrompt,
+            DetailFeature::InEarDetection,
+            DetailFeature::AutoAnswer,
+            DetailFeature::AdaptiveVolume,
+            DetailFeature::ClearPairRecord,
+            DetailFeature::BluetoothName,
+            DetailFeature::FindDevice,
+            DetailFeature::EqSwitch,
         ],
     }
 }

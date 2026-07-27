@@ -13,7 +13,9 @@ use crate::pages::special_page::SpecialPage;
 use crate::pages::settings_page::SettingsPage;
 use crate::pages::gaming_page::GamingPage;
 use crate::pages::spatial_page::SpatialAudioPage;
+use crate::pages::area_tap_page::AreaTapPage;
 use crate::pages::hearing_page::HearingPage;
+use crate::pages::led_page::LedPage;
 
 /// Page descriptor for sidebar navigation.
 struct PageDef {
@@ -90,6 +92,22 @@ impl HomeView {
                 section: Section::Audio,
                 feature: Some(libspacepods::device_profile::DetailFeature::SpaceAudio),
                 widget: SpatialAudioPage::new(ctx.clone()).upcast(),
+            },
+            PageDef {
+                id: "areatap",
+                title: "Area Tap",
+                icon: "input-touchpad-symbolic",
+                section: Section::Controls,
+                feature: Some(libspacepods::device_profile::DetailFeature::AreaTap),
+                widget: AreaTapPage::new(ctx.clone()).upcast(),
+            },
+            PageDef {
+                id: "led",
+                title: "LED Lights",
+                icon: "emoji-symbols-symbolic",
+                section: Section::Controls,
+                feature: Some(libspacepods::device_profile::DetailFeature::Led),
+                widget: LedPage::new().upcast(),
             },
             PageDef {
                 id: "gestures",
@@ -179,7 +197,7 @@ impl HomeView {
             row_box.set_margin_start(6);
             row_box.set_margin_end(6);
 
-            let icon = Image::from_icon_name(page.icon);
+            let icon = gtk4::Image::from_icon_name(page.icon);
             icon.set_pixel_size(16);
             row_box.append(&icon);
 

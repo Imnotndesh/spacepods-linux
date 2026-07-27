@@ -7,4 +7,5 @@ pub(crate) mod special_page;
 pub(crate) mod led_page;
 pub(crate) mod gaming_page;
 pub(crate) mod spatial_page;
+pub(crate) mod area_tap_page;
 pub(crate) mod hearing_page;

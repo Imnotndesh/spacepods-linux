@@ -335,6 +335,85 @@ impl InteractiveCli {
                 self.refresh_status().await?;
             }
 
+            "chat" => {
+                if parts.len() < 2 {
+                    println!("Usage: chat <on|off>");
+                    return Ok(false);
+                }
+                let enable = parts[1] == "on";
+                let mut client = self.client.lock().await;
+                client.send_command_raw(crate::ipc::ServiceCommand::Custom {
+                    command_id: 0x35,
+                    payload: vec![if enable { 0x01 } else { 0x00 }],
+                }).await?;
+                println!("\x1b[1;32m\u{2713}\x1b[0m Chat Mode: {}", if enable { "ON" } else { "OFF" });
+            }
+
+            "endurance" => {
+                if parts.len() < 2 {
+                    println!("Usage: endurance <on|off>");
+                    return Ok(false);
+                }
+                let enable = parts[1] == "on";
+                let mut client = self.client.lock().await;
+                client.send_command_raw(crate::ipc::ServiceCommand::Custom {
+                    command_id: 0x38,
+                    payload: vec![if enable { 0x01 } else { 0x00 }],
+                }).await?;
+                println!("\x1b[1;32m\u{2713}\x1b[0m Long Endurance: {}", if enable { "ON" } else { "OFF" });
+            }
+
+            "rename" => {
+                if parts.len() < 2 {
+                    println!("Usage: rename <new-name>");
+                    return Ok(false);
+                }
+                let name = parts[1..].join(" ");
+                let mut client = self.client.lock().await;
+                client.send_command_raw(crate::ipc::ServiceCommand::Custom {
+                    command_id: 0x2D,
+                    payload: name.bytes().collect(),
+                }).await?;
+                println!("\x1b[1;32m\u{2713}\x1b[0m Device renamed to: {}", name);
+            }
+
+            "clearpair" => {
+                let mut client = self.client.lock().await;
+                client.send_command_raw(crate::ipc::ServiceCommand::Custom {
+                    command_id: 0x2F,
+                    payload: vec![],
+                }).await?;
+                println!("\x1b[1;32m\u{2713}\x1b[0m Pairing records cleared. Device will restart.");
+            }
+
+            "gamemode" => {
+                if parts.len() < 2 {
+                    println!("Usage: gamemode <on|off>");
+                    return Ok(false);
+                }
+                let enable = parts[1] == "on";
+                let mut client = self.client.lock().await;
+                client.send_command_raw(crate::ipc::ServiceCommand::Custom {
+                    command_id: 0x25,
+                    payload: vec![if enable { 0x01 } else { 0x00 }],
+                }).await?;
+                println!("\x1b[1;32m\u{2713}\x1b[0m Game Mode: {}", if enable { "ON" } else { "OFF" });
+            }
+
+            "find" => {
+                let enable = parts.get(1).map_or(true, |s| *s == "on");
+                let mut client = self.client.lock().await;
+                client.send_command_raw(crate::ipc::ServiceCommand::Custom {
+                    command_id: 0x2A,
+                    payload: vec![if enable { 0x01 } else { 0x00 }],
+                }).await?;
+                if enable {
+                    println!("\x1b[1;32m\u{2713}\x1b[0m Ringing earbuds! Use 'find off' to stop.");
+                } else {
+                    println!("\x1b[1;32m\u{2713}\x1b[0m Stopped ringing.");
+                }
+            }
+
             "clear" => {
                 print!("\x1b[2J\x1b[1;1H");
                 std::io::Write::flush(&mut std::io::stdout())?;
@@ -461,6 +540,12 @@ impl InteractiveCli {
         println!("  \x1b[1;33meq <0-13>\x1b[0m            - Set EQ preset");
         println!("  \x1b[1;33madaptive <on|off>\x1b[0m   - Set adaptive ANC");
         println!("  \x1b[1;33mdual <on|off>\x1b[0m       - Set dual device mode");
+        println!("  \x1b[1;33mgamemode <on|off>\x1b[0m   - Toggle gaming mode");
+        println!("  \x1b[1;33mchat <on|off>\x1b[0m       - Toggle chat mode");
+        println!("  \x1b[1;33mendurance <on|off>\x1b[0m  - Toggle long endurance mode");
+        println!("  \x1b[1;33mrename <name>\x1b[0m       - Rename Bluetooth device");
+        println!("  \x1b[1;33mclearpair\x1b[0m           - Clear pairing records");
+        println!("  \x1b[1;33mfind [on|off]\x1b[0m      - Ring earbuds (default: on)");
         println!("  \x1b[1;33mclear\x1b[0m               - Clear screen");
         println!("  \x1b[1;33mexit|quit\x1b[0m           - Exit CLI");
         println!();

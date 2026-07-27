@@ -1,15 +1,26 @@
 use gtk4::prelude::*;
 use gtk4::{Box, Label, Orientation, DropDown, Switch, Scale};
 use libadwaita::prelude::*;
-use libadwaita::{HeaderBar, ToolbarView, PreferencesGroup, ActionRow, Clamp, WindowTitle};
+use libadwaita::{PreferencesGroup, ActionRow, Clamp};
 
 pub struct LedPage;
 
 impl LedPage {
-    pub fn new() -> ToolbarView {
-        let header = HeaderBar::new();
-        let title_widget = WindowTitle::new("LED Control", "Customize your earbud lighting");
-        header.set_title_widget(Some(&title_widget));
+    pub fn new() -> gtk4::Widget {
+        // ── Header with refresh ──
+        let header_row = Box::new(Orientation::Horizontal, 0);
+        let title = Label::new(Some("LED Control"));
+        title.add_css_class("title-1");
+        title.set_halign(gtk4::Align::Start);
+        title.set_hexpand(true);
+        header_row.append(&title);
+
+        let refresh_btn = gtk4::Button::from_icon_name("view-refresh-symbolic");
+        refresh_btn.add_css_class("flat");
+        refresh_btn.add_css_class("circular");
+        refresh_btn.set_valign(gtk4::Align::Center);
+        refresh_btn.set_tooltip_text(Some("Refresh status"));
+        header_row.append(&refresh_btn);
 
         // ── LED Mode ──
         let mode_group = PreferencesGroup::new();
@@ -95,6 +106,7 @@ impl LedPage {
         content.set_margin_bottom(32);
         content.set_margin_start(16);
         content.set_margin_end(16);
+        content.append(&header_row);
         content.append(&mode_group);
         content.append(&color_group);
         content.append(&brightness_scale);
@@ -104,10 +116,6 @@ impl LedPage {
         let clamp = Clamp::new();
         clamp.set_maximum_size(600);
         clamp.set_child(Some(&content));
-
-        let toolbar_view = ToolbarView::new();
-        toolbar_view.add_top_bar(&header);
-        toolbar_view.set_content(Some(&clamp));
 
         // ── Wire up commands ──
         {
@@ -130,6 +138,6 @@ impl LedPage {
             });
         }
 
-        toolbar_view
+        clamp.upcast()
     }
 }

@@ -24,9 +24,19 @@ impl AncPage {
         container.set_margin_end(16);
 
         // ── Header ──
+        let header_row = Box::new(Orientation::Horizontal, 0);
         let title = Label::new(Some("ANC Control"));
         title.add_css_class("title-1");
         title.set_halign(gtk4::Align::Start);
+        title.set_hexpand(true);
+        header_row.append(&title);
+
+        let refresh_btn = gtk4::Button::from_icon_name("view-refresh-symbolic");
+        refresh_btn.add_css_class("flat");
+        refresh_btn.add_css_class("circular");
+        refresh_btn.set_valign(gtk4::Align::Center);
+        refresh_btn.set_tooltip_text(Some("Refresh status"));
+        header_row.append(&refresh_btn);
 
         // ── Mode row ──
         let off_btn = ToggleButton::with_label("Off");
@@ -84,7 +94,9 @@ impl AncPage {
         adaptive_row.set_activatable_widget(Some(&adaptive_switch));
         adaptive_switch.set_sensitive(false);
         adaptive_row.set_sensitive(false);
-        features_group.add(&adaptive_row);
+        if ctx.has_feature(libspacepods::device_profile::DetailFeature::Noise) {
+            features_group.add(&adaptive_row);
+        }
 
         let dual_row = ActionRow::new();
         dual_row.set_title("Dual Device (Multi-point)");
@@ -95,7 +107,37 @@ impl AncPage {
         dual_row.set_activatable_widget(Some(&dual_switch));
         dual_switch.set_sensitive(false);
         dual_row.set_sensitive(false);
-        features_group.add(&dual_row);
+        if ctx.has_feature(libspacepods::device_profile::DetailFeature::DualDeviceSwitch) {
+            features_group.add(&dual_row);
+        }
+
+        // Chat Mode
+        let chat_switch = Switch::new();
+        chat_switch.set_valign(gtk4::Align::Center);
+        if ctx.has_feature(libspacepods::device_profile::DetailFeature::ChatMode) {
+            let chat_row = ActionRow::new();
+            chat_row.set_title("Chat Mode");
+            chat_row.set_subtitle("Optimize audio for voice conversations");
+            chat_row.add_suffix(&chat_switch);
+            chat_row.set_activatable_widget(Some(&chat_switch));
+            chat_switch.set_sensitive(false);
+            chat_row.set_sensitive(false);
+            features_group.add(&chat_row);
+        }
+
+        // Long Endurance
+        let endurance_switch = Switch::new();
+        endurance_switch.set_valign(gtk4::Align::Center);
+        if ctx.has_feature(libspacepods::device_profile::DetailFeature::LongEndurance) {
+            let endurance_row = ActionRow::new();
+            endurance_row.set_title("Long Endurance");
+            endurance_row.set_subtitle("Extend battery life by reducing performance");
+            endurance_row.add_suffix(&endurance_switch);
+            endurance_row.set_activatable_widget(Some(&endurance_switch));
+            endurance_switch.set_sensitive(false);
+            endurance_row.set_sensitive(false);
+            features_group.add(&endurance_row);
+        }
 
         let find_ear_row = ActionRow::new();
         find_ear_row.set_title("Find My Earbuds");
@@ -104,7 +146,9 @@ impl AncPage {
         find_ear_btn.add_css_class("destructive-action");
         find_ear_btn.set_valign(gtk4::Align::Center);
         find_ear_row.add_suffix(&find_ear_btn);
-        features_group.add(&find_ear_row);
+        if ctx.has_feature(libspacepods::device_profile::DetailFeature::FindDevice) {
+            features_group.add(&find_ear_row);
+        }
 
         let offline_status = StatusPage::new();
         offline_status.set_icon_name(Some("network-offline-symbolic"));
@@ -119,7 +163,7 @@ impl AncPage {
         refresh_btn.set_halign(gtk4::Align::Center);
         refresh_btn.set_margin_top(4);
 
-        container.append(&title);
+        container.append(&header_row);
         container.append(&refresh_btn);
         container.append(&mode_row);
         container.append(&mode_spinner);
@@ -354,7 +398,53 @@ impl AncPage {
                 glib::Propagation::Proceed
             });
         }
-        
+
+        // ── Chat Mode switch ──
+        {
+            let ctx = ctx.clone();
+            chat_switch.connect_state_set(move |sw, state| {
+                let payload = vec![if state { 0x01 } else { 0x00 }];
+                let cc = libspacepods::ipc::ServiceCommand::Custom { command_id: 0x35, payload };
+                let sw = sw.clone();
+                let ctx = ctx.clone();
+                glib::spawn_future_local(async move {
+                    if let Ok(mut client) = libspacepods::client::SpacePodsClient::connect(None).await {
+                        if let Err(e) = client.send_command_raw(cc).await {
+                            ctx.error(format!("Chat Mode: {}", e));
+                            sw.set_state(!state);
+                        }
+                    } else {
+                        ctx.daemon_unreachable("no connection");
+                        sw.set_state(!state);
+                    }
+                });
+                glib::Propagation::Proceed
+            });
+        }
+
+        // ── Long Endurance switch ──
+        {
+            let ctx = ctx.clone();
+            endurance_switch.connect_state_set(move |sw, state| {
+                let payload = vec![if state { 0x01 } else { 0x00 }];
+                let cc = libspacepods::ipc::ServiceCommand::Custom { command_id: 0x38, payload };
+                let sw = sw.clone();
+                let ctx = ctx.clone();
+                glib::spawn_future_local(async move {
+                    if let Ok(mut client) = libspacepods::client::SpacePodsClient::connect(None).await {
+                        if let Err(e) = client.send_command_raw(cc).await {
+                            ctx.error(format!("Long Endurance: {}", e));
+                            sw.set_state(!state);
+                        }
+                    } else {
+                        ctx.daemon_unreachable("no connection");
+                        sw.set_state(!state);
+                    }
+                });
+                glib::Propagation::Proceed
+            });
+        }
+
         {
             let ctx = ctx.clone();
             let finding = std::rc::Rc::new(std::cell::Cell::new(false));

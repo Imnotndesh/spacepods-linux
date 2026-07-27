@@ -1,6 +1,6 @@
 use std::rc::Rc;
 use gtk4::prelude::*;
-use gtk4::{Box, Label, Orientation, Switch, Button, Align};
+use gtk4::{Box, Label, Orientation, Switch};
 use libadwaita::prelude::*;
 use libadwaita::{PreferencesGroup, ActionRow, Clamp, StatusPage};
 use glib::clone;
@@ -83,20 +83,33 @@ impl GamingPage {
             });
         }
 
+        // ── Header with refresh ──
+        let header_row = Box::new(Orientation::Horizontal, 0);
+        header_row.set_margin_top(24);
+        header_row.set_margin_bottom(8);
+
+        let title_lbl = Label::new(Some("Gaming Mode"));
+        title_lbl.add_css_class("title-1");
+        title_lbl.set_halign(gtk4::Align::Start);
+        title_lbl.set_hexpand(true);
+        header_row.append(&title_lbl);
+
+        let refresh_btn = gtk4::Button::from_icon_name("view-refresh-symbolic");
+        refresh_btn.add_css_class("flat");
+        refresh_btn.add_css_class("circular");
+        refresh_btn.set_valign(gtk4::Align::Center);
+        refresh_btn.set_tooltip_text(Some("Refresh status"));
+        header_row.append(&refresh_btn);
+
         let content = Box::new(Orientation::Vertical, 12);
-        content.set_margin_top(24);
+        content.set_margin_top(0);
         content.set_margin_bottom(32);
         content.set_margin_start(16);
         content.set_margin_end(16);
+        content.append(&header_row);
         content.append(&status_page);
         content.append(&gaming_group);
         content.append(&status_label);
-
-        let refresh_btn = Button::with_label("Refresh");
-        refresh_btn.add_css_class("flat");
-        refresh_btn.set_halign(Align::Center);
-        refresh_btn.set_margin_top(8);
-        content.append(&refresh_btn);
 
         {
             let game_switch = game_switch.clone();
