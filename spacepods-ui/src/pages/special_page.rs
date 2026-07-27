@@ -1,11 +1,13 @@
 use gtk4::prelude::*;
-use gtk4::{Box, Orientation, DropDown, StringList, Image};
+use gtk4::{Box, Orientation, DropDown, Image};
 use libadwaita::prelude::*;
 use libadwaita::{
     HeaderBar, NavigationPage, PreferencesGroup, ActionRow, Clamp, ToolbarView,
 };
 use std::rc::Rc;
 use std::cell::RefCell;
+
+use crate::context::AppContext;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GestureAction {
@@ -107,7 +109,11 @@ impl EarConfig {
 pub struct SpecialPage;
 
 impl SpecialPage {
-    pub fn new() -> NavigationPage {
+    /// `ctx` isn't hit by a daemon round-trip yet (gesture mapping is still
+    /// local-only), but it's threaded through like every other page so a
+    /// future "send gesture map to daemon" call has consistent toast/error
+    /// handling for free instead of silently swallowing failures.
+    pub fn new(ctx: Rc<AppContext>) -> NavigationPage {
         let left_config = EarConfig::default_left();
         let right_config = EarConfig::default_right();
 
@@ -137,7 +143,7 @@ impl SpecialPage {
         left_label.add_css_class("heading");
         left_header.append(&left_label);
 
-        Self::populate_gesture_rows(&left_group, &left_config);
+        Self::populate_gesture_rows(&left_group, &left_config, ctx.clone());
 
         // ── Right ear ──
         let right_group = PreferencesGroup::new();
@@ -154,7 +160,7 @@ impl SpecialPage {
         right_label.add_css_class("heading");
         right_header.append(&right_label);
 
-        Self::populate_gesture_rows(&right_group, &right_config);
+        Self::populate_gesture_rows(&right_group, &right_config, ctx.clone());
 
         content.append(&left_group);
         content.append(&right_group);
@@ -176,7 +182,7 @@ impl SpecialPage {
         NavigationPage::new(&toolbar_view, "Gestures")
     }
 
-    fn populate_gesture_rows(group: &PreferencesGroup, config: &Rc<RefCell<EarConfig>>) {
+    fn populate_gesture_rows(group: &PreferencesGroup, config: &Rc<RefCell<EarConfig>>, ctx: Rc<AppContext>) {
         let all_actions = GestureAction::all();
         let labels: Vec<&str> = all_actions.iter().map(|a| a.label()).collect();
 
@@ -204,6 +210,7 @@ impl SpecialPage {
             let cfg = Rc::clone(config);
             let g = gesture;
             let actions_clone = all_actions.clone();  // <── clone per iteration
+            let ctx = ctx.clone();
             dropdown.connect_selected_item_notify(move |dd| {
                 let i = dd.selected() as usize;
                 if i < actions_clone.len() {
@@ -214,6 +221,7 @@ impl SpecialPage {
                         GestureType::TripleTap => c.triple_tap = actions_clone[i],
                         GestureType::LongPress => c.long_press = actions_clone[i],
                     }
+                    ctx.toast(&format!("{} set to {}", g.label(), actions_clone[i].label()));
                 }
             });
 

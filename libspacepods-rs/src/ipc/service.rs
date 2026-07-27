@@ -463,6 +463,19 @@ impl SpacePodsService {
                 }
             }
 
+            // ── Custom raw BLE command ──
+            ServiceCommand::Custom { command_id, payload } => {
+                match buds.send_raw(command_id, payload).await {
+                    Ok(_) => IpcResult::Success {
+                        message: Some("Custom command sent".to_string()),
+                        data: None,
+                    },
+                    Err(e) => IpcResult::Error {
+                        message: format!("Custom command failed: {}", e),
+                    },
+                }
+            }
+
             _ => IpcResult::Error {
                 message: "Command not handled".to_string(),
             },

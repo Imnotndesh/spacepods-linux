@@ -1,6 +1,5 @@
-use glib::clone;
 use gtk4::prelude::*;
-use gtk4::{Box, Label, Orientation, ScrolledWindow, Switch};
+use gtk4::{Box, Label, Orientation, ScrolledWindow};
 use libadwaita::prelude::*;
 use libadwaita::{
     ActionRow, Clamp, HeaderBar, NavigationPage, PreferencesGroup, SwitchRow,
@@ -10,17 +9,12 @@ use std::rc::Rc;
 
 use crate::tray::{TrayCommand, TrayHandle};
 use crate::storage::{load_settings, update_settings};
+use crate::service::{self, check_daemon_running, spawn_daemon, kill_daemon};
 
 pub struct SettingsPage;
 
 impl SettingsPage {
-    pub fn navigation_page(tray_handle: Option<TrayHandle>) -> NavigationPage {
-        let tray_handle = Rc::new(tray_handle);
-
-        let tray_enabled = Rc::new(Cell::new(false));
-        let close_to_tray = Rc::new(Cell::new(false));
-
-        // Load saved settings
+    pub fn navigation_page(tray_handle: Rc<Option<TrayHandle>>) -> NavigationPage {
         let saved_settings = load_settings();
 
         let header = HeaderBar::new();
@@ -45,7 +39,7 @@ impl SettingsPage {
         autostart_row.connect_active_notify(|row| {
             let enabled = row.is_active();
             update_settings(|s| s.autostart = enabled);
-            write_autostart_entry(enabled);
+            service::write_autostart_entry(enabled);
         });
 
         general_group.add(&autostart_row);
@@ -68,32 +62,27 @@ impl SettingsPage {
 
         {
             let close_tray_row_ref = close_tray_row.clone();
-            let tray_enabled_ref = tray_enabled.clone();
             let tray_handle_ref = tray_handle.clone();
-            tray_row.connect_active_notify(clone!(
-                #[weak] close_tray_row_ref,
-                move |row| {
-                    let enabled = row.is_active();
-                    tray_enabled_ref.set(enabled);
-                    close_tray_row_ref.set_sensitive(enabled);
-                    update_settings(|s| s.tray_enabled = enabled);
+            tray_row.connect_active_notify(move |row| {
+                let enabled = row.is_active();
+                close_tray_row_ref.set_sensitive(enabled);
+                update_settings(|s| s.tray_enabled = enabled);
 
-                    if let Some(ref handle) = *tray_handle_ref {
-                        if enabled {
-                            handle.send(TrayCommand::Show);
-                        } else {
-                            handle.send(TrayCommand::Hide);
-                            close_tray_row_ref.set_active(false);
-                        }
+                if let Some(ref handle) = *tray_handle_ref {
+                    if enabled {
+                        handle.send(TrayCommand::Show);
+                    } else {
+                        handle.send(TrayCommand::Hide);
+                        close_tray_row_ref.set_active(false);
                     }
                 }
-            ));
+            });
         }
         {
-            let close_to_tray_ref = close_to_tray.clone();
+            let close_to_tray = Cell::new(false);
             close_tray_row.connect_active_notify(move |row| {
                 let enabled = row.is_active();
-                close_to_tray_ref.set(enabled);
+                close_to_tray.set(enabled);
                 update_settings(|s| s.close_to_tray = enabled);
             });
         }
@@ -249,27 +238,6 @@ impl SettingsPage {
     }
 }
 
-fn write_autostart_entry(enable: bool) {
-    let path = glib::user_config_dir()
-        .join("autostart")
-        .join("spacepods.desktop");
-
-    if enable {
-        let content = "[Desktop Entry]\n\
-            Type=Application\n\
-            Name=SpacePods\n\
-            Exec=spacepods\n\
-            Icon=audio-headset\n\
-            Comment=SpacePods earbuds manager\n\
-            X-GNOME-Autostart-enabled=true\n";
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let _ = std::fs::write(&path, content);
-    } else {
-        let _ = std::fs::remove_file(&path);
-    }
-}
 fn update_daemon_ui(
     status: &Label,
     start: &gtk4::Button,
@@ -294,24 +262,4 @@ fn update_daemon_ui(
         stop.set_visible(false);
         restart.set_visible(false);
     }
-}
-
-async fn check_daemon_running() -> bool {
-    libspacepods::client::SpacePodsClient::connect(None).await.is_ok()
-}
-
-fn spawn_daemon() {
-    let exe = std::env::current_exe().unwrap_or_else(|_| "spacepods".into());
-    let _ = std::process::Command::new(exe)
-        .arg("service")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
-}
-
-fn kill_daemon() {
-    let _ = std::process::Command::new("pkill")
-        .args(["-f", "spacepods service"])
-        .spawn();
 }

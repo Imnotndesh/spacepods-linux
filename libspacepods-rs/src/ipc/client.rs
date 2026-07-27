@@ -32,7 +32,7 @@ impl SpacePodsClient {
     }
 
     /// Send a command and wait for the response.
-    async fn send_command_raw(&mut self, cmd: ServiceCommand) -> Result<IpcResult> {
+    pub async fn send_command_raw(&mut self, cmd: ServiceCommand) -> Result<IpcResult> {
         let mut next_id = self.next_id.lock().await;
         let id = *next_id;
         *next_id = id.wrapping_add(1);

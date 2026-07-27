@@ -4,6 +4,7 @@ pub mod connection;
 pub mod commands;
 pub mod ipc;
 pub mod cli;
+pub mod device_profile;
 
 pub use errors::{Error, Result};
 pub use protocol::*;
@@ -85,6 +86,27 @@ impl SpaceBuds {
     /// Get the device address.
     pub async fn address(&self) -> Option<String> {
         self.manager.address().await
+    }
+
+    /// Send a raw BLE command by command ID and payload.
+    /// Used for features not yet wrapped in typed controllers.
+    pub async fn send_raw(&self, cmd_id: u8, payload: Vec<u8>) -> Result<()> {
+        use crate::commands::BleCommand;
+        use crate::protocol::constants::*;
+
+        struct Raw {
+            cmd_id: u8,
+            payload: Vec<u8>,
+        }
+        impl BleCommand for Raw {
+            type Response = ();
+            fn cmd_id(&self) -> u8 { self.cmd_id }
+            fn encode(&self) -> Vec<u8> { self.payload.clone() }
+            fn decode(&self, _payload: &[u8]) -> Result<Self::Response, crate::Error> { Ok(()) }
+        }
+
+        self.manager.send(&Raw { cmd_id, payload }).await?;
+        Ok(())
     }
 
     // ── Controllers (borrowing, not cloning) ──

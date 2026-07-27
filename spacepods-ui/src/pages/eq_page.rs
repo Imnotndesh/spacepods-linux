@@ -11,10 +11,8 @@ use std::cell::{Cell, RefCell};
 use std::fs;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::Arc;
-use tokio::sync::Mutex;
-use libspacepods::client::SpacePodsClient;
-use crate::storage::{update_settings};
+use crate::storage::update_settings;
+use crate::context::AppContext;
 
 const BUILTIN_PRESETS: [(u8, &str, [i8; 7]); 6] = [
     (0, "Flat",         [0,  0,  0,  0,  0,  0,  0]),
@@ -63,7 +61,7 @@ fn save_custom_presets(presets: &[CustomPreset]) {
 pub struct EqPage;
 
 impl EqPage {
-    pub fn new(client: Arc<Mutex<SpacePodsClient>>) -> gtk4::Widget {
+    pub fn new(ctx: Rc<AppContext>) -> gtk4::Widget {
         let current_gains: Rc<RefCell<[i8; 7]>> = Rc::new(RefCell::new([0; 7]));
         let custom_presets: Rc<RefCell<Vec<CustomPreset>>> =
             Rc::new(RefCell::new(load_custom_presets()));
@@ -143,7 +141,7 @@ impl EqPage {
             let drawing_ref = drawing.clone();
             let gains_ref = current_gains.clone();
             let in_custom_ref = in_custom_mode.clone();
-            let client_ref = Arc::clone(&client);  // add this
+            let ctx = ctx.clone();
 
             btn.connect_toggled(clone!(
                 #[weak] drawing_ref,
@@ -154,11 +152,14 @@ impl EqPage {
                         *gains_ref.borrow_mut() = gains_copy;
                         drawing_ref.queue_draw();
                         update_settings(|s| s.last_eq_preset = preset_id);
-                        let client = Arc::clone(&client_ref);
+                        let ctx = ctx.clone();
                         glib::spawn_future_local(async move {
-                            let mut c = client.lock().await;
-                            if let Err(e) = c.set_eq_preset(preset_id).await {
-                                eprintln!("set_eq_preset {}: {}", preset_id, e);
+                            let result = match libspacepods::client::SpacePodsClient::connect(None).await {
+                                Ok(mut c) => c.set_eq_preset(preset_id).await,
+                                Err(e) => Err(e),
+                            };
+                            if let Err(e) = result {
+                                ctx.error(format!("Couldn't apply EQ preset: {}", e));
                             }
                         });
                     } else {
@@ -296,10 +297,12 @@ impl EqPage {
             let first_toggle_ref = first_toggle.clone();
             let drawing_ref = drawing.clone();
             let in_custom_ref = in_custom_mode.clone();
+            let ctx = ctx.clone();
 
             save_btn.connect_clicked(move |_| {
                 let name = name_entry_ref.text().trim().to_string();
                 if name.is_empty() {
+                    ctx.error("Give the preset a name before saving");
                     return;
                 }
 
@@ -317,12 +320,14 @@ impl EqPage {
                     drawing_ref.clone(),
                     first_toggle_ref.clone(),
                     in_custom_ref.clone(),
+                    ctx.clone(),
                 );
 
                 name_entry_ref.set_text("");
                 sliders_card_ref.set_visible(false);
                 edit_btn_ref.set_active(false);
                 update_settings(|s| s.last_eq_preset = 6);
+                ctx.success(format!("Saved preset \"{}\"", name));
             });
         }
 
@@ -337,6 +342,7 @@ impl EqPage {
                     drawing.clone(),
                     first_toggle.clone(),
                     in_custom_mode.clone(),
+                    ctx.clone(),
                 );
             }
         }
@@ -369,6 +375,7 @@ fn add_custom_preset_button(
     drawing: DrawingArea,
     first_toggle: Rc<RefCell<Option<ToggleButton>>>,
     in_custom_mode: Rc<Cell<bool>>,
+    ctx: Rc<AppContext>,
 ) {
     let btn = make_preset_button(&preset.name, &preset.gains, true);
 
@@ -390,7 +397,8 @@ fn add_custom_preset_button(
                     in_custom_ref.set(false);
                     *gains_ref.borrow_mut() = gains_copy;
                     drawing_ref.queue_draw();
-                    // For custom preset, we might not have a preset ID; but we can set last_eq_preset to 6
+                    // Custom presets have no daemon-side preset ID; mark
+                    // "custom" (6) locally so restore-on-launch behaves.
                     update_settings(|s| s.last_eq_preset = 6);
                 } else {
                     b.remove_css_class("suggested-action");
@@ -409,9 +417,10 @@ fn add_custom_preset_button(
         let presets_ref = presets_store.clone();
         let name = preset.name.clone();
         let flow_ref = flow.clone();
+        let ctx = ctx.clone();
         gc.connect_pressed(move |g, _n, _x, _y| {
             g.set_state(gtk4::EventSequenceState::Claimed);
-            show_delete_popover(&child_ref, &flow_ref, presets_ref.clone(), &name);
+            show_delete_popover(&child_ref, &flow_ref, presets_ref.clone(), &name, ctx.clone());
         });
     }
     btn.add_controller(gc);
@@ -422,9 +431,10 @@ fn add_custom_preset_button(
         let presets_ref = presets_store.clone();
         let name = preset.name.clone();
         let flow_ref = flow.clone();
+        let ctx = ctx.clone();
         glp.connect_pressed(move |g, _x, _y| {
             g.set_state(gtk4::EventSequenceState::Claimed);
-            show_delete_popover(&child_ref, &flow_ref, presets_ref.clone(), &name);
+            show_delete_popover(&child_ref, &flow_ref, presets_ref.clone(), &name, ctx.clone());
         });
     }
     btn.add_controller(glp);
@@ -437,6 +447,7 @@ fn show_delete_popover(
     flow: &gtk4::FlowBox,
     presets: Rc<RefCell<Vec<CustomPreset>>>,
     name: &str,
+    ctx: Rc<AppContext>,
 ) {
     let popover = gtk4::Popover::new();
     popover.set_parent(child);
@@ -467,6 +478,7 @@ fn show_delete_popover(
         save_custom_presets(&presets.borrow());
         flow_ref.remove(&child_ref);
         popover_ref.popdown();
+        ctx.toast(&format!("Deleted \"{}\"", name_owned));
     });
 
     popover.popup();

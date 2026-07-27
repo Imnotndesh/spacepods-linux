@@ -64,6 +64,14 @@ pub enum ServiceCommand {
 
     #[serde(rename = "unsubscribe")]
     Unsubscribe,
+
+    /// Send a raw BLE command by its command ID.
+    /// The daemon will forward this directly to the earbuds.
+    #[serde(rename = "custom")]
+    Custom {
+        command_id: u8,
+        payload: Vec<u8>,
+    },
 }
 
 // ── IPC Response ──
