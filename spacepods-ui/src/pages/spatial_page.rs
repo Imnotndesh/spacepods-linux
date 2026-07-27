@@ -1,6 +1,6 @@
 use std::rc::Rc;
 use gtk4::prelude::*;
-use gtk4::{Box, Label, Orientation, Switch};
+use gtk4::{Box, Label, Orientation, Switch, Button, Align};
 use libadwaita::prelude::*;
 use libadwaita::{PreferencesGroup, ActionRow, Clamp, StatusPage};
 
@@ -39,6 +39,7 @@ impl SpatialAudioPage {
 
         {
             let status_label = status_label.clone();
+            let ctx_toggle = ctx.clone();
             space_switch.connect_state_set(move |sw, active| {
                 let previous_text = if active {
                     "Spatial Audio is OFF — Standard stereo"
@@ -59,7 +60,7 @@ impl SpatialAudioPage {
                 };
 
                 let sw = sw.clone();
-                let ctx = ctx.clone();
+                let ctx = ctx_toggle.clone();
                 let status_label = status_label.clone();
                 glib::spawn_future_local(async move {
                     let result = match libspacepods::client::SpacePodsClient::connect(None).await {
@@ -84,6 +85,29 @@ impl SpatialAudioPage {
         content.append(&status_page);
         content.append(&space_group);
         content.append(&status_label);
+
+        let refresh_btn = Button::with_label("Refresh");
+        refresh_btn.add_css_class("flat");
+        refresh_btn.set_halign(Align::Center);
+        refresh_btn.set_margin_top(8);
+        content.append(&refresh_btn);
+
+        {
+            let ctx = ctx.clone();
+            refresh_btn.connect_clicked(move |_| {
+                let ctx = ctx.clone();
+                glib::spawn_future_local(async move {
+                    use libspacepods::client::SpacePodsClient;
+                    match SpacePodsClient::connect(None).await {
+                        Ok(mut client) => match client.get_status().await {
+                            Ok(_) => ctx.success("Status refreshed"),
+                            Err(e) => ctx.error(format!("Status: {}", e)),
+                        },
+                        Err(e) => ctx.daemon_unreachable(e),
+                    }
+                });
+            });
+        }
 
         let clamp = Clamp::new();
         clamp.set_maximum_size(500);

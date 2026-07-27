@@ -1,12 +1,9 @@
 use crate::commands::AncController;
 use crate::connection::{DeviceScanner, ConnectionManager};
 use crate::ipc::protocol::*;
-use crate::protocol::{AncMode, ConnectionState, TlvParser,
-    ID_DEVICE_POWER,
+use crate::protocol::{AncMode, ConnectionState,
     ID_ANC_MODE, ID_ANC_GAIN, ID_ANC_MAX, ID_TRANS_GAIN, ID_TRANS_MAX,
     ID_EQ_SETTING, ID_ENV_ADAPTIVE, ID_DUAL_DEVICE, ID_KEY_SETTINGS,
-    ID_WORK_MODE, ID_IN_EAR_STATUS, ID_AUTO_ANSWER,
-    ID_TONE_VOLUME, ID_HEARING_CARE, ID_VOICE_PROMPT,
 };
 use crate::{Error, Result, SpaceBuds};
 use std::path::PathBuf;
@@ -117,6 +114,16 @@ impl SpacePodsService {
     ) {
         let mut reconnect_delay = Duration::from_secs(1);
 
+        // Try to connect on startup after a short delay (let BlueZ settle)
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        if !buds.is_connected().await {
+            crate::log::info("IPC", "Not connected — attempting initial auto-connect");
+            match buds.connect().await {
+                Ok(_) => crate::log::info("IPC", "Initial auto-connect succeeded"),
+                Err(e) => crate::log::warn("IPC", &format!("Initial auto-connect: {}. Will retry in loop.", e)),
+            }
+        }
+
         // Initial refresh
         Self::refresh_full_status(&buds, &status, &status_tx).await;
 
@@ -162,77 +169,6 @@ impl SpacePodsService {
             return;
         }
 
-        let mut status_lock = status.write().await;
-        let is_first = status_lock.product_id.is_none();
-
-        // First refresh: bulk query all device info
-        if is_first {
-            drop(status_lock);
-            match buds.query_device_info(&[
-                ID_DEVICE_POWER,
-                ID_ANC_MODE, ID_ANC_GAIN, ID_ANC_MAX, ID_TRANS_GAIN, ID_TRANS_MAX,
-                ID_EQ_SETTING, ID_ENV_ADAPTIVE, ID_DUAL_DEVICE, ID_KEY_SETTINGS,
-                ID_WORK_MODE, ID_IN_EAR_STATUS, ID_AUTO_ANSWER,
-                ID_TONE_VOLUME, ID_HEARING_CARE, ID_VOICE_PROMPT,
-            ]).await {
-                Ok(payload) => {
-                    let mut parser = TlvParser::new(&payload);
-                    crate::log::info("IPC", "Bulk device info query OK");
-                    let mut status_lock = status.write().await;
-                    status_lock.connection.connected = true;
-                    status_lock.connection.address = buds.address().await;
-                    status_lock.connection.state = ConnectionState::Connected;
-
-                    // Battery: [left, right, case] each byte bit7=charging, bits0-6=percentage
-                    if let Some(data) = parser.get_bytes(ID_DEVICE_POWER) {
-                        crate::log::full("IPC", &format!("Battery raw: {:02x?}", data));
-                        status_lock.battery.left = data.first().map(|&b| b & 0x7F);
-                        status_lock.battery.right = data.get(1).map(|&b| b & 0x7F);
-                        status_lock.battery.case = data.get(2).map(|&b| b & 0x7F);
-                    }
-
-                    // ANC
-                    let anc_mode = parser.get_int(ID_ANC_MODE)
-                        .and_then(|v| AncMode::from_u8(v as u8))
-                        .unwrap_or(AncMode::Off);
-                    status_lock.anc.mode = anc_mode;
-                    status_lock.anc.level = parser.get_int(ID_ANC_GAIN).unwrap_or(0) as u8;
-                    status_lock.anc.max_level = parser.get_int(ID_ANC_MAX).unwrap_or(0) as u8;
-
-                    if let Some(data) = parser.get_bytes(ID_EQ_SETTING) {
-                        if data.len() >= 2 {
-                            status_lock.eq = Some(EqInfo { mode: data[0], name: String::new(), description: String::new(), gains: vec![] });
-                        }
-                    }
-                    status_lock.features.adaptive_anc = parser.get_int(ID_ENV_ADAPTIVE).map(|v| v == 1);
-                    status_lock.features.dual_device = parser.get_int(ID_DUAL_DEVICE).map(|v| v == 1);
-
-                    if let Some(data) = parser.get_bytes(ID_KEY_SETTINGS) {
-                        let mut map = std::collections::HashMap::new();
-                        let mut i = 0;
-                        while i + 2 < data.len() {
-                            if data[i + 1] == 1 && i + 3 <= data.len() {
-                                map.insert(data[i], data[i + 2]);
-                            }
-                            i += 2 + data[i + 1] as usize;
-                        }
-                        if !map.is_empty() { status_lock.key_settings = Some(map); }
-                    }
-                    if status_lock.product_id.is_none() {
-                        if let Some(pid) = buds.detect_product_id().await {
-                            crate::log::info("IPC", &format!("product_id={} ({})", pid, crate::device_profile::profile_for_product(pid).name));
-                            status_lock.product_id = Some(pid);
-                        }
-                    }
-                    let new_status = status_lock.clone();
-                    let _ = status_tx.send(new_status);
-                    return;
-                }
-                Err(_) => { /* fall through */ }
-            }
-        }
-
-        // Individual queries
         let anc_mode = buds.anc().get_mode().await.unwrap_or(AncMode::Off);
         let (level, max_level) = buds.anc().get_level().await.unwrap_or((0, 0));
         let eq_state = buds.eq().get_state().await.unwrap_or(None);
@@ -258,7 +194,7 @@ impl SpacePodsService {
             }
         }
         match buds.features().get_key_settings().await {
-            Ok(map) => { status_lock.key_settings = Some(map); }
+            Ok(map) => { if !map.is_empty() { status_lock.key_settings = Some(map); } }
             Err(_) => {}
         }
 

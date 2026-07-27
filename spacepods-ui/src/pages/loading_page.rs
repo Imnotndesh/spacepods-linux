@@ -7,6 +7,7 @@ use crate::storage::{get_last_connected_device, add_known_device};
 use crate::log::Log;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Mutex;
 
 pub struct LoadingPage;
@@ -155,40 +156,55 @@ impl LoadingPage {
 
         let device = saved.unwrap();
         Log::info("LOADING", &format!("Trying saved device: {} ({})", device.name, device.address));
-        info_label.set_text(&format!("Connecting to {}…", device.name));
+        info_label.set_text(&format!("Looking for {}…", device.name));
 
-        match client.connect_device(device.address.clone()).await {
-            Ok(_) => {
-                tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
-                let status = client
-                    .get_status()
-                    .await
-                    .map_err(|e| format!("Status check failed: {}", e))?;
-                if status.connection.connected
-                    || status.connection.address.as_deref() == Some(&device.address)
-                {
-                    add_known_device(device.name.clone(), device.address.clone());
-
-                    let product_id = status.product_id;
-                    Log::info("LOADING", &format!("Connected! product_id={:?}", product_id));
-                    Log::full("LOADING", &format!("Full status: {:?}", status));
-                    info_label.set_text("Connected successfully!");
-                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-                    Ok(LoadingOutcome::Connected {
-                        client: Arc::new(Mutex::new(client)),
-                        product_id,
-                    })
-                } else {
-                    Err(format!(
-                        "Connected to {} but the device did not report as ready.\n\nTry putting your earbuds in pairing mode and try again.",
-                        device.name
-                    ))
+        // The daemon auto-connects on startup via its status updater loop.
+        // Just poll get_status() — no explicit Connect needed.
+        let start = tokio::time::Instant::now();
+        let timeout = tokio::time::Duration::from_secs(10);
+        loop {
+            match client.get_status().await {
+                Ok(status) => {
+                    if status.connection.connected {
+                        add_known_device(device.name.clone(), device.address.clone());
+                        let product_id = status.product_id;
+                        Log::info("LOADING", &format!("Connected! product_id={:?}", product_id));
+                        info_label.set_text("Connected successfully!");
+                        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                        return Ok(LoadingOutcome::Connected {
+                            client: Arc::new(Mutex::new(client)),
+                            product_id,
+                        });
+                    }
                 }
+                Err(e) => Log::warn("LOADING", &format!("Status poll: {}", e)),
             }
-            Err(e) => Err(format!(
-                "Failed to connect to '{}'.\n\nMake sure your earbuds are charged and in range.\n\nDetails: {}",
-                device.name, e
-            )),
+            if start.elapsed() > timeout {
+                break;
+            }
+            info_label.set_text(&format!("Waiting for {}… ({:.0}s)", device.name, (timeout - start.elapsed()).as_secs_f64()));
+            tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
+        }
+
+        // Timeout — try explicit connect as fallback
+        Log::info("LOADING", "Daemon didn't auto-connect, trying explicit");
+        info_label.set_text(&format!("Trying explicit connect to {}… (15s)", device.name));
+
+        let connect_fut = client.connect_device(device.address.clone());
+        let explicit_timeout = tokio::time::Duration::from_secs(15);
+        match tokio::time::timeout(explicit_timeout, connect_fut).await {
+            Ok(Ok(_)) => {
+                tokio::time::sleep(Duration::from_millis(800)).await;
+                let status = client.get_status().await.map_err(|e| format!("Status: {}", e))?;
+                add_known_device(device.name.clone(), device.address.clone());
+                let product_id = status.product_id;
+                Log::info("LOADING", &format!("Explicit connect OK, product_id={:?}", product_id));
+                info_label.set_text("Connected!");
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                Ok(LoadingOutcome::Connected { client: Arc::new(Mutex::new(client)), product_id })
+            }
+            Ok(Err(e)) => Err(format!("Connection failed: {}", e)),
+            Err(_) => Err(format!("Connection to {} timed out after 15s", device.name)),
         }
     }
 }

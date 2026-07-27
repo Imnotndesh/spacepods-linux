@@ -7,7 +7,10 @@ mod storage;
 mod context;
 
 fn main() -> glib::ExitCode {
-    // Set log level — change to Level::Full for verbose diagnostics
+    gio::resources_register_include!("spacepods.gresource")
+        .expect("Failed to register resources");
+
+
     log::Log::set_level(log::Level::Full);
     app::run_app()
 }

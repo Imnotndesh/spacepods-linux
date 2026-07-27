@@ -113,19 +113,13 @@ impl AncPage {
         offline_status.set_visible(false);
         offline_status.set_vexpand(true);
 
-        // ── Battery display ──
-        let battery_label = Label::new(Some("Battery: …"));
-        battery_label.add_css_class("caption");
-        battery_label.set_halign(gtk4::Align::Center);
-        battery_label.set_margin_top(4);
-
+        // ── Refresh button ──
         let refresh_btn = gtk4::Button::with_label("Refresh");
         refresh_btn.add_css_class("flat");
         refresh_btn.set_halign(gtk4::Align::Center);
         refresh_btn.set_margin_top(4);
 
         container.append(&title);
-        container.append(&battery_label);
         container.append(&refresh_btn);
         container.append(&mode_row);
         container.append(&mode_spinner);
@@ -147,27 +141,14 @@ impl AncPage {
             #[strong] mode_spinner, #[strong] mode_row,
             #[strong] offline_status, #[strong] features_group, #[strong] anc_group,
             #[strong] applying, #[strong] current_mode, #[strong] ctx,
-            #[strong] battery_label,
             async move {
                 use libspacepods::client::SpacePodsClient;
                 match SpacePodsClient::connect(None).await {
                     Ok(mut client) => match client.get_status().await {
                         Ok(s) => {
-                            Log::info("ANC", &format!("Status received: mode={:?} level={} max={} adaptive={:?} dual={:?} battery={:?}",
+                            Log::info("ANC", &format!("Status received: mode={:?} level={} max={} adaptive={:?} dual={:?}",
                                 s.anc.mode, s.anc.level, s.anc.max_level,
-                                s.features.adaptive_anc, s.features.dual_device,
-                                (&s.battery.left, &s.battery.right, &s.battery.case)));
-
-                            // Battery display
-                            let mut parts = Vec::new();
-                            if let Some(l) = s.battery.left { parts.push(format!("L: {}%", l)); }
-                            if let Some(r) = s.battery.right { parts.push(format!("R: {}%", r)); }
-                            if let Some(c) = s.battery.case { parts.push(format!("Case: {}%", c)); }
-                            if parts.is_empty() {
-                                battery_label.set_text("Battery: unknown");
-                            } else {
-                                battery_label.set_text(&format!("Battery: {}", parts.join(" · ")));
-                            }
+                                s.features.adaptive_anc, s.features.dual_device));
 
                             for b in [&off_btn, &anc_btn, &trans_btn] { b.set_sensitive(true); }
 
@@ -229,7 +210,6 @@ impl AncPage {
             let rows = vec![adaptive_row.clone(), dual_row.clone()];
             let asw = adaptive_switch.clone();
             let dsw = dual_switch.clone();
-            let bl = battery_label.clone();
             let am = applying.clone();
             let cm = current_mode.clone();
             let ctx = ctx.clone();
@@ -237,7 +217,6 @@ impl AncPage {
                 let btns = btns.clone();
                 let asw = asw.clone();
                 let dsw = dsw.clone();
-                let bl = bl.clone();
                 let am = am.clone();
                 let cm = cm.clone();
                 let ctx = ctx.clone();
@@ -246,24 +225,23 @@ impl AncPage {
                     match SpacePodsClient::connect(None).await {
                         Ok(mut client) => match client.get_status().await {
                             Ok(s) => {
-                                let mut parts = Vec::new();
-                                if let Some(l) = s.battery.left { parts.push(format!("L: {}%", l)); }
-                                if let Some(r) = s.battery.right { parts.push(format!("R: {}%", r)); }
-                                if let Some(c) = s.battery.case { parts.push(format!("Case: {}%", c)); }
-                                bl.set_text(if parts.is_empty() { "Battery: unknown" } else { "Battery: …" });
-                                if !parts.is_empty() {
-                                    bl.set_text(&format!("Battery: {}", parts.join(" · ")));
-                                }
-
                                 let mode = s.anc.mode as u8;
                                 cm.set(mode);
                                 am.set(true);
-                                for b in &btns { b.set_sensitive(mode != 0); }
-                                // Map level to intensity
+                                // Only set intensity buttons — mode buttons handled by connect_mode
+                                btns[3].set_sensitive(mode != 0);
+                                btns[4].set_sensitive(mode != 0);
+                                btns[5].set_sensitive(mode != 0);
                                 match s.anc.level {
-                                    1..=2 => btns[3].set_active(true),
-                                    3 => btns[4].set_active(true),
-                                    4..=5 => btns[5].set_active(true),
+                                    1..=2 => {
+                                        if !btns[3].is_active() { btns[3].set_active(true); }
+                                    }
+                                    3 => {
+                                        if !btns[4].is_active() { btns[4].set_active(true); }
+                                    }
+                                    4..=5 => {
+                                        if !btns[5].is_active() { btns[5].set_active(true); }
+                                    }
                                     _ => {}
                                 }
                                 am.set(false);

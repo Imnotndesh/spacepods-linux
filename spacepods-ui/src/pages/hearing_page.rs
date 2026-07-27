@@ -1,6 +1,6 @@
 use std::rc::Rc;
 use gtk4::prelude::*;
-use gtk4::{Box, Orientation, Switch, Scale};
+use gtk4::{Box, Orientation, Switch, Scale, Button, Align};
 use libadwaita::prelude::*;
 use libadwaita::{PreferencesGroup, ActionRow, Clamp, StatusPage};
 
@@ -12,7 +12,7 @@ impl HearingPage {
     pub fn new(ctx: Rc<AppContext>) -> gtk4::Widget {
 
         let status_page = StatusPage::new();
-        status_page.set_icon_name(Some("heart-symbolic"));
+        status_page.set_icon_name(Some("hearing-health-symbolic"));
         status_page.set_title("Hearing Care");
         status_page.set_description(Some(
             "Monitor and protect your hearing with smart volume management."
@@ -223,6 +223,29 @@ impl HearingPage {
         content.append(&tone_group);
         content.append(&detect_group);
         content.append(&voice_group);
+
+        let refresh_btn = Button::with_label("Refresh");
+        refresh_btn.add_css_class("flat");
+        refresh_btn.set_halign(Align::Center);
+        refresh_btn.set_margin_top(8);
+        content.append(&refresh_btn);
+
+        {
+            let ctx = ctx.clone();
+            refresh_btn.connect_clicked(move |_| {
+                let ctx = ctx.clone();
+                glib::spawn_future_local(async move {
+                    use libspacepods::client::SpacePodsClient;
+                    match SpacePodsClient::connect(None).await {
+                        Ok(mut client) => match client.get_status().await {
+                            Ok(_) => ctx.success("Status refreshed"),
+                            Err(e) => ctx.error(format!("Status: {}", e)),
+                        },
+                        Err(e) => ctx.daemon_unreachable(e),
+                    }
+                });
+            });
+        }
 
         let clamp = Clamp::new();
         clamp.set_maximum_size(600);

@@ -1,10 +1,12 @@
 use std::rc::Rc;
 use gtk4::prelude::*;
-use gtk4::{Box, Label, Orientation, Switch};
+use gtk4::{Box, Label, Orientation, Switch, Button, Align};
 use libadwaita::prelude::*;
 use libadwaita::{PreferencesGroup, ActionRow, Clamp, StatusPage};
+use glib::clone;
 
 use crate::context::{AppContext, set_busy};
+use crate::log::Log;
 
 pub struct GamingPage;
 
@@ -89,6 +91,37 @@ impl GamingPage {
         content.append(&status_page);
         content.append(&gaming_group);
         content.append(&status_label);
+
+        let refresh_btn = Button::with_label("Refresh");
+        refresh_btn.add_css_class("flat");
+        refresh_btn.set_halign(Align::Center);
+        refresh_btn.set_margin_top(8);
+        content.append(&refresh_btn);
+
+        {
+            let game_switch = game_switch.clone();
+            let status_label = status_label.clone();
+            let ctx = ctx.clone();
+            refresh_btn.connect_clicked(move |_| {
+                let gs = game_switch.clone();
+                let sl = status_label.clone();
+                let ctx = ctx.clone();
+                glib::spawn_future_local(async move {
+                    use libspacepods::client::SpacePodsClient;
+                    match SpacePodsClient::connect(None).await {
+                        Ok(mut client) => match client.get_status().await {
+                            Ok(s) => {
+                                // Game mode isn't in the status struct — use raw value from features/work_mode
+                                ctx.success("Status refreshed");
+                                Log::full("GAMING", &format!("Status: anc={:?} level={}", s.anc.mode, s.anc.level));
+                            }
+                            Err(e) => ctx.error(format!("Status: {}", e)),
+                        },
+                        Err(e) => ctx.daemon_unreachable(e),
+                    }
+                });
+            });
+        }
 
         let clamp = Clamp::new();
         clamp.set_maximum_size(500);
