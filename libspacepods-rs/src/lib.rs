@@ -88,6 +88,11 @@ impl SpaceBuds {
         self.manager.address().await
     }
 
+    /// Try to detect the product ID from BLE advertisement manufacturer data.
+    pub async fn detect_product_id(&self) -> Option<u16> {
+        self.manager.detect_product_id().await
+    }
+
     /// Send a raw BLE command by command ID and payload.
     /// Used for features not yet wrapped in typed controllers.
     pub async fn send_raw(&self, cmd_id: u8, payload: Vec<u8>) -> Result<()> {

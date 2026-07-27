@@ -6,6 +6,7 @@ use libadwaita::{
 };
 use libadwaita::prelude::*;
 use crate::context::AppContext;
+use crate::log::Log;
 use crate::pages::anc_page::AncPage;
 use crate::pages::eq_page::EqPage;
 use crate::pages::special_page::SpecialPage;
@@ -20,6 +21,9 @@ struct PageDef {
     title: &'static str,
     icon: &'static str,
     section: Section,
+    /// If set, this page is only shown when the connected device supports this feature.
+    /// None means always visible.
+    feature: Option<libspacepods::device_profile::DetailFeature>,
     widget: gtk4::Widget,
 }
 
@@ -53,9 +57,14 @@ pub struct HomeView;
 impl HomeView {
     pub fn new(
         window: &ApplicationWindow,
+        product_id: Option<u16>,
     ) -> ToastOverlay {
         let toast_overlay = ToastOverlay::new();
         let ctx = AppContext::new(toast_overlay.clone());
+        ctx.product_id.set(product_id);
+
+        Log::info("HOME", &format!("product_id={:?}, profile={:?}", product_id, ctx.profile().map(|p| p.name)));
+        Log::full("HOME", &format!("features={:?}", ctx.profile().map(|p| &p.features)));
 
         let pages: Vec<PageDef> = vec![
             PageDef {
@@ -63,6 +72,7 @@ impl HomeView {
                 title: "ANC",
                 icon: "org.gnome.Settings-accessibility-hearing-symbolic",
                 section: Section::Audio,
+                feature: Some(libspacepods::device_profile::DetailFeature::Noise),
                 widget: AncPage::new(ctx.clone()).upcast(),
             },
             PageDef {
@@ -70,6 +80,7 @@ impl HomeView {
                 title: "Equalizer",
                 icon: "audio-card-symbolic",
                 section: Section::Audio,
+                feature: None, // always show EQ
                 widget: EqPage::new(ctx.clone()).upcast(),
             },
             PageDef {
@@ -77,6 +88,7 @@ impl HomeView {
                 title: "3D Audio",
                 icon: "audio-speakers-symbolic",
                 section: Section::Audio,
+                feature: Some(libspacepods::device_profile::DetailFeature::SpaceAudio),
                 widget: SpatialAudioPage::new(ctx.clone()).upcast(),
             },
             PageDef {
@@ -84,6 +96,7 @@ impl HomeView {
                 title: "Gestures",
                 icon: "input-touchpad-symbolic",
                 section: Section::Controls,
+                feature: Some(libspacepods::device_profile::DetailFeature::EarControl),
                 widget: SpecialPage::new(ctx.clone()),
             },
             PageDef {
@@ -91,6 +104,7 @@ impl HomeView {
                 title: "Game Mode",
                 icon: "input-gaming-symbolic",
                 section: Section::Controls,
+                feature: Some(libspacepods::device_profile::DetailFeature::GameMode),
                 widget: GamingPage::new(ctx.clone()).upcast(),
             },
             PageDef {
@@ -98,6 +112,7 @@ impl HomeView {
                 title: "Hearing Health",
                 icon: "heart-symbolic",
                 section: Section::Health,
+                feature: Some(libspacepods::device_profile::DetailFeature::HearingCare),
                 widget: HearingPage::new(ctx.clone()).upcast(),
             },
             PageDef {
@@ -105,6 +120,7 @@ impl HomeView {
                 title: "Settings",
                 icon: "settings-symbolic",
                 section: Section::Settings,
+                feature: None, // always show settings
                 widget: SettingsPage::page(),
             },
         ];
@@ -125,6 +141,15 @@ impl HomeView {
         let mut row_to_id: Vec<(ListBoxRow, &'static str)> = Vec::new();
 
         for page in &pages {
+            // Filter: skip pages gated by features the device doesn't support
+            if let Some(feature) = &page.feature {
+                let supported = ctx.has_feature(*feature);
+                Log::full("HOME", &format!("Page '{}' needs {:?} → supported={}", page.id, feature, supported));
+                if !supported {
+                    Log::warn("HOME", &format!("Hiding page '{}' — device lacks {:?}", page.id, feature));
+                    continue;
+                }
+            }
             let needs_header = match (&current_section, &page.section) {
                 (None, _) => true,
                 (Some(s), sec) if std::mem::discriminant(s) != std::mem::discriminant(sec) => true,

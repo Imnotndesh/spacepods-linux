@@ -4,6 +4,7 @@ use libadwaita::prelude::AdwApplicationWindowExt;
 use std::rc::Rc;
 
 use crate::home::HomeView;
+use crate::log::Log;
 use crate::pages::loading_page::{LoadingPage, LoadingOutcome};
 use crate::pages::setup_page::SetupPage;
 use crate::storage::load_settings;
@@ -43,16 +44,18 @@ pub fn run_app() -> glib::ExitCode {
                 };
 
                 match outcome {
-                    LoadingOutcome::Connected(_client) => {
-                        let home_view = HomeView::new(&window);
+                    LoadingOutcome::Connected { product_id, .. } => {
+                        Log::info("APP", &format!("Navigating to home (product_id={:?})", product_id));
+                        let home_view = HomeView::new(&window, product_id);
                         window.set_content(Some(&home_view));
                     }
                     LoadingOutcome::NoDevice => {
+                        Log::info("APP", "Navigating to setup (no saved device)");
                         let window_clone = window.clone();
                         let go_to_home = move || {
                             let win = window_clone.clone();
                             glib::spawn_future_local(async move {
-                                let home_view = HomeView::new(&win);
+                                let home_view = HomeView::new(&win, None);
                                 win.set_content(Some(&home_view));
                             });
                         };
@@ -60,6 +63,7 @@ pub fn run_app() -> glib::ExitCode {
                         window.set_content(Some(&setup_page));
                     }
                     LoadingOutcome::Retry => {
+                        Log::info("APP", "Retrying connection…");
                         if let Some(cb) = ch_closure.borrow().as_ref() {
                             let new_loading = LoadingPage::new(cb.clone());
                             window.set_content(Some(&new_loading));

@@ -67,6 +67,7 @@ pub struct DeviceStatus {
     pub battery_left: Option<u8>,
     pub battery_right: Option<u8>,
     pub battery_case: Option<u8>,
+    pub product_id: Option<u16>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -120,6 +121,7 @@ impl SpacePodsService {
             battery_left: None,
             battery_right: None,
             battery_case: None,
+            product_id: None,
         }));
         let socket_path = socket_path.unwrap_or_else(|| PathBuf::from(DEFAULT_SOCKET_PATH));
         Self {
@@ -355,6 +357,11 @@ impl SpacePodsService {
         status_lock.battery_left = batt_left;
         status_lock.battery_right = batt_right;
         status_lock.battery_case = batt_case;
+
+        // Detect product ID from BLE advertisement data (only once)
+        if status_lock.product_id.is_none() {
+            status_lock.product_id = buds.detect_product_id().await;
+        }
 
         let new_status = status_lock.clone();
         let _ = status_tx.send(new_status.clone());

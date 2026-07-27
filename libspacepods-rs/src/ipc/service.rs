@@ -184,6 +184,17 @@ impl SpacePodsService {
         status_lock.features.adaptive_anc = adaptive;
         status_lock.features.dual_device = dual;
 
+        // Detect product ID from BLE advertisement data (only once)
+        if status_lock.product_id.is_none() {
+            if let Some(pid) = buds.detect_product_id().await {
+                eprintln!("[SPACEPODS][IPC] Detected product_id={} ({})", pid,
+                    crate::device_profile::profile_for_product(pid).name);
+                status_lock.product_id = Some(pid);
+            } else {
+                eprintln!("[SPACEPODS][IPC] Could not detect product_id from manufacturer data");
+            }
+        }
+
         // Battery is intentionally not tracked here — the OS surfaces it.
 
         let new_status = status_lock.clone();

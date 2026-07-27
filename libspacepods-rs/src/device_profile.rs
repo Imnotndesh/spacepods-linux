@@ -168,14 +168,21 @@ fn profiles() -> &'static Vec<DeviceProfile> {
 fn generic_profile() -> DeviceProfile {
     DeviceProfile {
         product_id: 0,
-        name: "Unknown Oraimo Device",
+        name: "Oraimo SpaceBuds",
         model: "generic",
         chip: ChipPlatform::Bluetrum,
         form: FormFactor::InEar,
         features: fs![
-            DetailFeature::FindEar,
-            DetailFeature::ModifyName,
+            DetailFeature::Noise,
+            DetailFeature::GameMode,
             DetailFeature::EarControl,
+            DetailFeature::KeySetting,
+            DetailFeature::ToneVolume,
+            DetailFeature::ModifyName,
+            DetailFeature::FindEar,
+            DetailFeature::HearingCare,
+            DetailFeature::DefaultEqHavyBass,
+            DetailFeature::ShowDiscoverUi,
         ],
     }
 }

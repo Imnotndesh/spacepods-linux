@@ -112,6 +112,25 @@ impl BleConnection {
         self.peripheral.address().to_string()
     }
 
+    /// Try to detect product ID from manufacturer data in the BLE advertisement.
+    pub async fn detect_product_id(&self) -> Option<u16> {
+        if let Ok(Some(props)) = self.peripheral.properties().await {
+            for (_, data) in &props.manufacturer_data {
+                eprintln!("[SPACEPODS][BLE] manufacturer_data len={}", data.len());
+                if data.len() >= 3 {
+                    let product_id = u16::from_le_bytes([data[1], data[2]]);
+                    eprintln!("[SPACEPODS][BLE] product_id from mfg data: {}", product_id);
+                    return Some(product_id);
+                } else {
+                    eprintln!("[SPACEPODS][BLE] mfg data too short: {:?}", data);
+                }
+            }
+        } else {
+            eprintln!("[SPACEPODS][BLE] No peripheral properties available");
+        }
+        None
+    }
+
     pub async fn force_rediscover(&self) -> Result<()> {
         self.peripheral.discover_services().await?;
         tokio::time::sleep(Duration::from_millis(500)).await;

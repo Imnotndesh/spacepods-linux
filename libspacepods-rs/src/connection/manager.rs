@@ -196,6 +196,16 @@ impl ConnectionManager {
         let inner = self.inner.read().await;
         inner.connection.as_ref().map(|c| c.address())
     }
+
+    /// Try to detect the product ID from BLE advertisement manufacturer data.
+    pub async fn detect_product_id(&self) -> Option<u16> {
+        let inner = self.inner.read().await;
+        if let Some(conn) = inner.connection.as_ref() {
+            conn.detect_product_id().await
+        } else {
+            None
+        }
+    }
 }
 
 impl Clone for ConnectionManager {

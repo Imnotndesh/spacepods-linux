@@ -112,6 +112,8 @@ pub struct DeviceStatus {
     pub eq: Option<EqInfo>,
     pub battery: BatteryInfo,
     pub features: FeatureInfo,
+    #[serde(default)]
+    pub product_id: Option<u16>,
 }
 
 impl DeviceStatus {
@@ -137,6 +139,7 @@ impl DeviceStatus {
                 adaptive_anc: None,
                 dual_device: None,
             },
+            product_id: None,
         }
     }
 }

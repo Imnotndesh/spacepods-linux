@@ -7,6 +7,7 @@ use libadwaita::{ActionRow, PreferencesGroup, Clamp, StatusPage};
 use libadwaita::prelude::*;
 
 use crate::context::AppContext;
+use crate::log::Log;
 
 pub struct AncPage;
 
@@ -145,6 +146,9 @@ impl AncPage {
                 match SpacePodsClient::connect(None).await {
                     Ok(mut client) => match client.get_status().await {
                         Ok(s) => {
+                            Log::info("ANC", &format!("Status received: mode={:?} level={} max={} adaptive={:?} dual={:?}",
+                                s.anc.mode, s.anc.level, s.anc.max_level,
+                                s.features.adaptive_anc, s.features.dual_device));
                             for b in [&off_btn, &anc_btn, &trans_btn] { b.set_sensitive(true); }
 
                             let mode = s.anc.mode as u8;
@@ -196,8 +200,7 @@ impl AncPage {
                 }
             }
         ));
-
-        // ── Mode buttons ──
+        
         Self::connect_mode(&off_btn, 0, "off", &low_btn, &med_btn, &high_btn,
                            &adaptive_switch, &adaptive_row, &mode_spinner,
                            &applying, &current_mode, ctx.clone());

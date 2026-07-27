@@ -8,16 +8,39 @@
 
 use gtk4::prelude::*;
 use libadwaita::{Toast, ToastOverlay};
+use libspacepods::device_profile::{DeviceProfile, profile_for_product};
+use std::cell::Cell;
 use std::rc::Rc;
+
+use crate::log::Log;
 
 #[derive(Clone)]
 pub struct AppContext {
     pub toast_overlay: ToastOverlay,
+    /// Product ID of the connected device (None until detected).
+    pub product_id: Rc<Cell<Option<u16>>>,
 }
 
 impl AppContext {
     pub fn new(toast_overlay: ToastOverlay) -> Rc<Self> {
-        Rc::new(Self { toast_overlay })
+        Rc::new(Self {
+            toast_overlay,
+            product_id: Rc::new(Cell::new(None)),
+        })
+    }
+
+    /// Get the device profile for the currently connected device, or None.
+    pub fn profile(&self) -> Option<&'static DeviceProfile> {
+        self.product_id.get().map(profile_for_product)
+    }
+
+    /// Check if the connected device supports a particular feature.
+    pub fn has_feature(&self, feature: libspacepods::device_profile::DetailFeature) -> bool {
+        let result = self.profile()
+            .map(|p| p.features.contains(&feature))
+            .unwrap_or(false);
+        Log::full("CTX", &format!("has_feature({:?}) → {}", feature, result));
+        result
     }
 
     /// Neutral, short-lived toast (confirmation of a background sync, etc).
