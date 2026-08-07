@@ -89,6 +89,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Inject release tag into Flatpak build env
+        run: |
+          python3 - <<'PYEOF'
+          import json
+          p = "spacepods-ui/com.spacepods.ui.json"
+          with open(p) as f:
+              m = json.load(f)
+          bo = m.setdefault("build-options", {})
+          bo.setdefault("env", {})["GIT_TAG"] = "${{ github.ref_name }}"
+          with open(p, "w") as f:
+              json.dump(m, f, indent=4)
+              f.write("\n")
+          PYEOF
+          grep "GIT_TAG" spacepods-ui/com.spacepods.ui.json
+
       - name: Build Flatpak
         uses: flatpak/flatpak-github-actions/flatpak-builder@v6
         with:
