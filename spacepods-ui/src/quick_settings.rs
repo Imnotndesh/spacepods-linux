@@ -1,25 +1,50 @@
-//! Quick-settings popover panel shown from the header bar.
+//! Quick-settings popup panel shown from the tray icon.
 //!
-//! Provides an at-a-glance control surface for the connected earbuds:
-//! battery rings, ANC / noise-control segmented control, an ambient-level
-//! slider and a conversation-awareness toggle. All reads/writes go through
-//! the daemon IPC (`SpacePodsClient`).
+//! A lightweight, standalone popup window positioned near the tray icon
+//! using coordinates received from the SNI activate signal. Contains
+//! battery rings, Noise Control segmented control, Ambient Level slider,
+//! and Conversation Awareness toggle.
 
 use std::cell::Cell;
 use std::rc::Rc;
 
 use gtk4::prelude::*;
-use gtk4::{Box, Button, Label, Orientation, Scale, DrawingArea, ToggleButton};
+use gtk4::{Box, Button, Label, Orientation, Scale, DrawingArea, ToggleButton, Window};
 use gtk4::cairo;
 
 use crate::context::AppContext;
 use crate::log::Log;
 
-/// Build the quick-settings popover. `ctx` is used to reach the daemon and to
-/// label the connected device from its profile.
-pub fn build(ctx: &Rc<AppContext>) -> gtk4::Popover {
+/// Build and pop up the quick-settings panel as a standalone popup window
+/// near the given screen coordinates. Returns the window (it will be
+/// destroyed automatically when it loses focus or is dismissed by the user).
+pub fn show_popup(ctx: &Rc<AppContext>, x: i32, y: i32) {
+    let panel = build_panel(ctx);
+
+    let window = Window::new();
+    window.set_decorated(false);
+    window.set_resizable(false);
+    window.set_child(Some(&panel));
+
+    // Popup-like behaviour: close when focus leaves the window.
+    window.set_hide_on_close(true);
+    let weak = window.downgrade();
+    window.connect_is_active_notify(move |w| {
+        if !w.is_active() {
+            if let Some(win) = weak.upgrade() {
+                win.close();
+            }
+        }
+    });
+
+    window.show();
+    // FIXME: position near the tray icon using wayland/x11 popup protocol.
+    let _ = (x, y);
+}
+
+/// Build the quick-settings panel (the contents of the popup window).
+fn build_panel(ctx: &Rc<AppContext>) -> Box {
     let panel = Box::new(Orientation::Vertical, 0);
-    panel.set_size_request(300, -1);
 
     // ── Header strip ──
     let header = Box::new(Orientation::Horizontal, 8);
@@ -34,13 +59,7 @@ pub fn build(ctx: &Rc<AppContext>) -> gtk4::Popover {
     title.set_halign(gtk4::Align::Start);
     title.set_hexpand(true);
 
-    let gear_btn = Button::from_icon_name("emblem-system-symbolic");
-    gear_btn.add_css_class("flat");
-    gear_btn.add_css_class("circular");
-    gear_btn.set_tooltip_text(Some("Settings"));
-
     header.append(&title);
-    header.append(&gear_btn);
 
     // ── Battery row ──
     let battery_row = Box::new(Orientation::Horizontal, 12);
@@ -49,10 +68,10 @@ pub fn build(ctx: &Rc<AppContext>) -> gtk4::Popover {
 
     let left_ring = BatteryRing::new('L');
     let right_ring = BatteryRing::new('R');
-    let left_widget = left_ring.widget();
-    let right_widget = right_ring.widget();
-    battery_row.append(&left_widget);
-    battery_row.append(&right_widget);
+    let left_wg = left_ring.widget();
+    let right_wg = right_ring.widget();
+    battery_row.append(&left_wg);
+    battery_row.append(&right_wg);
 
     // ── Noise control segmented control ──
     let noise_label = Label::new(Some("Noise Control"));
@@ -82,8 +101,7 @@ pub fn build(ctx: &Rc<AppContext>) -> gtk4::Popover {
 
     let level = Scale::with_range(gtk4::Orientation::Horizontal, 0.0, 5.0, 1.0);
     level.set_hexpand(true);
-    level.set_width_request(190);
-    level.set_draw_value(false);
+    level.set_width_request(220);
 
     let minus_btn = Button::from_icon_name("list-remove-symbolic");
     minus_btn.add_css_class("flat");
@@ -133,46 +151,37 @@ pub fn build(ctx: &Rc<AppContext>) -> gtk4::Popover {
     panel.append(&chat_block);
 
     // Wire to the daemon.
+    let ctx = ctx.clone();
     wiring(
-        &left_ring, &right_ring,
-        &off_btn, &trans_btn, &anc_btn,
-        &level, &minus_btn, &plus_btn,
-        &chat_on, &chat_off,
-        ctx,
+        left_ring, right_ring,
+        off_btn.clone(), trans_btn.clone(), anc_btn.clone(),
+        level.clone(), minus_btn.clone(), plus_btn.clone(),
+        chat_on.clone(), chat_off.clone(),
+        &ctx,
     );
 
-    gtk4::Popover::builder()
-        .child(&panel)
-        .build()
+    panel
 }
 
 fn wiring(
-    left_ring: &BatteryRing,
-    right_ring: &BatteryRing,
-    off_btn: &ToggleButton,
-    trans_btn: &ToggleButton,
-    anc_btn: &ToggleButton,
-    level: &Scale,
-    minus_btn: &Button,
-    plus_btn: &Button,
-    chat_on: &ToggleButton,
-    chat_off: &ToggleButton,
+    left_ring: BatteryRing,
+    right_ring: BatteryRing,
+    off_btn: ToggleButton,
+    trans_btn: ToggleButton,
+    anc_btn: ToggleButton,
+    level: Scale,
+    minus_btn: Button,
+    plus_btn: Button,
+    chat_on: ToggleButton,
+    chat_off: ToggleButton,
     ctx: &Rc<AppContext>,
 ) {
     let ctx = ctx.clone();
-    let left_ring = left_ring.clone();
-    let right_ring = right_ring.clone();
-    let off_btn = off_btn.clone();
-    let trans_btn = trans_btn.clone();
-    let anc_btn = anc_btn.clone();
-    let level = level.clone();
-    let minus_btn = minus_btn.clone();
-    let plus_btn = plus_btn.clone();
-    let chat_on = chat_on.clone();
-    let chat_off = chat_off.clone();
 
     // Populate initial state from the daemon.
-    {    
+    {
+        let left_ring = left_ring.clone();
+        let right_ring = right_ring.clone();
         let off_btn = off_btn.clone();
         let trans_btn = trans_btn.clone();
         let anc_btn = anc_btn.clone();
@@ -182,36 +191,36 @@ fn wiring(
         glib::spawn_future_local(glib::clone!(
             #[strong] ctx,
             async move {
-            use libspacepods::client::SpacePodsClient;
-            match SpacePodsClient::connect(None).await {
-                Ok(mut client) => match client.get_status().await {
-                    Ok(s) => {
-                        left_ring.set_percent(s.battery.left);
-                        right_ring.set_percent(s.battery.right);
-                        match s.anc.mode as u8 {
-                            0 => off_btn.set_active(true),
-                            1 => anc_btn.set_active(true),
-                            2 => trans_btn.set_active(true),
-                            _ => {}
+                use libspacepods::client::SpacePodsClient;
+                match SpacePodsClient::connect(None).await {
+                    Ok(mut client) => match client.get_status().await {
+                        Ok(s) => {
+                            left_ring.set_percent(s.battery.left);
+                            right_ring.set_percent(s.battery.right);
+                            match s.anc.mode as u8 {
+                                0 => off_btn.set_active(true),
+                                1 => anc_btn.set_active(true),
+                                2 => trans_btn.set_active(true),
+                                _ => {}
+                            }
+                            if s.anc.max_level > 0 {
+                                level.set_range(0.0, s.anc.max_level as f64);
+                            }
+                            level.set_value(s.anc.level as f64);
+                            if let Some(v) = s.features.adaptive_anc {
+                                if v { chat_on.set_active(true); } else { chat_off.set_active(true); }
+                            }
+                            Log::full("QUICKSET", &format!(
+                                "batt={:?}/{:?} mode={} level={} adaptive={:?}",
+                                s.battery.left, s.battery.right, s.anc.mode as u8,
+                                s.anc.level, s.features.adaptive_anc
+                            ));
                         }
-                        if s.anc.max_level > 0 {
-                            level.set_range(0.0, s.anc.max_level as f64);
-                        }
-                        level.set_value(s.anc.level as f64);
-                        if let Some(v) = s.features.adaptive_anc {
-                            if v { chat_on.set_active(true); } else { chat_off.set_active(true); }
-                        }
-                        Log::full("QUICKSET", &format!(
-                            "batt={:?}/{:?} mode={} level={} adaptive={:?}",
-                            s.battery.left, s.battery.right, s.anc.mode as u8,
-                            s.anc.level, s.features.adaptive_anc
-                        ));
-                    }
+                        Err(e) => ctx.daemon_unreachable(e),
+                    },
                     Err(e) => ctx.daemon_unreachable(e),
-                },
-                Err(e) => ctx.daemon_unreachable(e),
+                }
             }
-        }
         ));
     }
 
@@ -267,7 +276,9 @@ fn set_adaptive(on: bool, ctx: &Rc<AppContext>) {
         use libspacepods::client::SpacePodsClient;
         match SpacePodsClient::connect(None).await {
             Ok(mut client) => match client.set_adaptive_anc(on).await {
-                Ok(_) => ctx.success(if on { "Conversation awareness on" } else { "Conversation awareness off" }),
+                Ok(_) => ctx.success(
+                    if on { "Conversation awareness on" } else { "Conversation awareness off" },
+                ),
                 Err(e) => ctx.error(format!("Conversation: {}", e)),
             },
             Err(e) => ctx.daemon_unreachable(e),
@@ -275,20 +286,18 @@ fn set_adaptive(on: bool, ctx: &Rc<AppContext>) {
     });
 }
 
-// ───────────────────────────────────────────────────────────────────────────
-// Battery ring
-// ───────────────────────────────────────────────────────────────────────────
+// ───────────────────────────────────────────────────────────────────────
+// Battery ring (cairo-drawn)
+// ───────────────────────────────────────────────────────────────────────
 
-/// A circular percentage ring drawn with cairo, with a letter badge (L/R)
-/// centred inside.
 #[derive(Clone)]
-pub struct BatteryRing {
+struct BatteryRing {
     area: DrawingArea,
     percent: Rc<Cell<f64>>,
 }
 
 impl BatteryRing {
-    pub fn new(badge: char) -> Self {
+    fn new(badge: char) -> Self {
         let percent: Rc<Cell<f64>> = Rc::new(Cell::new(0.0));
         let area = DrawingArea::new();
         area.set_size_request(64, 64);
@@ -300,14 +309,12 @@ impl BatteryRing {
             let cy = h as f64 / 2.0;
             let radius = (w.min(h) as f64 / 2.0) - 6.0;
 
-            // Track
             cr.set_source_rgba(0.25, 0.25, 0.27, 1.0);
             cr.set_line_width(5.0);
             cr.set_line_cap(cairo::LineCap::Round);
             cr.arc(cx, cy, radius, 0.0, std::f64::consts::TAU);
             let _ = cr.stroke();
 
-            // Filled arc (green)
             let frac = (pct / 100.0).clamp(0.0, 1.0);
             if frac > 0.001 {
                 let start = -std::f64::consts::FRAC_PI_2;
@@ -317,7 +324,6 @@ impl BatteryRing {
                 let _ = cr.stroke();
             }
 
-            // Badge + percentage
             cr.set_source_rgba(1.0, 1.0, 1.0, 0.85);
             cr.select_font_face("sans-serif", cairo::FontSlant::Normal, cairo::FontWeight::Bold);
             cr.set_font_size((radius * 0.32).max(8.0));
@@ -331,11 +337,11 @@ impl BatteryRing {
         Self { area, percent }
     }
 
-    pub fn widget(&self) -> DrawingArea {
+    fn widget(&self) -> DrawingArea {
         self.area.clone()
     }
 
-    pub fn set_percent(&self, value: Option<u8>) {
+    fn set_percent(&self, value: Option<u8>) {
         self.percent.set(value.unwrap_or(0) as f64);
         self.area.queue_draw();
     }

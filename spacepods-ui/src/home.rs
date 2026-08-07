@@ -1,6 +1,7 @@
 use gtk4::prelude::*;
 use gtk4::{Box, Label, Orientation, Image, ListBox, ListBoxRow, SelectionMode};
 use glib::clone;
+use std::rc::Rc;
 use libadwaita::{
     HeaderBar, ToolbarView, ToastOverlay, OverlaySplitView,
     Breakpoint, BreakpointCondition, ApplicationWindow,
@@ -58,17 +59,14 @@ impl Section {
 pub struct HomeView;
 
 impl HomeView {
-    pub fn new(
+    /// Build the home view from a pre-constructed AppContext (the caller
+    /// already set tray, window, product_id etc.).
+    pub fn from_ctx(
         window: &ApplicationWindow,
-        product_id: Option<u16>,
-        tray: Option<crate::tray::TrayHandle>,
-        window_controller: std::rc::Rc<crate::context::WindowController>,
+        ctx: Rc<AppContext>,
     ) -> ToastOverlay {
-        let toast_overlay = ToastOverlay::new();
-        let ctx = AppContext::new(toast_overlay.clone(), tray, window_controller);
-        ctx.product_id.set(product_id);
 
-        Log::info("HOME", &format!("product_id={:?}, profile={:?}", product_id, ctx.profile().map(|p| p.name)));
+        Log::info("HOME", &format!("product_id={:?}, profile={:?}", ctx.product_id.get(), ctx.profile().map(|p| p.name)));
         Log::full("HOME", &format!("features={:?}", ctx.profile().map(|p| &p.features)));
 
         let pages: Vec<PageDef> = vec![
@@ -144,17 +142,23 @@ impl HomeView {
                 feature: None,
                 widget: SettingsPage::page({
                     let ww = window.downgrade();
-                    let t = ctx.tray.clone();
+                    let tray = ctx.tray.clone();
                     let wc = ctx.window.clone();
                     move || {
                         if let Some(win) = ww.upgrade() {
                             let ww2 = ww.clone();
-                            let t = t.clone();
+                            let tray = tray.clone();
                             let wc = wc.clone();
                             let setup = crate::pages::setup_page::SetupPage::new(
                                 move |product_id| {
                                     if let Some(win) = ww2.upgrade() {
-                                        let home = HomeView::new(&win, product_id, t.clone(), wc.clone());
+                                        let ctx = crate::context::AppContext::new(
+                                            libadwaita::ToastOverlay::new(),
+                                            tray.clone(),
+                                            wc.clone(),
+                                        );
+                                        ctx.product_id.set(product_id);
+                                        let home = HomeView::from_ctx(&win, ctx);
                                         win.set_content(Some(&home));
                                     }
                                 }
@@ -184,7 +188,7 @@ impl HomeView {
         let mut row_to_id: Vec<(ListBoxRow, &'static str)> = Vec::new();
 
         for page in &pages {
-            if product_id.is_some() {
+            if ctx.product_id.get().is_some() {
                 if let Some(feature) = &page.feature {
                     let supported = ctx.has_feature(*feature);
                     Log::full("HOME", &format!("Page '{}' needs {:?} → supported={}", page.id, feature, supported));
@@ -326,20 +330,6 @@ impl HomeView {
         ));
         back_btn.set_visible(split_view.is_collapsed());
 
-        // Quick-settings button → opens the quick-settings popover panel.
-        let qs_btn = gtk4::Button::from_icon_name("audio-headset-symbolic");
-        qs_btn.add_css_class("flat");
-        qs_btn.set_tooltip_text(Some("Quick settings"));
-        {
-            let ctx = ctx.clone();
-            qs_btn.connect_clicked(move |btn| {
-                let popover = crate::quick_settings::build(&ctx);
-                popover.set_parent(btn);
-                popover.popup();
-            });
-        }
-        content_header.pack_end(&qs_btn);
-
         let content_toolbar = ToolbarView::new();
         content_toolbar.add_top_bar(&content_header);
         content_toolbar.set_content(Some(&content_scroll));
@@ -347,7 +337,7 @@ impl HomeView {
         split_view.set_sidebar(Some(&sidebar_toolbar));
         split_view.set_content(Some(&content_toolbar));
 
-        toast_overlay.set_child(Some(&split_view));
+        ctx.toast_overlay.set_child(Some(&split_view));
         
         let condition = BreakpointCondition::new_length(
             libadwaita::BreakpointConditionLengthType::MaxWidth,
@@ -358,7 +348,7 @@ impl HomeView {
         breakpoint.add_setter(&split_view, "collapsed", Some(&true.to_value()));
         window.add_breakpoint(breakpoint);
 
-        toast_overlay
+        ctx.toast_overlay.clone()
     }
 }
 
