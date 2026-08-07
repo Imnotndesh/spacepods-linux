@@ -237,9 +237,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if let Some(beacon) = beacon::DeviceBeacon::from_manufacturer_data(data) {
                                 beacon_hits += 1;
                                 println!();
-                                println!("═══════════════════════════════════════════");
-                                println!("  ✅ SPACEBUDS DEVICE FOUND!");
-                                println!("═══════════════════════════════════════════");
+                                println!("-------------------------------------------");
+                                println!("  [FOUND] SPACEBUDS DEVICE");
+                                println!("-------------------------------------------");
                                 println!("  Product:       {} (ID={})", beacon.product_name(), beacon.product_id);
                                 println!("  Beacon version: V{}", beacon.version);
                                 if let Some(addr) = beacon.bt_address_string() {
@@ -251,19 +251,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 if let Some(bid) = beacon.brand_id {
                                     println!("  Brand ID:      0x{:06X}", bid);
                                 }
-                                // Battery info (V1 only)
                                 if let Some(lb) = beacon.left_battery {
-                                    println!("  Left batt:     {}% {}", lb, if beacon.left_charging.unwrap_or(false) { "⚡" } else { "" });
+                                    println!("  Left batt:     {}% {}", lb, if beacon.left_charging.unwrap_or(false) { "(charging)" } else { "" });
                                 }
                                 if let Some(rb) = beacon.right_battery {
-                                    println!("  Right batt:    {}% {}", rb, if beacon.right_charging.unwrap_or(false) { "⚡" } else { "" });
+                                    println!("  Right batt:    {}% {}", rb, if beacon.right_charging.unwrap_or(false) { "(charging)" } else { "" });
                                 }
                                 if let Some(cb) = beacon.case_battery {
-                                    println!("  Case batt:     {}% {}", cb, if beacon.case_charging.unwrap_or(false) { "⚡" } else { "" });
+                                    println!("  Case batt:     {}% {}", cb, if beacon.case_charging.unwrap_or(false) { "(charging)" } else { "" });
                                 }
                                 println!("  Manufacturer ID: 0x{:04X}", mfg_id);
                                 println!("  Raw data:      {} bytes: {:02X?}", data.len(), &data[..data.len().min(27)]);
-                                println!("═══════════════════════════════════════════");
+                                println!("-------------------------------------------");
                                 println!();
                             }
                         }
@@ -310,7 +309,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if !found_via_beacon {
                             spacebuds_count += 1;
                             found_via_beacon = true;
-                            println!("  🎧 {} — {} (beacon V{})",
+                            println!("  * {} — {} (beacon V{})",
                                 props.local_name.as_deref().unwrap_or("unnamed"),
                                 beacon.product_name(),
                                 beacon.version,
@@ -326,7 +325,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let s = uuid.to_string().to_lowercase();
                     if s.contains("ff17") || s.contains("fe2c") {
                         spacebuds_count += 1;
-                        println!("  ⚠️  {} — matched via service UUID (NO beacon data!)",
+                        println!("  WARNING: {} — matched via service UUID (NO beacon data!)",
                             props.local_name.as_deref().unwrap_or("unnamed"),
                         );
                         break;
@@ -337,7 +336,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if spacebuds_count == 0 {
-        println!("  ❌ No SpaceBuds devices found.");
+        println!("  [FAIL] No SpaceBuds devices found.");
         println!();
         println!("  Troubleshooting:");
         println!("    1. Make sure your SpaceBuds are in pairing mode (LED flashing)");

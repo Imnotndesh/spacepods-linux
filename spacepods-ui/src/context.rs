@@ -52,7 +52,7 @@ impl AppContext {
 
     /// A command to the daemon failed. Always show this — never swallow it.
     pub fn error(&self, message: impl AsRef<str>) {
-        let toast = Toast::new(&format!("⚠ {}", message.as_ref()));
+        let toast = Toast::new(message.as_ref());
         toast.set_timeout(5);
         toast.set_priority(libadwaita::ToastPriority::High);
         self.toast_overlay.add_toast(toast);

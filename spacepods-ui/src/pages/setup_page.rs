@@ -39,10 +39,10 @@ fn friendly_error(err: &str) -> String {
 fn rssi_label(rssi: Option<i16>) -> &'static str {
     match rssi {
         None => "",
-        Some(v) if v >= -50 => "📶 Very close",
-        Some(v) if v >= -65 => "📶 Near",
-        Some(v) if v >= -80 => "📶 Far",
-        _ => "📶 Distant",
+        Some(v) if v >= -50 => "Very close",
+        Some(v) if v >= -65 => "Near",
+        Some(v) if v >= -80 => "Far",
+        _ => "Distant",
     }
 }
 
@@ -94,7 +94,7 @@ impl SetupPage {
         };
         let show_error = {
             let st = show_toast.clone();
-            move |err: &str| st(&format!("⚠ {}", friendly_error(err)))
+            move |err: &str| st(&format!("{}: {}", friendly_error(err).lines().next().unwrap_or(""), err))
         };
 
         // ── Header ──
@@ -295,19 +295,22 @@ impl SetupPage {
                     match SpacePodsClient::connect(None).await {
                         Ok(mut c) => {
                             if c.ping().await.unwrap_or(false) {
-                                ds.set_text("🟢 Service running");
+                                ds.set_text("Service running");
+                                ds.add_css_class("success");
                                 ds.remove_css_class("error");
                                 ds.remove_css_class("warning");
                             } else {
-                                ds.set_text("🟡 Service unresponsive");
+                                ds.set_text("Service unresponsive");
                                 ds.add_css_class("warning");
                                 ds.remove_css_class("error");
+                                ds.remove_css_class("success");
                             }
                         }
                         Err(_) => {
-                            ds.set_text("🔴 Service not running");
+                            ds.set_text("Service not running");
                             ds.add_css_class("error");
                             ds.remove_css_class("warning");
+                            ds.remove_css_class("success");
                             st("Start the daemon with: spacepods service");
                         }
                     }
@@ -489,7 +492,7 @@ impl SetupPage {
             line1.append(&dist);
         }
         if device.already_connected {
-            let warn = Label::new(Some("⚠ In use"));
+            let warn = Label::new(Some("In use"));
             warn.add_css_class("warning");
             warn.add_css_class("caption");
             line1.append(&warn);
@@ -510,12 +513,12 @@ impl SetupPage {
         line2.append(&addr_lbl);
 
         if device.battery_left.is_some() || device.battery_right.is_some() {
-            let mut s = format!("🦻{}% / {}%",
+            let mut s = format!("L:{}% / R:{}%",
                 device.battery_left.map_or("?".into(), |b| b.to_string()),
                 device.battery_right.map_or("?".into(), |b| b.to_string()),
             );
             if let Some(c) = device.battery_case {
-                s = format!("{}  📦{}%", s, c);
+                s = format!("{}  C:{}%", s, c);
             }
             let bat = Label::new(Some(&s));
             bat.add_css_class("caption");
