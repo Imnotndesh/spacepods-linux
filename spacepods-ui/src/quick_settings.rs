@@ -159,8 +159,12 @@ fn wiring(
     ctx: &Rc<AppContext>,
 ) {
     let ctx = ctx.clone();
+    let anc_cell = ctx.anc_mode.clone();
 
-    // Populate initial state from the daemon.
+    // Apply cell state immediately so buttons match the last known mode.
+    apply_anc_ui(anc_cell.get(), &off_btn, &anc_btn, &trans_btn);
+
+    // Populate initial state from the daemon (also updates the cell).
     {
         let off_btn = off_btn.clone();
         let trans_btn = trans_btn.clone();
@@ -175,12 +179,9 @@ fn wiring(
                 match SpacePodsClient::connect(None).await {
                     Ok(mut client) => match client.get_status().await {
                         Ok(s) => {
-                            match s.anc.mode as u8 {
-                                0 => off_btn.set_active(true),
-                                1 => anc_btn.set_active(true),
-                                2 => trans_btn.set_active(true),
-                                _ => {}
-                            }
+                            let mode = s.anc.mode as u8;
+                            anc_cell.set(mode);
+                            apply_anc_ui(mode, &off_btn, &anc_btn, &trans_btn);
                             if s.anc.max_level > 0 {
                                 level.set_range(0.0, s.anc.max_level as f64);
                             }
@@ -201,9 +202,9 @@ fn wiring(
         ));
     }
 
-    trans_btn.connect_clicked(glib::clone!(#[strong] ctx, move |_| set_mode("transparency", &ctx)));
-    anc_btn.connect_clicked(glib::clone!(#[strong] ctx, move |_| set_mode("anc", &ctx)));
-    off_btn.connect_clicked(glib::clone!(#[strong] ctx, move |_| set_mode("off", &ctx)));
+    trans_btn.connect_clicked(glib::clone!(#[strong] ctx, move |_| set_mode_cell(2, &ctx)));
+    anc_btn.connect_clicked(glib::clone!(#[strong] ctx, move |_| set_mode_cell(1, &ctx)));
+    off_btn.connect_clicked(glib::clone!(#[strong] ctx, move |_| set_mode_cell(0, &ctx)));
 
     level.connect_value_changed(glib::clone!(#[strong] ctx, move |sl| set_level(sl.value() as u8, &ctx)));
     minus_btn.connect_clicked(glib::clone!(
@@ -217,6 +218,29 @@ fn wiring(
 
     chat_on.connect_clicked(glib::clone!(#[strong] ctx, move |_| set_adaptive(true, &ctx)));
     chat_off.connect_clicked(glib::clone!(#[strong] ctx, move |_| set_adaptive(false, &ctx)));
+}
+
+fn apply_anc_ui(mode: u8, off: &ToggleButton, anc: &ToggleButton, trans: &ToggleButton) {
+    off.set_active(mode == 0);
+    anc.set_active(mode == 1);
+    trans.set_active(mode == 2);
+}
+
+fn set_mode_cell(mode: u8, ctx: &Rc<AppContext>) {
+    // Update the shared cell immediately — the ANC page reads from it too.
+    ctx.anc_mode.set(mode);
+    let label = match mode { 0 => "off", 1 => "anc", 2 => "transparency", _ => return };
+    let ctx = ctx.clone();
+    glib::spawn_future_local(async move {
+        use libspacepods::client::SpacePodsClient;
+        match SpacePodsClient::connect(None).await {
+            Ok(mut client) => match client.set_anc_mode(label).await {
+                Ok(_) => ctx.success(&format!("ANC: {}", label)),
+                Err(e) => ctx.error(format!("ANC: {}", e)),
+            },
+            Err(e) => ctx.daemon_unreachable(e),
+        }
+    });
 }
 
 fn set_mode(mode: &'static str, ctx: &Rc<AppContext>) {

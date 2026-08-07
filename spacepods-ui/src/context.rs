@@ -89,6 +89,9 @@ pub struct AppContext {
     pub tray: Option<TrayHandle>,
     /// Controls the main window (show/hide/quit).
     pub window: Rc<WindowController>,
+    /// Current ANC mode: 0=off, 1=ANC, 2=transparency.
+    /// Shared between the ANC page and the tray popup so they stay in sync.
+    pub anc_mode: Rc<Cell<u8>>,
 }
 
 impl AppContext {
@@ -102,6 +105,7 @@ impl AppContext {
             product_id: Rc::new(Cell::new(None)),
             tray,
             window,
+            anc_mode: Rc::new(Cell::new(0)),
         })
     }
 
