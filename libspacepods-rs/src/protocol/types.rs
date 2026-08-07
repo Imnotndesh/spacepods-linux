@@ -53,6 +53,7 @@ impl fmt::Display for AncMode {
 pub enum MessageType {
     Request = 0x01,
     Response = 0x02,
+    Notify = 0x03,
 }
 
 impl MessageType {
@@ -60,6 +61,7 @@ impl MessageType {
         match value {
             0x01 => Some(Self::Request),
             0x02 => Some(Self::Response),
+            0x03 => Some(Self::Notify),
             _ => None,
         }
     }
