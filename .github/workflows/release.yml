@@ -85,7 +85,7 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-47
-      options: --privileged --network=host
+      options: --privileged
     steps:
       - uses: actions/checkout@v4
 
