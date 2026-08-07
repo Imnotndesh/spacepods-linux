@@ -125,31 +125,54 @@ jobs:
           cp artifacts/spacepods-ui-x86_64/spacepods-ui-x86_64.tar.gz release-assets/
           cp artifacts/spacepods-flatpak/spacepods.flatpak release-assets/
 
-          cat > release-assets/install.sh << SCRIPT
-          #!/bin/sh
-          set -eu
-          echo "Installing libspacepods ${TAG}..."
-          URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/libspacepods-x86_64.tar.gz"
-          curl -sSL "\$URL" | sudo tar -xzf - -C /usr/local/bin
-          echo "libspacepods ${TAG} installed. Run 'libspacepods service' to start."
-          SCRIPT
+          # Keep the installer matching the committed source of truth in tools/install.sh
+          cp tools/install.sh release-assets/install.sh
           chmod +x release-assets/install.sh
 
           cat > release-assets/notes.md << NOTES
           ## SpacePods Linux ${TAG}
 
-          ### libspacepods daemon
+          The unified installer can install or remove the daemon, the GUI, and the
+          Flatpak app. Always download to a file and inspect it before running
+          (never pipe straight into the shell):
+
           \`\`\`sh
-          curl -sSL https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/install.sh | sudo sh
+          curl -fSL -O \
+            https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/install.sh
+          less install.sh
           \`\`\`
 
-          ### spacepods-ui binary
-          Download \`spacepods-ui-x86_64.tar.gz\` and extract.
-
-          ### Flatpak
+          ### Install everything (daemon + GUI via Flatpak)
           \`\`\`sh
-          flatpak install --user spacepods.flatpak
+          bash install.sh install all
           \`\`\`
+
+          ### Install the native GUI binary instead of Flatpak
+          \`\`\`sh
+          bash install.sh --no-flatpak install all
+          \`\`\`
+
+          ### Install only the libspacepods daemon
+          \`\`\`sh
+          bash install.sh install libspacepods
+          bash libspacepods service   # start the daemon
+          \`\`\`
+
+          ### Remove
+          \`\`\`sh
+          bash install.sh remove all        # remove everything
+          bash install.sh remove flatpak    # remove just the Flatpak app
+          \`\`\`
+
+          ### Manual install (not via the installer)
+          - **libspacepods daemon**: extract \`libspacepods-x86_64.tar.gz\` into a PATH dir.
+          - **spacepods-ui binary**: extract \`spacepods-ui-x86_64.tar.gz\`.
+          - **Flatpak**: run \`flatpak install --user spacepods.flatpak\`.
+
+          > Note: this repository is **private**. GitHub requires authentication to
+          > download release assets anonymously, so the one-liner \`curl ... | sh\` is
+          > not supported. Use the download-then-run pattern above, or authenticate
+          > with a token when fetching the assets.
           NOTES
 
       - name: Create Release
