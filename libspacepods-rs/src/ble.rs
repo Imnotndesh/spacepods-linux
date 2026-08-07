@@ -1,5 +1,5 @@
 use crate::errors::{Result, SpaceBudsError};
-use crate::protocol::{Packet, UUID_NOTIFY, UUID_WRITE, UUID_BATTERY_LEVEL, CMD_HANDSHAKE, ID_DEVICE_POWER};
+use crate::protocol::{Packet, UUID_NOTIFY, UUID_WRITE, UUID_BATTERY_LEVEL, CMD_HANDSHAKE};
 use btleplug::api::{Central, Manager as _, Peripheral as _, ScanFilter, WriteType, Characteristic};
 use btleplug::platform::{Manager, Peripheral};
 use futures::stream::StreamExt;
@@ -75,19 +75,6 @@ impl BleConnection {
                 } else if notification.uuid == UUID_NOTIFY {
                     // Main protocol packets
                     if let Some(packet) = Packet::from_bytes(&notification.value) {
-                        // Power notification: the device sends cmd_id=0x01 with
-                        // 3 bytes (left, right, case), each encoded as:
-                        //   level = byte & 0x7F
-                        //   charging = (byte & 0x80) != 0
-                        if packet.msg_type == crate::protocol::types::MessageType::Notify
-                            && packet.cmd_id == ID_DEVICE_POWER
-                            && packet.payload.len() >= 2
-                        {
-                            let left = packet.payload.get(0).and_then(|b| Some((b & 0x7F).min(100)));
-                            let right = packet.payload.get(1).and_then(|b| Some((b & 0x7F).min(100)));
-                            let case = packet.payload.get(2).and_then(|b| Some((b & 0x7F).min(100)));
-                            let _ = battery_tx_clone.send((left, right, case));
-                        }
                         let _ = response_tx_clone.send(packet);
                     }
                 }
