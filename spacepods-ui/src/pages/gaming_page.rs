@@ -13,15 +13,6 @@ pub struct GamingPage;
 impl GamingPage {
     pub fn new(ctx: Rc<AppContext>) -> gtk4::Widget {
 
-        let status_page = StatusPage::new();
-        status_page.set_icon_name(Some("input-gaming-symbolic"));
-        status_page.set_title("Game Mode");
-        status_page.set_description(Some(
-            "Reduces audio latency for a better gaming experience. \
-             May increase battery consumption."
-        ));
-        status_page.set_vexpand(true);
-
         let gaming_group = PreferencesGroup::new();
         gaming_group.set_title("Low Latency Mode");
 
@@ -107,7 +98,6 @@ impl GamingPage {
         content.set_margin_start(16);
         content.set_margin_end(16);
         content.append(&header_row);
-        content.append(&status_page);
         content.append(&gaming_group);
         content.append(&status_label);
 

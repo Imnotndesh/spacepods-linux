@@ -192,6 +192,8 @@ impl AncPage {
 
                             let mode = s.anc.mode as u8;
                             current_mode.set(mode);
+                            ctx.anc_mode.set(mode);
+                            crate::tray::ANC_MODE_ATOMIC.store(mode, std::sync::atomic::Ordering::Relaxed);
                             applying.set(true);
                             match mode {
                                 0 => off_btn.set_active(true),
@@ -539,6 +541,8 @@ impl AncPage {
 
             let previous_mode = current_mode.get();
             current_mode.set(mode_id);
+            ctx.anc_mode.set(mode_id);
+            crate::tray::ANC_MODE_ATOMIC.store(mode_id, std::sync::atomic::Ordering::Relaxed);
             Self::apply_mode_ui(mode_id, &low, &med, &high, &asw, &ar);
 
             spinner.set_visible(true);
@@ -567,6 +571,8 @@ impl AncPage {
                 if let Err(e) = result {
                     ctx.error(format!("Couldn't switch ANC mode: {}", e));
                     current_mode_ref.set(previous_mode);
+                    ctx.anc_mode.set(previous_mode);
+                    crate::tray::ANC_MODE_ATOMIC.store(previous_mode, std::sync::atomic::Ordering::Relaxed);
                     Self::apply_mode_ui(previous_mode, &low_ref, &med_ref, &high_ref, &asw_ref, &ar_ref);
                 }
             });

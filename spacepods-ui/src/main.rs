@@ -5,6 +5,8 @@ mod pages;
 mod service;
 mod storage;
 mod context;
+mod tray;
+mod quick_settings;
 
 fn main() -> glib::ExitCode {
     gio::resources_register_include!("spacepods.gresource")

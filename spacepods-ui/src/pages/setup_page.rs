@@ -4,6 +4,7 @@ use gtk4::{
     ListBox, ListBoxRow, PolicyType,
 };
 use glib::clone;
+use std::rc::Rc;
 use libadwaita::prelude::*;
 use libadwaita::{
     Clamp, HeaderBar, StatusPage,
@@ -12,7 +13,6 @@ use libadwaita::{
 use libspacepods::client::SpacePodsClient;
 use libspacepods::ipc::protocol::ScannedDevice;
 use crate::storage::{add_known_device, load_known_devices, load_settings, remove_known_device, update_settings};
-use std::rc::Rc;
 use std::cell::RefCell;
 
 // ── Helpers ──
@@ -252,6 +252,8 @@ impl SetupPage {
 
         // Use AdwBreakpointBin to switch between horizontal and vertical
         let layout_bin = libadwaita::BreakpointBin::new();
+        layout_bin.set_width_request(300);
+        layout_bin.set_height_request(200);
         layout_bin.set_child(Some(&hbox));
 
         // On narrow screens (<720px), switch to vertical stacking
@@ -320,11 +322,14 @@ impl SetupPage {
         check_daemon();
 
         // Populate saved devices
+        let on_connected_rc = Rc::new(on_connected.clone());
+        let show_error_rc = Rc::new(show_error.clone());
+
         let rebuild_saved = {
             let saved_list = saved_list.clone();
             let saved_section = saved_section.clone();
-            let on_connected = on_connected.clone();
-            let show_error = show_error.clone();
+            let on_connected_rc = on_connected_rc.clone();
+            let show_error_rc = show_error_rc.clone();
             move || {
                 while let Some(child) = saved_list.first_child() {
                     saved_list.remove(&child);
@@ -333,8 +338,8 @@ impl SetupPage {
                 for dev in &kd {
                     saved_list.append(&Self::saved_row(
                         dev,
-                        on_connected.clone(),
-                        show_error.clone(),
+                        on_connected_rc.clone(),
+                        show_error_rc.clone(),
                     ));
                 }
                 let has = !kd.is_empty();
@@ -347,6 +352,8 @@ impl SetupPage {
         let scanned_data: Rc<RefCell<Vec<ScannedDevice>>> = Rc::new(RefCell::new(Vec::new()));
 
         // ═══ SCAN BUTTON ═══
+        let oc = on_connected_rc.clone();
+        let se = show_error_rc.clone();
         scan_btn.connect_clicked(clone!(
             #[weak] scan_btn,
             #[weak] scan_spinner,
@@ -354,7 +361,8 @@ impl SetupPage {
             #[weak] found_label,
             #[weak] device_list,
             #[strong] scanned_data,
-            #[strong] show_error,
+            #[strong] oc,
+            #[strong] se,
             #[strong] check_daemon,
             #[strong] right_stack,
             move |_| {
@@ -375,16 +383,19 @@ impl SetupPage {
                     #[weak] found_label,
                     #[weak] device_list,
                     #[strong] scanned_data,
-                    #[strong] show_error,
+                    #[strong] oc,
+                    #[strong] se,
                     #[strong] check_daemon,
                     async move {
+                        let oc = oc.clone();
+                        let se = se.clone();
                         let mut client = match SpacePodsClient::connect(None).await {
                             Ok(c) => c,
                             Err(e) => {
                                 scan_spinner.set_visible(false);
                                 scan_spinner.stop();
                                 scan_btn.set_sensitive(true);
-                                show_error(&e.to_string());
+                                se(&e.to_string());
                                 check_daemon();
                                 return;
                             }
@@ -392,7 +403,7 @@ impl SetupPage {
 
                         match client.scan(5).await {
                             Err(e) => {
-                                show_error(&e.to_string());
+                                se(&e.to_string());
                                 scan_status.set_text("");
                             }
                             Ok(devices) if devices.is_empty() => {
@@ -404,8 +415,10 @@ impl SetupPage {
                                 sorted.sort_by_key(|d| d.rssi.unwrap_or(-100));
                                 sorted.reverse();
 
+                                let oc = oc.clone();
+                                let se = se.clone();
                                 for d in &sorted {
-                                    device_list.append(&Self::device_row(d));
+                                    device_list.append(&Self::device_row(d, oc.clone(), se.clone()));
                                 }
 
                                 *scanned_data.borrow_mut() = sorted.clone();
@@ -428,8 +441,6 @@ impl SetupPage {
         // ═══ SCANNED DEVICE CLICK → CONNECT ═══
         device_list.connect_row_activated(clone!(
             #[strong] scanned_data,
-            #[strong] show_error,
-            #[strong] on_connected,
             #[strong] check_daemon,
             move |_, row| {
                 let idx = row.index() as usize;
@@ -437,8 +448,8 @@ impl SetupPage {
                 if let Some(device) = data.get(idx) {
                     let name = device.name.clone();
                     let address = device.address.clone();
-                    let on_connected = on_connected.clone();
-                    let show_error = show_error.clone();
+                    let on_connected = on_connected_rc.clone();
+                    let show_error = show_error_rc.clone();
                     let check_daemon = check_daemon.clone();
                     glib::spawn_future_local(async move {
                         match SpacePodsClient::connect(None).await {
@@ -447,11 +458,11 @@ impl SetupPage {
                                     add_known_device(name, address);
                                     tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
                                     let pid = client.get_status().await.ok().and_then(|s| s.product_id);
-                                    on_connected(pid);
+                                    (*on_connected)(pid);
                                 }
-                                Err(e) => { show_error(&e.to_string()); check_daemon(); }
+                                Err(e) => { (*show_error)(&e.to_string()); check_daemon(); }
                             },
-                            Err(e) => { show_error(&e.to_string()); check_daemon(); }
+                            Err(e) => { (*show_error)(&e.to_string()); check_daemon(); }
                         }
                     });
                 }
@@ -462,7 +473,11 @@ impl SetupPage {
     }
 
     // ── Device row (scanned) ──
-    fn device_row(device: &ScannedDevice) -> ListBoxRow {
+    fn device_row(
+        device: &ScannedDevice,
+        on_connected: Rc<impl Fn(Option<u16>) + 'static>,
+        show_error: Rc<impl Fn(&str) + 'static>,
+    ) -> ListBoxRow {
         let row = ListBoxRow::new();
         row.add_css_class("activatable");
 
@@ -512,6 +527,61 @@ impl SetupPage {
         addr_lbl.set_halign(gtk4::Align::Start);
         line2.append(&addr_lbl);
 
+        // Connect button + spinner
+        let conn_spinner = Spinner::new();
+        conn_spinner.set_visible(false);
+        conn_spinner.set_halign(Align::Center);
+        let conn_btn = Button::with_label("Connect");
+        conn_btn.add_css_class("suggested-action");
+        conn_btn.add_css_class("pill");
+        conn_btn.set_valign(Align::Center);
+        line2.append(&conn_spinner);
+        line2.append(&conn_btn);
+
+        {
+            let name = device.name.clone();
+            let address = device.address.clone();
+            let spinner = conn_spinner.clone();
+            let btn = conn_btn.clone();
+            let on_connected = on_connected.clone();
+            let show_error = show_error.clone();
+            conn_btn.connect_clicked(move |_| {
+                spinner.set_visible(true);
+                btn.set_sensitive(false);
+                btn.set_label("Connecting…");
+                let name = name.clone();
+                let address = address.clone();
+                let spinner = spinner.clone();
+                let btn = btn.clone();
+                let on_connected = on_connected.clone();
+                let show_error = show_error.clone();
+                glib::spawn_future_local(async move {
+                    match SpacePodsClient::connect(None).await {
+                        Ok(mut client) => match client.connect_device(address.clone()).await {
+                            Ok(_) => {
+                                add_known_device(name, address);
+                                tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
+                                let pid = client.get_status().await.ok().and_then(|s| s.product_id);
+                                (*on_connected)(pid);
+                            }
+                            Err(e) => {
+                                (*show_error)(&e.to_string());
+                                spinner.set_visible(false);
+                                btn.set_sensitive(true);
+                                btn.set_label("Connect");
+                            }
+                        },
+                        Err(e) => {
+                            (*show_error)(&e.to_string());
+                            spinner.set_visible(false);
+                            btn.set_sensitive(true);
+                            btn.set_label("Connect");
+                        }
+                    }
+                });
+            });
+        }
+
         if device.battery_left.is_some() || device.battery_right.is_some() {
             let mut s = format!("L:{}% / R:{}%",
                 device.battery_left.map_or("?".into(), |b| b.to_string()),
@@ -539,8 +609,8 @@ impl SetupPage {
     // ── Saved device row ──
     fn saved_row(
         dev: &crate::storage::KnownDevice,
-        on_connected: impl Fn(Option<u16>) + 'static + Clone,
-        show_error: impl Fn(&str) + 'static + Clone,
+        on_connected: Rc<impl Fn(Option<u16>) + 'static>,
+        show_error: Rc<impl Fn(&str) + 'static>,
     ) -> ListBoxRow {
         let row = ListBoxRow::new();
         row.set_activatable(false);
@@ -581,11 +651,15 @@ impl SetupPage {
         del_btn.set_tooltip_text(Some("Forget this device"));
         line2.append(&del_btn);
 
-        // Connect button
+        // Connect button + spinner
+        let conn_spinner = Spinner::new();
+        conn_spinner.set_visible(false);
+        conn_spinner.set_halign(Align::Center);
         let conn_btn = Button::with_label("Connect");
         conn_btn.add_css_class("suggested-action");
         conn_btn.add_css_class("pill");
         conn_btn.set_valign(Align::Center);
+        line2.append(&conn_spinner);
         line2.append(&conn_btn);
 
         outer.append(&line2);
@@ -608,14 +682,21 @@ impl SetupPage {
         // Wire connect
         let name = dev.name.clone();
         let address = dev.address.clone();
-        conn_btn.connect_clicked(move |b| {
-            b.set_sensitive(false);
-            b.set_label("Connecting…");
-            let name = name.clone();
-            let address = address.clone();
+        {
+            let spinner = conn_spinner.clone();
+            let btn = conn_btn.clone();
             let on_connected = on_connected.clone();
             let show_error = show_error.clone();
-            let btn = b.clone();
+            conn_btn.connect_clicked(move |_| {
+                spinner.set_visible(true);
+                btn.set_sensitive(false);
+                btn.set_label("Connecting…");
+                let name = name.clone();
+                let address = address.clone();
+                let spinner = spinner.clone();
+                let btn = btn.clone();
+                let on_connected = on_connected.clone();
+                let show_error = show_error.clone();
             glib::spawn_future_local(async move {
                 match SpacePodsClient::connect(None).await {
                     Ok(mut client) => match client.connect_device(address.clone()).await {
@@ -623,22 +704,25 @@ impl SetupPage {
                             add_known_device(name, address);
                             tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
                             let pid = client.get_status().await.ok().and_then(|s| s.product_id);
-                            on_connected(pid);
+                            (*on_connected)(pid);
                         }
                         Err(e) => {
-                            show_error(&e.to_string());
+                            (*show_error)(&e.to_string());
+                            spinner.set_visible(false);
                             btn.set_sensitive(true);
                             btn.set_label("Connect");
                         }
                     },
                     Err(e) => {
-                        show_error(&e.to_string());
+                        (*show_error)(&e.to_string());
+                        spinner.set_visible(false);
                         btn.set_sensitive(true);
                         btn.set_label("Connect");
                     }
                 }
             });
         });
+        }
 
         row
     }

@@ -1,7 +1,7 @@
 {
     "app-id": "com.spacepods.ui",
     "runtime": "org.gnome.Platform",
-    "runtime-version": "47",
+    "runtime-version": "49",
     "sdk": "org.gnome.Sdk",
     "sdk-extensions": [
         "org.freedesktop.Sdk.Extension.rust-stable"
@@ -13,12 +13,17 @@
         "--share=ipc",
         "--device=dri",
         "--socket=system-bus",
+        "--socket=session-bus",
         "--filesystem=/tmp"
     ],
     "build-options": {
         "append-path": "/usr/lib/sdk/rust-stable/bin",
+        "build-args": ["--share=network"],
         "env": {
-            "CARGO_HOME": "/run/build/spacepods-ui/cargo"
+            "CARGO_HOME": "/run/build/spacepods-ui/cargo",
+            "RUSTUP_HOME": "/usr/lib/sdk/rust-stable",
+            "RUSTC": "/usr/lib/sdk/rust-stable/bin/rustc",
+            "CARGO": "/usr/lib/sdk/rust-stable/bin/cargo"
         }
     },
     "modules": [
@@ -28,14 +33,14 @@
             "build-commands": [
                 "cargo build --release --bin spacepods-ui",
                 "install -Dm755 target/release/spacepods-ui /app/bin/spacepods-ui",
-                "install -Dm644 resources/app-icon.svg /app/share/icons/hicolor/scalable/apps/com.spacepods.ui.svg",
-                "install -Dm644 data/com.spacepods.ui.desktop /app/share/applications/com.spacepods.ui.desktop",
-                "install -Dm644 data/com.spacepods.ui.metainfo.xml /app/share/metainfo/com.spacepods.ui.metainfo.xml"
+                "install -Dm644 spacepods-ui/resources/app-icon.svg /app/share/icons/hicolor/scalable/apps/com.spacepods.ui.svg",
+                "install -Dm644 spacepods-ui/data/com.spacepods.ui.desktop /app/share/applications/com.spacepods.ui.desktop",
+                "install -Dm644 spacepods-ui/data/com.spacepods.ui.metainfo.xml /app/share/metainfo/com.spacepods.ui.metainfo.xml"
             ],
             "sources": [
                 {
                     "type": "dir",
-                    "path": "."
+                    "path": ".."
                 }
             ]
         }

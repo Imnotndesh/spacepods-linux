@@ -2,6 +2,7 @@ use gtk4::prelude::*;
 use gtk4::{Box, Label, Orientation, DropDown};
 use libadwaita::prelude::*;
 use libadwaita::{PreferencesGroup, ActionRow, Clamp, StatusPage};
+use std::cell::RefCell;
 use std::rc::Rc;
 use glib::clone;
 
@@ -93,6 +94,12 @@ impl SpecialPage {
         right_group.set_title("Right Earbud");
         right_group.set_description(Some("Tap actions for the right earbud"));
 
+        // Track rows we add ourselves so refresh can remove exactly those
+        // (the public API removes children; walking PreferencesGroup internals
+        // is not reliable and leads to duplicate rows on refresh).
+        let left_rows: Rc<RefCell<Vec<gtk4::Widget>>> = Rc::new(RefCell::new(Vec::new()));
+        let right_rows: Rc<RefCell<Vec<gtk4::Widget>>> = Rc::new(RefCell::new(Vec::new()));
+
         let content = Box::new(Orientation::Vertical, 12);
         content.set_margin_top(0);
         content.set_margin_bottom(32);
@@ -103,22 +110,26 @@ impl SpecialPage {
         content.append(&right_group);
 
         // Populate dropdowns
-        Self::populate_group(&left_group, &left_slots(), ctx.clone());
-        Self::populate_group(&right_group, &right_slots(), ctx.clone());
+        Self::populate_group(&left_group, &left_slots(), ctx.clone(), left_rows.clone());
+        Self::populate_group(&right_group, &right_slots(), ctx.clone(), right_rows.clone());
 
         // Refresh button
         {
             let ctx = ctx.clone();
             let left_group = left_group.clone();
             let right_group = right_group.clone();
+            let left_rows = left_rows.clone();
+            let right_rows = right_rows.clone();
             refresh_btn.connect_clicked(move |_| {
                 let ctx = ctx.clone();
                 let lg = left_group.clone();
                 let rg = right_group.clone();
+                let lr = left_rows.clone();
+                let rr = right_rows.clone();
                 glib::spawn_future_local(async move {
                     // Re-populate with fresh data
-                    Self::refresh_group(&lg, &left_slots(), ctx.clone());
-                    Self::refresh_group(&rg, &right_slots(), ctx.clone());
+                    Self::refresh_group(&lg, &left_slots(), ctx.clone(), lr);
+                    Self::refresh_group(&rg, &right_slots(), ctx.clone(), rr);
                     ctx.success("Gestures refreshed");
                 });
             });
@@ -130,7 +141,12 @@ impl SpecialPage {
         clamp.upcast()
     }
 
-    fn populate_group(group: &PreferencesGroup, slots: &[GestureSlot], ctx: Rc<AppContext>) {
+    fn populate_group(
+        group: &PreferencesGroup,
+        slots: &[GestureSlot],
+        ctx: Rc<AppContext>,
+        rows: Rc<RefCell<Vec<gtk4::Widget>>>,
+    ) {
         let all_actions = KeyAction::all();
         let labels: Vec<&str> = all_actions.iter().map(|a| a.label).collect();
         let slots_vec: Vec<GestureSlot> = slots.to_vec();
@@ -149,8 +165,9 @@ impl SpecialPage {
             Log::full("GESTURE", &format!("Current key settings: {:?}", current_map));
 
             for slot in &slots_vec {
-                let row = ActionRow::new();
-                row.set_title(slot.label);
+                let row = gtk4::Widget::from(ActionRow::new());
+                let action_row = row.clone().downcast::<ActionRow>().unwrap();
+                action_row.set_title(slot.label);
 
                 let dropdown = DropDown::from_strings(&labels);
                 dropdown.add_css_class("flat");
@@ -186,25 +203,28 @@ impl SpecialPage {
                     });
                 });
 
-                row.add_suffix(&dropdown);
-                group.add(&row);
+                action_row.add_suffix(&dropdown);
+                group.add(&action_row);
+                // Remember the row so refresh can remove exactly this widget.
+                let row_widget: gtk4::Widget = action_row.clone().upcast();
+                rows.borrow_mut().push(row_widget);
             }
         }));
     }
 
-    fn refresh_group(group: &PreferencesGroup, slots: &[GestureSlot], ctx: Rc<AppContext>) {
-        // PreferencesGroup doesn't expose children cleanly for removal.
-        // The simplest approach: find and remove all ActionRow children.
-        // We walk the widget tree: PreferencesGroup > GtkBox > GtkListBox > rows
-        let mut child = group.first_child();
-        while let Some(c) = child {
-            if let Some(list) = c.downcast_ref::<gtk4::ListBox>() {
-                while let Some(row) = list.first_child() {
-                    list.remove(&row);
-                }
-            }
-            child = c.next_sibling();
+    fn refresh_group(
+        group: &PreferencesGroup,
+        slots: &[GestureSlot],
+        ctx: Rc<AppContext>,
+        rows: Rc<RefCell<Vec<gtk4::Widget>>>,
+    ) {
+        // Remove exactly the rows we created. PreferencesGroup::remove is the
+        // public API for this; walking the widget internals (as before) does not
+        // find the ActionRows and caused duplicates on every refresh.
+        let to_remove = std::mem::take(&mut *rows.borrow_mut());
+        for row in to_remove {
+            group.remove(&row);
         }
-        Self::populate_group(group, slots, ctx);
+        Self::populate_group(group, slots, ctx, rows);
     }
 }
