@@ -11,7 +11,7 @@ use libadwaita::{
 };
 use libspacepods::client::SpacePodsClient;
 use libspacepods::ipc::protocol::ScannedDevice;
-use crate::storage::{add_known_device, load_known_devices, remove_known_device};
+use crate::storage::{add_known_device, load_known_devices, load_settings, remove_known_device, update_settings};
 use std::rc::Rc;
 use std::cell::RefCell;
 
@@ -100,6 +100,26 @@ impl SetupPage {
         // ── Header ──
         let header = HeaderBar::new();
         header.set_title_widget(Some(&WindowTitle::new("SpacePods Linux", "Connect your earbuds")));
+
+        // ── Disclaimer banner ──
+        let settings = load_settings();
+        let disclaimer_revealer = gtk4::Revealer::new();
+        disclaimer_revealer.set_transition_type(gtk4::RevealerTransitionType::SlideDown);
+        disclaimer_revealer.set_transition_duration(300);
+        disclaimer_revealer.set_reveal_child(!settings.disclaimer_dismissed);
+
+        let banner = libadwaita::Banner::new("Requires libspacepods daemon");
+        banner.set_title("Background Service Required");
+        banner.set_button_label(Some("Got it"));
+        banner.set_use_markup(false);
+        banner.connect_button_clicked(glib::clone!(
+            #[weak] disclaimer_revealer,
+            move |_| {
+                disclaimer_revealer.set_reveal_child(false);
+                update_settings(|s| s.disclaimer_dismissed = true);
+            }
+        ));
+        disclaimer_revealer.set_child(Some(&banner));
 
         // ═══ LEFT PANEL ═══
         let status_page = StatusPage::new();
@@ -255,9 +275,13 @@ impl SetupPage {
         main_scroll.set_vexpand(true);
         main_scroll.set_child(Some(&layout_bin));
 
+        let toolbar_content = Box::new(Orientation::Vertical, 0);
+        toolbar_content.append(&disclaimer_revealer);
+        toolbar_content.append(&main_scroll);
+
         let toolbar_view = ToolbarView::new();
         toolbar_view.add_top_bar(&header);
-        toolbar_view.set_content(Some(&main_scroll));
+        toolbar_view.set_content(Some(&toolbar_content));
         toast_overlay.set_child(Some(&toolbar_view));
 
         // ═══ DAEMON CHECK ═══

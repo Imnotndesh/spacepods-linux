@@ -65,6 +65,8 @@ pub struct AppSettings {
     pub adaptive_anc_enabled: bool,
     pub dual_device_enabled: bool,
     pub autostart: bool,
+    #[serde(default)]
+    pub disclaimer_dismissed: bool,
 }
 
 impl Default for AppSettings {
@@ -76,6 +78,7 @@ impl Default for AppSettings {
             adaptive_anc_enabled: false,
             dual_device_enabled: false,
             autostart: false,
+            disclaimer_dismissed: false,
         }
     }
 }

@@ -14,6 +14,9 @@ pub use connection::*;
 pub use commands::*;
 pub use ipc::*;
 
+/// Current version — set at build time from Cargo.toml or GIT_TAG env.
+pub const VERSION: &str = env!("SPACEPODS_VERSION");
+
 use std::time::Duration;
 
 /// Top-level handle to a pair of SpaceBuds.

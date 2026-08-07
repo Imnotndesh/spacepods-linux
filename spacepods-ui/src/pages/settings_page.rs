@@ -112,7 +112,7 @@ impl SettingsPage {
 
         let version_row = ActionRow::new();
         version_row.set_title("Version");
-        let version_label = Label::new(Some(env!("CARGO_PKG_VERSION")));
+        let version_label = Label::new(Some(libspacepods::VERSION));
         version_label.add_css_class("dim-label");
         version_label.set_valign(gtk4::Align::Center);
         version_row.add_suffix(&version_label);

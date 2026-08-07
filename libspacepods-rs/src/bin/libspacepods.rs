@@ -9,7 +9,12 @@ const DEFAULT_SOCKET: &str = "/tmp/spacepods.sock";
 const DEFAULT_SOCKET: &str = r"\\.\pipe\spacepods";
 
 #[derive(Parser)]
-#[command(author, version, about = "SpacePods - Control your SpaceBuds", long_about = None)]
+#[command(
+    author,
+    about = "SpacePods - Control your SpaceBuds",
+    long_about = None,
+    version = libspacepods::VERSION,
+)]
 #[command(propagate_version = true)]
 struct Cli {
     /// Optional socket path for IPC

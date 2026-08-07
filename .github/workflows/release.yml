@@ -40,6 +40,8 @@ jobs:
           sudo apt-get install -y libdbus-1-dev libglib2.0-dev
 
       - name: Build libspacepods
+        env:
+          GIT_TAG: ${{ github.ref_name }}
         run: cargo build --release -p libspacepods --bin libspacepods --target ${{ matrix.target }}
 
       - name: Strip binary
@@ -99,51 +101,51 @@ jobs:
           path: artifacts
 
       - name: Prepare release assets
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
         run: |
           mkdir -p release-assets
-          # Gather libspacepods binaries
           cp artifacts/libspacepods-x86_64-unknown-linux-gnu/libspacepods-x86_64-unknown-linux-gnu.tar.gz release-assets/
           cp artifacts/libspacepods-aarch64-unknown-linux-gnu/libspacepods-aarch64-unknown-linux-gnu.tar.gz release-assets/
-          # Gather Flatpak
           cp artifacts/spacepods-flatpak/spacepods.flatpak release-assets/
+
           # Create install script
-          cat > release-assets/install.sh << 'SCRIPT'
+          cat > release-assets/install.sh << SCRIPT
           #!/bin/sh
           set -eu
-          ARCH=$(uname -m)
-          case "$ARCH" in
+          ARCH=\$(uname -m)
+          case "\$ARCH" in
             x86_64)  TARGET="x86_64-unknown-linux-gnu" ;;
             aarch64) TARGET="aarch64-unknown-linux-gnu" ;;
-            *)       echo "Unsupported architecture: $ARCH"; exit 1 ;;
+            *)       echo "Unsupported architecture: \$ARCH"; exit 1 ;;
           esac
-          echo "Installing libspacepods for $TARGET..."
-          URL="https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/libspacepods-${TARGET}.tar.gz"
-          curl -sSL "$URL" | sudo tar -xzf - -C /usr/local/bin
-          sudo chmod +x /usr/local/bin/libspacepods-${TARGET}
-          sudo ln -sf /usr/local/bin/libspacepods-${TARGET} /usr/local/bin/libspacepods
-          echo "libspacepods installed! Run 'libspacepods service' to start the daemon."
+          echo "Installing libspacepods ${TAG} for \$TARGET..."
+          URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/libspacepods-\${TARGET}.tar.gz"
+          curl -sSL "\$URL" | sudo tar -xzf - -C /usr/local/bin
+          sudo chmod +x /usr/local/bin/libspacepods-\${TARGET}
+          sudo ln -sf /usr/local/bin/libspacepods-\${TARGET} /usr/local/bin/libspacepods
+          echo "libspacepods ${TAG} installed! Run 'libspacepods service' to start."
           SCRIPT
           chmod +x release-assets/install.sh
+
           # Generate release notes
-          cat > release-assets/notes.md << 'NOTES'
-          ## Installation
+          cat > release-assets/notes.md << NOTES
+          ## SpacePods Linux ${TAG}
 
           ### libspacepods (CLI daemon)
-          ```sh
+          \`\`\`sh
           curl -sSL https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/install.sh | sudo sh
-          ```
+          \`\`\`
 
           ### SpacePods UI (Flatpak)
-          ```sh
+          \`\`\`sh
           flatpak install --user spacepods.flatpak
-          ```
+          \`\`\`
 
           ## Running
-
-          1. Start the daemon: `libspacepods service`
-          2. Launch the UI: `flatpak run com.spacepods.ui`
-
-          ## Manual Download
+          1. Start daemon: \`libspacepods service\`
+          2. Launch UI: \`flatpak run com.spacepods.ui\`
           NOTES
 
       - name: Create Release
@@ -153,5 +155,6 @@ jobs:
           body_path: release-assets/notes.md
           draft: false
           prerelease: false
+          name: ${{ github.ref_name }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
