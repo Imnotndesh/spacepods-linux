@@ -18,17 +18,25 @@
 #   libspacepods The libspacepods daemon + CLI (installed to /usr/local/bin)
 #   spacepods-ui The SpacePods GUI binary + desktop entry + icon
 #   flatpak      The SpacePods GUI via the Flatpak bundle
+#   service      Install/remove the systemd USER unit for the daemon
+#                (logs to journald; enable with: systemctl --user enable --now spacepods)
 #
 # Examples:
 #   ./install.sh install all
-#   ./install.sh install libspacepods spacepods-ui
+#   ./install.sh install service --enable     # install + enable at login
+#   ./install.sh --no-flatpak install all service
 #   ./install.sh remove flatpak
+#   ./install.sh remove service
 #   ./install.sh upgrade libspacepods
 #
 # Options:
 #   --no-flatpak     Skip the flatpak install even when 'all' is selected
 #   --prefix=PATH    Install binaries under PATH instead of /usr/local
 #   --no-sudo        Do not use sudo (assume write access to prefix)
+#   --enable         With 'install service': run 'systemctl --user enable --now'
+#   --no-enable      With 'remove service': do NOT disable/stop before removing
+#   --log-level=LVL  Log verbosity for the unit (info|warn|full, default: warn)
+#                    'warn' is minimal output; journald captures everything.
 #
 # Note for private repositories:
 #   If the GitHub release is not publicly downloadable, this script will fail
@@ -45,6 +53,9 @@ BASE_URL="${SPACEPODS_BASE_URL:-https://github.com/${GH_REPO}/releases/latest/do
 PREFIX="/usr/local"
 USE_SUDO=1
 DO_FLATPAK=1
+DO_ENABLE=0
+DO_DISABLE=1
+LOG_LEVEL="warn"
 
 ACTION="install"
 TARGETS=""
@@ -55,10 +66,13 @@ for arg in "$@"; do
     install)     ACTION="install" ;;
     upgrade)     ACTION="upgrade" ;;
     remove|uninstall) ACTION="remove" ;;
-    all|libspacepods|spacepods-ui|flatpak) TARGETS="${TARGETS} $arg" ;;
+    all|libspacepods|spacepods-ui|flatpak|service) TARGETS="${TARGETS} $arg" ;;
     --no-flatpak) DO_FLATPAK=0 ;;
     --no-sudo)   USE_SUDO=0 ;;
     --prefix=*)  PREFIX="${arg#--prefix=}" ;;
+    --enable)    DO_ENABLE=1 ;;
+    --no-enable) DO_DISABLE=0 ;;
+    --log-level=*) LOG_LEVEL="${arg#--log-level=}" ;;
     -h|--help|help) ACTION="help" ;;
     *)
       printf '%s\n' "Unknown argument: $arg" >&2
@@ -69,6 +83,12 @@ done
 
 # ----- Defaults -----
 [ -z "$TARGETS" ] && TARGETS=" all"
+
+# Validate --log-level
+case "$LOG_LEVEL" in
+  info|warn|full) : ;;
+  *) printf '%s\n' "Invalid --log-level: $LOG_LEVEL (must be info|warn|full)" >&2; exit 2 ;;
+esac
 
 sudo_cmd() {
   if [ "$USE_SUDO" = "1" ]; then
@@ -110,7 +130,7 @@ EOF
 show_help() {
   banner
   echo
-  sed -n '2,36p' "$0" | sed -n 's/^#//p'
+  sed -n '2,39p' "$0" | sed -n 's/^#//p'
   cat <<'EOF'
 
 Important:
@@ -154,6 +174,82 @@ remove_libspacepods() {
   log "Removing libspacepods"
   sudo_cmd rm -f "$PREFIX/bin/libspacepods"
   log "libspacepods removed."
+}
+
+# ---------------------------------------------------------------------------
+# systemd USER unit for the daemon (logs to journald)
+# ---------------------------------------------------------------------------
+# Uses a per-user unit so the user can run:
+#   systemctl --user enable --now spacepods   # start at login + now
+#   systemctl --user status spacepods
+#   journalctl --user -u spacepods -f
+SERVICE_UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+SERVICE_UNIT_FILE="$SERVICE_UNIT_DIR/spacepods.service"
+
+# The unit lives in $HOME so it is managed WITHOUT sudo (per-user systemd).
+# The binary itself lives under $PREFIX (which may need sudo to install).
+write_service_unit() {
+  mkdir -p "$SERVICE_UNIT_DIR"
+  # Use a heredoc that does NOT expand $PREFIX/$LOG_LEVEL so the unit gets
+  # literal placeholders we can substitute safely via sed (paths may contain
+  # characters that would confuse replacement).
+  cat > "$SERVICE_UNIT_DIR/spacepods.service.in" <<'UNITEOF'
+[Unit]
+Description=SpacePods daemon (libspacepods)
+After=bluetooth.target
+Wants=bluetooth.target
+
+[Service]
+Type=simple
+ExecStart=@PREFIX@/bin/libspacepods service --log-level @LOG_LEVEL@
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
+UNITEOF
+  sed -e "s|@PREFIX@|$PREFIX|g" -e "s|@LOG_LEVEL@|$LOG_LEVEL|g" \
+    "$SERVICE_UNIT_DIR/spacepods.service.in" > "$SERVICE_UNIT_FILE"
+  rm -f "$SERVICE_UNIT_DIR/spacepods.service.in"
+  systemctl --user daemon-reload 2>/dev/null || true
+}
+
+install_service() {
+  echo
+  banner
+  log "Installing systemd user unit for libspacepods"
+  command -v systemctl >/dev/null 2>&1 || die "systemd (systemctl) is required for the service target."
+  if [ ! -x "$PREFIX/bin/libspacepods" ]; then
+    warn "libspacepods is not installed yet; installing it first."
+    install_libspacepods
+  fi
+  write_service_unit
+  log "Unit written to $SERVICE_UNIT_FILE"
+  log "Log level: $LOG_LEVEL (logs go to journald)"
+  if [ "$DO_ENABLE" = "1" ]; then
+    systemctl --user enable --now spacepods
+    log "Enabled and started. Verify with: systemctl --user status spacepods"
+    log "Follow logs with:           journalctl --user -u spacepods -f"
+  else
+    log "Unit installed but not enabled. To start at login and now, run:"
+    log "   systemctl --user enable --now spacepods"
+  fi
+}
+
+remove_service() {
+  echo
+  banner
+  log "Removing systemd user unit for libspacepods"
+  if [ "$DO_DISABLE" = "1" ] && command -v systemctl >/dev/null 2>&1; then
+    systemctl --user disable --now spacepods 2>/dev/null || true
+  fi
+  rm -f "$SERVICE_UNIT_FILE"
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl --user daemon-reload 2>/dev/null || true
+  fi
+  log "unit removed."
 }
 
 # ---------------------------------------------------------------------------
@@ -269,11 +365,13 @@ for t in $TARGETS; do
   case "$t" in
     all)
       if [ "$ACTION" = "remove" ]; then
+        remove_service
         remove_spacepods_ui
         remove_flatpak
         remove_libspacepods
       else
         install_libspacepods
+        install_service
         if [ "$DO_FLATPAK" = "1" ]; then
           install_flatpak
         else
@@ -283,6 +381,9 @@ for t in $TARGETS; do
       ;;
     libspacepods)
       if [ "$ACTION" = "remove" ]; then remove_libspacepods; else install_libspacepods; fi
+      ;;
+    service)
+      if [ "$ACTION" = "remove" ]; then remove_service; else install_service; fi
       ;;
     spacepods-ui)
       if [ "$ACTION" = "remove" ]; then remove_spacepods_ui; else install_spacepods_ui; fi
