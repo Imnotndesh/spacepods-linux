@@ -1,64 +1,69 @@
 use std::sync::mpsc::{self, Receiver, Sender};
-use ksni::TrayMethods;
+use ksni::blocking::TrayMethods;
 
 #[derive(Debug, Clone)]
 pub enum TrayCommand {
-    ShowWindow,
+    PresentWindow,
     HideWindow,
     Quit,
     SetAncMode(u8),
     SetEqPreset(u8),
-    Show,
-    Hide,
 }
 
 #[derive(Clone)]
 pub struct TrayHandle {
     sender: Sender<TrayCommand>,
-    tray_service: ksni::Handle<SpacePodsTray>,
+    #[allow(dead_code)]
+    tray_service: ksni::blocking::Handle<SpacePodsTray>,
 }
 
 impl TrayHandle {
     pub fn send(&self, cmd: TrayCommand) {
-        match cmd {
-            TrayCommand::Show => {
-                self.tray_service.update(|t| t.visible = true);
-            }
-            TrayCommand::Hide => {
-                self.tray_service.update(|t| t.visible = false);
-            }
-            other => {
-                let _ = self.sender.send(other);
-            }
-        }
+        let _ = self.sender.send(cmd);
     }
 
+    /// Keep the tray's internal menu state in sync with the app.
     pub fn set_anc_mode(&self, mode: u8) {
-        self.tray_service
-            .update(|t| t.anc_mode = mode as usize);
+        self.tray_service.update(|t| t.anc_mode = mode as usize);
     }
 
     pub fn set_eq_preset(&self, preset: u8) {
-        self.tray_service
-            .update(|t| t.eq_preset = preset as usize);
+        self.tray_service.update(|t| t.eq_preset = preset as usize);
     }
 }
 
-pub async fn spawn_tray() -> (TrayHandle, Receiver<TrayCommand>) {
+/// Start the tray and return a control handle plus the incoming-command
+/// receiver. The receiver is handed to the caller (app startup) so it can be
+/// drained and dispatched to the window.
+///
+/// Uses ksni's synchronous API (the crate is built with the `blocking`
+/// feature) so it can start outside an async runtime. `assume_sni_available(true)`
+/// is set so hosts without an SNI implementation (e.g. stock GNOME without the
+/// AppIndicator extension) degrade gracefully instead of failing the app.
+///
+/// In a Flatpak sandbox we disable owning a D-Bus well-known name (the spec
+/// normally requires it, but sandboxes block it) — the session bus is still
+/// reachable thanks to `--socket=session-bus`.
+pub fn spawn_tray() -> (TrayHandle, Receiver<TrayCommand>) {
     let (tx, rx) = mpsc::channel::<TrayCommand>();
 
     let tray = SpacePodsTray {
         sender: tx.clone(),
         anc_mode: 0,
         eq_preset: 0,
-        visible: false,
     };
 
-    let service_handle = tray.spawn().await.expect("failed to spawn tray icon");
+    let sandboxed = std::env::var("FLATPAK_ID").is_ok();
+
+    let tray_service = tray
+        .disable_dbus_name(sandboxed)
+        .assume_sni_available(true)
+        .spawn()
+        .expect("failed to spawn tray icon");
 
     let handle = TrayHandle {
         sender: tx,
-        tray_service: service_handle,
+        tray_service,
     };
 
     (handle, rx)
@@ -69,7 +74,6 @@ pub struct SpacePodsTray {
     sender: Sender<TrayCommand>,
     pub anc_mode: usize,
     pub eq_preset: usize,
-    pub visible: bool,
 }
 
 const ANC_MODES: [(&str, u8); 3] = [
@@ -87,6 +91,14 @@ const EQ_PRESET_NAMES: [(&str, u8); 6] = [
     ("Treble Boost", 5),
 ];
 
+fn anc_mode_name(idx: usize) -> &'static str {
+    ANC_MODES.get(idx).map(|m| m.0).unwrap_or("Off")
+}
+
+fn eq_preset_name(idx: usize) -> &'static str {
+    EQ_PRESET_NAMES.get(idx).map(|m| m.0).unwrap_or("Flat")
+}
+
 impl ksni::Tray for SpacePodsTray {
     fn id(&self) -> String {
         "spacepods".into()
@@ -97,20 +109,7 @@ impl ksni::Tray for SpacePodsTray {
     }
 
     fn icon_name(&self) -> String {
-        "audio-headset-symbolic".into()
-    }
-
-    fn tool_tip(&self) -> ksni::ToolTip {
-        ksni::ToolTip {
-            icon_name: "audio-headset-symbolic".into(),
-            icon_pixmap: vec![],
-            title: "SpacePods".into(),
-            description: format!(
-                "ANC: {}  •  EQ: {}",
-                ANC_MODES[self.anc_mode].0,
-                EQ_PRESET_NAMES[self.eq_preset].0
-            ),
-        }
+        "com.spacepods.ui".into()
     }
 
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
@@ -122,7 +121,7 @@ impl ksni::Tray for SpacePodsTray {
                 label: "Show SpacePods".into(),
                 icon_name: "window-restore-symbolic".into(),
                 activate: Box::new(|this: &mut Self| {
-                    let _ = this.sender.send(TrayCommand::ShowWindow);
+                    let _ = this.sender.send(TrayCommand::PresentWindow);
                 }),
                 ..Default::default()
             }
@@ -130,7 +129,7 @@ impl ksni::Tray for SpacePodsTray {
 
             MenuItem::Separator,
 
-            // ── ANC Mode header with symbolic icon ──
+            // ── ANC Mode header ──
             StandardItem {
                 label: "ANC Mode".into(),
                 icon_name: "org.gnome.Settings-accessibility-hearing-symbolic".into(),
@@ -157,7 +156,7 @@ impl ksni::Tray for SpacePodsTray {
 
             MenuItem::Separator,
 
-            // ── EQ Preset header with symbolic icon ──
+            // ── EQ Preset header ──
             StandardItem {
                 label: "EQ Preset".into(),
                 icon_name: "audio-card-symbolic".into(),
@@ -208,4 +207,10 @@ impl ksni::Tray for SpacePodsTray {
                 .into(),
         ]
     }
+}
+
+// Keep a small accessor so tooltip / future live state can reuse the mapping.
+#[allow(dead_code)]
+fn _tooltip_text(anc: usize, eq: usize) -> String {
+    format!("ANC: {}  •  EQ: {}", anc_mode_name(anc), eq_preset_name(eq))
 }

@@ -61,9 +61,11 @@ impl HomeView {
     pub fn new(
         window: &ApplicationWindow,
         product_id: Option<u16>,
+        tray: Option<crate::tray::TrayHandle>,
+        window_controller: std::rc::Rc<crate::context::WindowController>,
     ) -> ToastOverlay {
         let toast_overlay = ToastOverlay::new();
-        let ctx = AppContext::new(toast_overlay.clone());
+        let ctx = AppContext::new(toast_overlay.clone(), tray, window_controller);
         ctx.product_id.set(product_id);
 
         Log::info("HOME", &format!("product_id={:?}, profile={:?}", product_id, ctx.profile().map(|p| p.name)));
@@ -142,13 +144,17 @@ impl HomeView {
                 feature: None,
                 widget: SettingsPage::page({
                     let ww = window.downgrade();
+                    let t = ctx.tray.clone();
+                    let wc = ctx.window.clone();
                     move || {
                         if let Some(win) = ww.upgrade() {
                             let ww2 = ww.clone();
+                            let t = t.clone();
+                            let wc = wc.clone();
                             let setup = crate::pages::setup_page::SetupPage::new(
                                 move |product_id| {
                                     if let Some(win) = ww2.upgrade() {
-                                        let home = HomeView::new(&win, product_id);
+                                        let home = HomeView::new(&win, product_id, t.clone(), wc.clone());
                                         win.set_content(Some(&home));
                                     }
                                 }

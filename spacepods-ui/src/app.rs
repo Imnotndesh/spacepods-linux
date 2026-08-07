@@ -2,9 +2,35 @@ use gtk4::prelude::*;
 use libadwaita::{Application, ApplicationWindow, ToastOverlay};
 use libadwaita::prelude::AdwApplicationWindowExt;
 
+use std::rc::Rc;
+
+use crate::context::WindowController;
 use crate::pages::setup_page::SetupPage;
 use crate::storage::load_settings;
 use crate::service::write_autostart_entry;
+use crate::tray::{self, TrayCommand};
+
+/// Poll the tray command channel on the GTK main loop. `try_recv` is
+/// non-blocking so this keeps everything on one thread (no `Send` issues with
+/// `Rc<WindowController>`). Window operations must happen on the main loop.
+fn drain_tray_commands(rx: std::sync::mpsc::Receiver<TrayCommand>, window: Rc<WindowController>) {
+    glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+        while let Ok(cmd) = rx.try_recv() {
+            match cmd {
+                TrayCommand::PresentWindow => window.present(),
+                TrayCommand::HideWindow => window.hide(),
+                TrayCommand::Quit => {
+                    // Close the window; with close-to-background disabled this
+                    // quits the app. (Close-to-background is wired in a later
+                    // step and will draw the distinction there.)
+                    window.close();
+                }
+                _ => {}
+            }
+        }
+        glib::ControlFlow::Continue
+    });
+}
 
 pub fn run_app() -> glib::ExitCode {
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
@@ -14,9 +40,18 @@ pub fn run_app() -> glib::ExitCode {
     write_autostart_entry(settings.autostart);
 
     let app = Application::new(Some("com.spacepods.ui"), Default::default());
+    let window_controller = WindowController::new();
+
+    // Start the tray icon once. It runs on its own background thread (via the
+    // blocking API); the returned receiver gives us the menu commands.
+    let (tray_handle, tray_rx) = tray::spawn_tray();
+    drain_tray_commands(tray_rx, window_controller.clone());
+
+    let tray_handle = Rc::new(tray_handle);
 
     app.connect_activate(move |app| {
         let window = ApplicationWindow::new(app);
+        window_controller.set_window(&window);
 
         // Set app icon from resources
         gtk4::Window::set_default_icon_name("com.spacepods.ui");
@@ -36,9 +71,12 @@ pub fn run_app() -> glib::ExitCode {
         let toast_overlay = ToastOverlay::new();
 
         let window_weak = window.downgrade();
+        let tray = (*tray_handle).clone();
+        let window_controller = window_controller.clone();
         let setup_page = SetupPage::new(move |product_id| {
             if let Some(win) = window_weak.upgrade() {
-                let home_view = crate::home::HomeView::new(&win, product_id);
+                let home_view =
+                    crate::home::HomeView::new(&win, product_id, Some(tray.clone()), window_controller.clone());
                 win.set_content(Some(&home_view));
             }
         });
