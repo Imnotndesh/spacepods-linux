@@ -13,6 +13,7 @@
         "--share=ipc",
         "--device=dri",
         "--socket=system-bus",
+        "--socket=session-bus",
         "--filesystem=/tmp"
     ],
     "build-options": {
