@@ -22,7 +22,14 @@ pub enum TrayCommand {
     HideWindow,
     /// Real quit — bypasses close-to-background.
     Quit,
+    /// Set ANC mode (0=off, 1=anc, 2=transparency).
+    SetAncMode(u8),
 }
+
+/// Shared cell so the tray menu can read back the current ANC mode. Populated
+/// by `run_app` after the app context is created.
+use std::sync::atomic::AtomicU8;
+pub static ANC_MODE_ATOMIC: AtomicU8 = AtomicU8::new(0);
 
 /// The tray handle is the only interface the rest of the app sees.
 /// Commands are pushed through the sender; the receiver feeds the
@@ -65,6 +72,12 @@ struct SpacePodsTray {
     sender: Sender<TrayCommand>,
 }
 
+impl SpacePodsTray {
+    fn read_anc_mode() -> usize {
+        ANC_MODE_ATOMIC.load(std::sync::atomic::Ordering::Relaxed) as usize
+    }
+}
+
 impl ksni::Tray for SpacePodsTray {
     fn id(&self) -> String {
         "com.spacepods.ui.tray".into()
@@ -92,8 +105,8 @@ impl ksni::Tray for SpacePodsTray {
         let _ = self.sender.send(TrayCommand::ShowPopup { x, y });
     }
 
-    /// Right-click menu — same items as before, but now opens rich popup on
-    /// left-click.
+    /// Right-click menu — includes ANC toggles that sync with the app
+    /// via the shared anc_mode cell, plus window controls.
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
         use ksni::menu::*;
 
@@ -104,6 +117,30 @@ impl ksni::Tray for SpacePodsTray {
                 activate: Box::new(|this: &mut Self| {
                     let _ = this.sender.send(TrayCommand::ShowWindow);
                 }),
+                ..Default::default()
+            }
+                .into(),
+
+            MenuItem::Separator,
+
+            // ── ANC mode — mirrors the shared cell in AppContext ──
+            StandardItem {
+                label: "Noise Cancellation".into(),
+                icon_name: "org.gnome.Settings-accessibility-hearing-symbolic".into(),
+                enabled: false,
+                ..Default::default()
+            }
+                .into(),
+            RadioGroup {
+                selected: Self::read_anc_mode(),
+                select: Box::new(|this: &mut Self, idx| {
+                    let _ = this.sender.send(TrayCommand::SetAncMode(idx as u8));
+                }),
+                options: vec![
+                    RadioItem { label: "Off".into(), ..Default::default() },
+                    RadioItem { label: "ANC".into(), ..Default::default() },
+                    RadioItem { label: "Transparency".into(), ..Default::default() },
+                ],
                 ..Default::default()
             }
                 .into(),

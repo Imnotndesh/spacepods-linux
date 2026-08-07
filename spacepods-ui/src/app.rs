@@ -30,7 +30,21 @@ fn drain_tray_commands(
                         crate::quick_settings::show_popup(&ctx, x, y);
                     }
                 }
+                TrayCommand::SetAncMode(mode) => {
+                    tray::ANC_MODE_ATOMIC.store(mode, std::sync::atomic::Ordering::Relaxed);
+                    if let Some(ctx) = ctx_slot.borrow().as_ref().and_then(|w| w.upgrade()) {
+                        ctx.anc_mode.set(mode);
+                    }
+                    let label = match mode { 0 => "off", 1 => "anc", 2 => "transparency", _ => "off" };
+                    glib::spawn_future_local(async move {
+                        use libspacepods::client::SpacePodsClient;
+                        if let Ok(mut c) = SpacePodsClient::connect(None).await {
+                            let _ = c.set_anc_mode(label).await;
+                        }
+                    });
+                }
                 TrayCommand::Quit => {
+                    // A real quit that bypasses close-to-background.
                     window.force_quit();
                 }
                 _ => {}
@@ -114,6 +128,9 @@ pub fn run_app() -> glib::ExitCode {
                     wc.clone(),
                 );
                 ctx.product_id.set(product_id);
+
+                // Sync the tray's ANC radio-group to the shared cell.
+                tray::ANC_MODE_ATOMIC.store(ctx.anc_mode.get(), std::sync::atomic::Ordering::Relaxed);
 
                 // Expose the context so the tray command loop can open the popup.
                 *slot.borrow_mut() = Some(std::rc::Rc::downgrade(&ctx));

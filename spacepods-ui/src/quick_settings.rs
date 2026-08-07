@@ -229,7 +229,8 @@ fn apply_anc_ui(mode: u8, off: &ToggleButton, anc: &ToggleButton, trans: &Toggle
 fn set_mode_cell(mode: u8, ctx: &Rc<AppContext>) {
     // Update the shared cell immediately — the ANC page reads from it too.
     ctx.anc_mode.set(mode);
-    let label = match mode { 0 => "off", 1 => "anc", 2 => "transparency", _ => return };
+    crate::tray::ANC_MODE_ATOMIC.store(mode, std::sync::atomic::Ordering::Relaxed);
+    let label = match mode { 0 => "off", 1 => "anc", 2 => "transparency", _ => "off" };
     let ctx = ctx.clone();
     glib::spawn_future_local(async move {
         use libspacepods::client::SpacePodsClient;
