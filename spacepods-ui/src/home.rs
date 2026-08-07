@@ -326,6 +326,20 @@ impl HomeView {
         ));
         back_btn.set_visible(split_view.is_collapsed());
 
+        // Quick-settings button → opens the quick-settings popover panel.
+        let qs_btn = gtk4::Button::from_icon_name("audio-headset-symbolic");
+        qs_btn.add_css_class("flat");
+        qs_btn.set_tooltip_text(Some("Quick settings"));
+        {
+            let ctx = ctx.clone();
+            qs_btn.connect_clicked(move |btn| {
+                let popover = crate::quick_settings::build(&ctx);
+                popover.set_parent(btn);
+                popover.popup();
+            });
+        }
+        content_header.pack_end(&qs_btn);
+
         let content_toolbar = ToolbarView::new();
         content_toolbar.add_top_bar(&content_header);
         content_toolbar.set_content(Some(&content_scroll));
