@@ -1,325 +1,618 @@
 use gtk4::prelude::*;
-use gtk4::{Box, Label, Orientation, Spinner, ListBox, Align, Button};
+use gtk4::{
+    Box, Label, Orientation, Spinner, Button, Align, ScrolledWindow,
+    ListBox, ListBoxRow, PolicyType,
+};
+use glib::clone;
 use libadwaita::prelude::*;
-use libadwaita::{ActionRow, Clamp, PreferencesGroup, StatusPage};
+use libadwaita::{
+    Clamp, HeaderBar, StatusPage,
+    ToolbarView, WindowTitle, Toast, ToastOverlay,
+};
+use libspacepods::client::SpacePodsClient;
+use libspacepods::ipc::protocol::ScannedDevice;
+use crate::storage::{add_known_device, load_known_devices, remove_known_device};
 use std::rc::Rc;
 use std::cell::RefCell;
-use glib::clone;
-use libspacepods::client::SpacePodsClient;
-use crate::storage::add_known_device;
-use crate::log::Log;
+
+// ── Helpers ──
+
+fn friendly_error(err: &str) -> String {
+    let lower = err.to_lowercase();
+    if lower.contains("connection refused") || lower.contains("no such file") {
+        "SpacePods service isn't running.\nStart it with: spacepods service".into()
+    } else if lower.contains("timeout") || lower.contains("timed out") {
+        "The operation took too long.\nMake sure your earbuds are nearby and in pairing mode.".into()
+    } else if lower.contains("not found") || lower.contains("device not found") {
+        "No SpaceBuds found.\nMake sure they're in pairing mode (LED flashing) and nearby.".into()
+    } else if lower.contains("permission") || lower.contains("denied") {
+        "Bluetooth permission issue.\nCheck that Bluetooth is enabled and accessible.".into()
+    } else if lower.contains("bluetooth") || lower.contains("adapter") {
+        "A Bluetooth error occurred.\nTry toggling Bluetooth off and on again.".into()
+    } else if lower.contains("not connected") {
+        "Not connected to earbuds.\nSelect a device and tap Connect.".into()
+    } else {
+        format!("Something went wrong.\n\nDetails: {}", err)
+    }
+}
+
+fn rssi_label(rssi: Option<i16>) -> &'static str {
+    match rssi {
+        None => "",
+        Some(v) if v >= -50 => "📶 Very close",
+        Some(v) if v >= -65 => "📶 Near",
+        Some(v) if v >= -80 => "📶 Far",
+        _ => "📶 Distant",
+    }
+}
+
+fn rssi_css(rssi: Option<i16>) -> &'static str {
+    match rssi {
+        None => "dim-label",
+        Some(v) if v >= -50 => "success",
+        Some(v) if v >= -65 => "accent",
+        Some(v) if v >= -80 => "warning",
+        _ => "dim-label",
+    }
+}
+
+fn format_last_used(timestamp: u64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let diff = now.saturating_sub(timestamp);
+    if diff < 60 { "Just now".into() }
+    else if diff < 3600 { format!("{}m ago", diff / 60) }
+    else if diff < 86400 { format!("{}h ago", diff / 3600) }
+    else if diff < 604800 { format!("{}d ago", diff / 86400) }
+    else {
+        let months = (timestamp / 86400) / 30;
+        if months < 12 { format!("{}mo ago", months) }
+        else { format!("{}y ago", months / 12) }
+    }
+}
+
+// ═══════════════════════════════════════════
+// SETUP PAGE
+// ═══════════════════════════════════════════
 
 pub struct SetupPage;
 
 impl SetupPage {
-    pub fn new<F: Fn() + 'static + Clone>(on_complete: F) -> gtk4::Widget {
+    pub fn new<F: Fn(Option<u16>) + 'static + Clone>(on_connected: F) -> gtk4::Widget {
+        let toast_overlay = ToastOverlay::new();
+
+        let show_toast = {
+            let to = toast_overlay.clone();
+            move |msg: &str| {
+                let toast = Toast::new(msg);
+                toast.set_timeout(4);
+                toast.set_priority(libadwaita::ToastPriority::High);
+                to.add_toast(toast);
+            }
+        };
+        let show_error = {
+            let st = show_toast.clone();
+            move |err: &str| st(&format!("⚠ {}", friendly_error(err)))
+        };
+
+        // ── Header ──
+        let header = HeaderBar::new();
+        header.set_title_widget(Some(&WindowTitle::new("SpacePods Linux", "Connect your earbuds")));
+
+        // ═══ LEFT PANEL ═══
         let status_page = StatusPage::new();
         status_page.set_icon_name(Some("audio-headset-symbolic"));
         status_page.set_title("Find Your SpaceBuds");
-        status_page.set_description(Some(
-            "Make sure your earbuds are in pairing mode and nearby."
-        ));
-        status_page.set_vexpand(true);
+        status_page.set_description(Some("Make sure your earbuds are in pairing mode and nearby."));
 
-        let spinner = Spinner::new();
-        spinner.set_size_request(32, 32);
-        spinner.set_halign(gtk4::Align::Center);
+        let daemon_status = Label::new(None);
+        daemon_status.add_css_class("caption");
+        daemon_status.set_halign(gtk4::Align::Center);
+        daemon_status.set_margin_top(8);
+        daemon_status.set_margin_bottom(8);
+
+        let scan_spinner = Spinner::new();
+        scan_spinner.set_size_request(16, 16);
+        scan_spinner.set_visible(false);
+
+        let scan_btn = Button::with_label("Scan for devices");
+        scan_btn.add_css_class("suggested-action");
+        scan_btn.add_css_class("pill");
+        scan_btn.set_valign(Align::Center);
+
+        let scan_btn_row = Box::new(Orientation::Horizontal, 8);
+        scan_btn_row.set_halign(Align::Center);
+        scan_btn_row.set_margin_top(12);
+        scan_btn_row.append(&scan_spinner);
+        scan_btn_row.append(&scan_btn);
 
         let scan_status = Label::new(None);
+        scan_status.add_css_class("caption");
         scan_status.add_css_class("dim-label");
-        scan_status.add_css_class("title-4");
         scan_status.set_halign(gtk4::Align::Center);
+        scan_status.set_margin_top(4);
 
-        let scan_spinner_box = Box::new(Orientation::Vertical, 12);
-        scan_spinner_box.set_halign(Align::Center);
-        scan_spinner_box.set_margin_bottom(16);
-        scan_spinner_box.append(&spinner);
-        scan_spinner_box.append(&scan_status);
-        scan_spinner_box.set_visible(false);
+        let left_content = Box::new(Orientation::Vertical, 0);
+        left_content.set_valign(Align::Center);
+        left_content.set_vexpand(false);
+        left_content.set_margin_top(16);
+        left_content.set_margin_bottom(16);
+        left_content.set_margin_start(16);
+        left_content.set_margin_end(16);
+        left_content.append(&status_page);
+        left_content.append(&daemon_status);
+        left_content.append(&scan_btn_row);
+        left_content.append(&scan_status);
 
-        let error_label = Label::new(None);
-        error_label.add_css_class("error");
-        error_label.set_halign(gtk4::Align::Center);
-        error_label.set_wrap(true);
-        error_label.set_max_width_chars(50);
-        error_label.set_visible(false);
+        // ═══ RIGHT PANEL ═══
+        // -- Saved devices section --
+        let saved_section = Box::new(Orientation::Vertical, 0);
+        saved_section.set_vexpand(true);
+
+        let saved_label = Label::new(Some("Saved Devices"));
+        saved_label.add_css_class("title-4");
+        saved_label.set_halign(gtk4::Align::Start);
+        saved_label.set_margin_start(12);
+        saved_label.set_margin_top(12);
+        saved_label.set_margin_bottom(4);
+
+        let saved_list = ListBox::new();
+        saved_list.set_selection_mode(gtk4::SelectionMode::None);
+        saved_list.add_css_class("boxed-list");
+        saved_list.set_vexpand(true);
+
+        let saved_scroll = ScrolledWindow::new();
+        saved_scroll.set_hscrollbar_policy(PolicyType::Never);
+        saved_scroll.set_vexpand(true);
+        saved_scroll.set_child(Some(&saved_list));
+
+        saved_section.append(&saved_label);
+        saved_section.append(&saved_scroll);
+
+        // -- Found devices section --
+        let found_section = Box::new(Orientation::Vertical, 0);
+        found_section.set_vexpand(true);
+
+        let found_label = Label::new(None);
+        found_label.add_css_class("title-4");
+        found_label.set_halign(gtk4::Align::Start);
+        found_label.set_margin_start(12);
+        found_label.set_margin_top(16);
+        found_label.set_margin_bottom(4);
 
         let device_list = ListBox::new();
-        device_list.set_selection_mode(gtk4::SelectionMode::None);
-        device_list.set_visible(false);
+        device_list.set_selection_mode(gtk4::SelectionMode::Single);
         device_list.add_css_class("boxed-list");
-        device_list.set_margin_bottom(24);
+        device_list.set_vexpand(true);
 
-        let scanned: Rc<RefCell<Vec<(String, String)>>> = Rc::new(RefCell::new(Vec::new()));
+        let device_scroll = ScrolledWindow::new();
+        device_scroll.set_hscrollbar_policy(PolicyType::Never);
+        device_scroll.set_vexpand(true);
+        device_scroll.set_child(Some(&device_list));
 
-        // Track which entries are currently connecting
-        let connecting_flags: Rc<RefCell<Vec<bool>>> = Rc::new(RefCell::new(Vec::new()));
+        found_section.append(&found_label);
+        found_section.append(&device_scroll);
 
-        let scan_group = PreferencesGroup::new();
-        let scan_row = ActionRow::new();
-        scan_row.set_title("Scan for devices");
-        scan_row.set_subtitle("Search for nearby SpaceBuds over Bluetooth");
-        scan_row.set_activatable(true);
-        let scan_icon = gtk4::Image::from_icon_name("bluetooth-symbolic");
-        scan_icon.add_css_class("dim-label");
-        scan_row.add_prefix(&scan_icon);
-        scan_row.add_suffix(&gtk4::Image::from_icon_name("go-next-symbolic"));
-        scan_group.add(&scan_row);
+        // Stack: saved on top when no scan, found on top when scanning
+        let right_stack = gtk4::Stack::new();
+        right_stack.set_transition_type(gtk4::StackTransitionType::Crossfade);
+        right_stack.set_transition_duration(200);
+        right_stack.add_named(&saved_section, Some("saved"));
+        right_stack.add_named(&found_section, Some("found"));
+        right_stack.set_visible_child_name("saved");
 
-        let content = Box::new(Orientation::Vertical, 0);
-        content.set_valign(Align::Center);
-        content.set_vexpand(true);
-        content.set_margin_top(32);
-        content.set_margin_bottom(32);
-        content.set_margin_start(16);
-        content.set_margin_end(16);
-        content.append(&status_page);
-        content.append(&scan_spinner_box);
-        content.append(&error_label);
-        content.append(&device_list);
-        content.append(&scan_group);
+        let right_content = Box::new(Orientation::Vertical, 0);
+        right_content.set_vexpand(true);
+        right_content.set_margin_top(8);
+        right_content.set_margin_bottom(8);
+        right_content.set_margin_start(8);
+        right_content.set_margin_end(8);
+        right_content.append(&right_stack);
 
-        let clamp = Clamp::new();
-        clamp.set_maximum_size(500);
-        clamp.set_tightening_threshold(400);
-        clamp.set_child(Some(&content));
+        // ═══ RESPONSIVE LAYOUT — side-by-side on wide, stacked on narrow ═══
+        let left_clamp = Clamp::new();
+        left_clamp.set_maximum_size(600);
+        left_clamp.set_vexpand(true);
+        left_clamp.set_child(Some(&left_content));
 
-        let scroll = gtk4::ScrolledWindow::new();
-        scroll.set_hscrollbar_policy(gtk4::PolicyType::Never);
-        scroll.set_vexpand(true);
-        scroll.set_child(Some(&clamp));
+        let right_clamp = Clamp::new();
+        right_clamp.set_maximum_size(600);
+        right_clamp.set_vexpand(true);
+        right_clamp.set_child(Some(&right_content));
 
-        // ── Scan button ──
-        {
-            let on_complete = on_complete.clone();
-            let sr = scan_row.clone();
-            let ssb = scan_spinner_box.clone();
-            let sp = spinner.clone();
-            let sc = scan_status.clone();
-            let dl = device_list.clone();
-            let el = error_label.clone();
-            let scn = scanned.clone();
-            let cf = connecting_flags.clone();
-            scan_row.connect_activated({
-                let sr = sr.clone();
-                let ssb = ssb.clone();
-                let sp = sp.clone();
-                let sc = sc.clone();
-                let dl = dl.clone();
-                let el = el.clone();
-                let scn = scn.clone();
-                let cf = cf.clone();
-                let on = on_complete.clone();
-                move |_| {
-                sr.set_sensitive(false);
-                ssb.set_visible(true);
-                sp.start();
-                sc.set_text("Connecting to service…");
-                dl.set_visible(false);
-                el.set_visible(false);
+        // Horizontal layout for wide screens
+        let hbox = Box::new(Orientation::Horizontal, 0);
+        hbox.set_hexpand(true);
+        hbox.set_vexpand(true);
+        hbox.set_homogeneous(true);
+        hbox.append(&left_clamp);
+        hbox.append(&right_clamp);
 
-                while let Some(child) = dl.first_child() {
-                    dl.remove(&child);
-                }
-                scn.borrow_mut().clear();
-                cf.borrow_mut().clear();
+        // Use AdwBreakpointBin to switch between horizontal and vertical
+        let layout_bin = libadwaita::BreakpointBin::new();
+        layout_bin.set_child(Some(&hbox));
 
-                let scanned_ref = scn.clone();
-                let flags_ref = cf.clone();
+        // On narrow screens (<720px), switch to vertical stacking
+        let narrow_condition = libadwaita::BreakpointCondition::new_length(
+            libadwaita::BreakpointConditionLengthType::MaxWidth,
+            720.0,
+            libadwaita::LengthUnit::Px,
+        );
+        let narrow_bp = libadwaita::Breakpoint::new(narrow_condition);
+        narrow_bp.add_setter(&hbox, "orientation", Some(&Orientation::Vertical.to_value()));
+        narrow_bp.add_setter(&hbox, "homogeneous", Some(&false.to_value()));
+        narrow_bp.add_setter(&hbox, "spacing", Some(&16u32.to_value()));
+        narrow_bp.add_setter(&left_clamp, "maximum-size", Some(&600u32.to_value()));
+        narrow_bp.add_setter(&right_clamp, "maximum-size", Some(&600u32.to_value()));
+        narrow_bp.add_setter(&left_clamp, "vexpand", Some(&false.to_value()));
+        narrow_bp.add_setter(&status_page, "vexpand", Some(&false.to_value()));
+        layout_bin.add_breakpoint(narrow_bp);
 
-                let ssb2 = ssb.clone();
-                let sp2 = sp.clone();
-                let sc2 = sc.clone();
-                let dl2 = dl.clone();
-                let el2 = el.clone();
-                let sr2 = sr.clone();
-                let on = on.clone();
+        let main_scroll = ScrolledWindow::new();
+        main_scroll.set_hscrollbar_policy(PolicyType::Never);
+        main_scroll.set_vexpand(true);
+        main_scroll.set_child(Some(&layout_bin));
 
+        let toolbar_view = ToolbarView::new();
+        toolbar_view.add_top_bar(&header);
+        toolbar_view.set_content(Some(&main_scroll));
+        toast_overlay.set_child(Some(&toolbar_view));
+
+        // ═══ DAEMON CHECK ═══
+        let check_daemon = {
+            let ds = daemon_status.clone();
+            let st = show_toast.clone();
+            move || {
+                let ds = ds.clone();
+                let st = st.clone();
                 glib::spawn_future_local(async move {
-                    let mut client = match SpacePodsClient::connect(None).await {
-                        Ok(c) => c,
-                        Err(e) => {
-                            ssb2.set_visible(false);
-                            sp2.stop();
-                            sr2.set_sensitive(true);
-                            el2.set_text(&format!(
-                                "Cannot reach the SpacePods daemon.\n\nMake sure 'libspacepods service' is running.\n\n{}",
-                                e
-                            ));
-                            el2.set_visible(true);
-                            return;
-                        }
-                    };
-
-                    sc2.set_text("Scanning for SpaceBuds…");
-                    let results = client.scan(5).await;
-
-                    ssb2.set_visible(false);
-                    sp2.stop();
-                    sr2.set_sensitive(true);
-
-                    match results {
-                        Ok(devices) if devices.is_empty() => {
-                            sc2.set_text("No SpaceBuds found nearby.");
-                            ssb2.set_visible(true);
-                            sp2.set_visible(false);
-                        }
-                        Ok(devices) => {
-                            let mut devs = scanned_ref.borrow_mut();
-                            let mut flags = flags_ref.borrow_mut();
-                            for device in &devices {
-                                devs.push((device.name.clone(), device.address.clone()));
-                                flags.push(false);
+                    match SpacePodsClient::connect(None).await {
+                        Ok(mut c) => {
+                            if c.ping().await.unwrap_or(false) {
+                                ds.set_text("🟢 Service running");
+                                ds.remove_css_class("error");
+                                ds.remove_css_class("warning");
+                            } else {
+                                ds.set_text("🟡 Service unresponsive");
+                                ds.add_css_class("warning");
+                                ds.remove_css_class("error");
                             }
-
-                            for (idx, device) in devices.iter().enumerate() {
-                                dl2.append(&Self::device_row(
-                                    idx,
-                                    &device.name,
-                                    &device.address,
-                                    &scanned_ref,
-                                    &flags_ref,
-                                    on.clone(),
-                                ));
-                            }
-
-                            dl2.set_visible(true);
-                            sc2.set_text(&format!("{} device(s) found — tap Connect",
-                                devices.len()));
-                            ssb2.set_visible(true);
-                            sp2.set_visible(false);
                         }
-                        Err(e) => {
-                            el2.set_text(&format!("Scan failed: {}", e));
-                            el2.set_visible(true);
+                        Err(_) => {
+                            ds.set_text("🔴 Service not running");
+                            ds.add_css_class("error");
+                            ds.remove_css_class("warning");
+                            st("Start the daemon with: spacepods service");
                         }
                     }
                 });
-            }});
-        }
-
-        scroll.upcast()
-    }
-
-    /// Build a single device row with name, address and a Connect button.
-    fn device_row<F: Fn() + 'static + Clone>(
-        idx: usize,
-        name: &str,
-        address: &str,
-        scanned: &Rc<RefCell<Vec<(String, String)>>>,
-        connecting_flags: &Rc<RefCell<Vec<bool>>>,
-        on_complete: F,
-    ) -> gtk4::Widget {
-        let name = name.to_string();
-        let address = address.to_string();
-
-        let row = ActionRow::new();
-        row.set_title(&name);
-        row.set_subtitle(&address);
-        row.set_icon_name(Some("audio-headset-symbolic"));
-        row.set_margin_top(6);
-        row.set_margin_bottom(6);
-
-        let connect_box = Box::new(Orientation::Horizontal, 8);
-        connect_box.set_valign(Align::Center);
-
-        let btn = Button::with_label("Connect");
-        btn.add_css_class("suggested-action");
-        btn.add_css_class("pill");
-        btn.set_valign(Align::Center);
-
-        let conn_spinner = Spinner::new();
-        conn_spinner.set_size_request(16, 16);
-        conn_spinner.set_visible(false);
-
-        let status_lbl = Label::new(None);
-        status_lbl.add_css_class("caption");
-        status_lbl.add_css_class("dim-label");
-        status_lbl.set_valign(Align::Center);
-        status_lbl.set_visible(false);
-
-        connect_box.append(&status_lbl);
-        connect_box.append(&conn_spinner);
-        connect_box.append(&btn);
-        row.add_suffix(&connect_box);
-
-        let flags_ref = connecting_flags.clone();
-        let scanned_ref = scanned.clone();
-
-        let flags2 = flags_ref.clone();
-        let conn_spinner2 = conn_spinner.clone();
-        let status_lbl2 = status_lbl.clone();
-        let btn2 = btn.clone();
-        let name2 = name.clone();
-        let addr2 = address.clone();
-
-        btn.connect_clicked(move |_| {
-            btn2.set_sensitive(false);
-            btn2.set_label("Connecting…");
-            conn_spinner2.set_visible(true);
-            conn_spinner2.start();
-            status_lbl2.set_visible(false);
-
-            // Disable all other connect buttons
-            {
-                let mut flags = flags2.borrow_mut();
-                if idx < flags.len() {
-                    flags[idx] = true;
-                }
             }
+        };
+        check_daemon();
 
-            let btn_clone = btn2.clone();
-            let spinner_clone = conn_spinner2.clone();
-            let status_lbl_clone = status_lbl2.clone();
-            let name_clone = name2.clone();
-            let addr_clone = addr2.clone();
-            let on_complete = on_complete.clone();
+        // Populate saved devices
+        let rebuild_saved = {
+            let saved_list = saved_list.clone();
+            let saved_section = saved_section.clone();
+            let on_connected = on_connected.clone();
+            let show_error = show_error.clone();
+            move || {
+                while let Some(child) = saved_list.first_child() {
+                    saved_list.remove(&child);
+                }
+                let kd = load_known_devices();
+                for dev in &kd {
+                    saved_list.append(&Self::saved_row(
+                        dev,
+                        on_connected.clone(),
+                        show_error.clone(),
+                    ));
+                }
+                let has = !kd.is_empty();
+                saved_section.set_visible(has);
+            }
+        };
+        rebuild_saved();
 
-            let flags_clone = flags_ref.clone();
-            glib::spawn_future_local(async move {
-                Log::info("SETUP", &format!("Connecting to {} ({})", name_clone, addr_clone));
-                let outcome = match SpacePodsClient::connect(None).await {
-                    Ok(mut client) => {
-                        match client.connect_device(addr_clone.clone()).await {
-                            Ok(_) => {
-                                add_known_device(name_clone.clone(), addr_clone);
-                                // Wait for daemon to detect product_id, then proceed
-                                tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
-                                let _ = crate::storage::load_settings();
-                                Log::info("SETUP", &format!("Connected to {}", name_clone));
-                                on_complete();
+        // Store scan results for click handling
+        let scanned_data: Rc<RefCell<Vec<ScannedDevice>>> = Rc::new(RefCell::new(Vec::new()));
+
+        // ═══ SCAN BUTTON ═══
+        scan_btn.connect_clicked(clone!(
+            #[weak] scan_btn,
+            #[weak] scan_spinner,
+            #[weak] scan_status,
+            #[weak] found_label,
+            #[weak] device_list,
+            #[strong] scanned_data,
+            #[strong] show_error,
+            #[strong] check_daemon,
+            #[strong] right_stack,
+            move |_| {
+                scan_btn.set_sensitive(false);
+                scan_spinner.set_visible(true);
+                scan_spinner.start();
+                scan_status.set_text("Scanning…");
+                while let Some(child) = device_list.first_child() {
+                    device_list.remove(&child);
+                }
+                scanned_data.borrow_mut().clear();
+                right_stack.set_visible_child_name("found");
+
+                glib::spawn_future_local(clone!(
+                    #[weak] scan_btn,
+                    #[weak] scan_spinner,
+                    #[weak] scan_status,
+                    #[weak] found_label,
+                    #[weak] device_list,
+                    #[strong] scanned_data,
+                    #[strong] show_error,
+                    #[strong] check_daemon,
+                    async move {
+                        let mut client = match SpacePodsClient::connect(None).await {
+                            Ok(c) => c,
+                            Err(e) => {
+                                scan_spinner.set_visible(false);
+                                scan_spinner.stop();
+                                scan_btn.set_sensitive(true);
+                                show_error(&e.to_string());
+                                check_daemon();
                                 return;
                             }
+                        };
+
+                        match client.scan(5).await {
                             Err(e) => {
-                                Log::info("SETUP", &format!("Connect failed for {}: {}", name_clone, e));
-                                format!("Connection failed: {}", e)
+                                show_error(&e.to_string());
+                                scan_status.set_text("");
+                            }
+                            Ok(devices) if devices.is_empty() => {
+                                scan_status.set_text("No devices found — try again");
+                                found_label.set_visible(false);
+                            }
+                            Ok(devices) => {
+                                let mut sorted = devices;
+                                sorted.sort_by_key(|d| d.rssi.unwrap_or(-100));
+                                sorted.reverse();
+
+                                for d in &sorted {
+                                    device_list.append(&Self::device_row(d));
+                                }
+
+                                *scanned_data.borrow_mut() = sorted.clone();
+
+                                found_label.set_text(&format!("Found ({})", sorted.len()));
+                                found_label.set_visible(true);
+                                scan_status.set_text(&format!(
+                                    "{} device(s) — sorted by proximity", sorted.len()
+                                ));
                             }
                         }
+                        scan_spinner.set_visible(false);
+                        scan_spinner.stop();
+                        scan_btn.set_sensitive(true);
                     }
+                ));
+            }
+        ));
+
+        // ═══ SCANNED DEVICE CLICK → CONNECT ═══
+        device_list.connect_row_activated(clone!(
+            #[strong] scanned_data,
+            #[strong] show_error,
+            #[strong] on_connected,
+            #[strong] check_daemon,
+            move |_, row| {
+                let idx = row.index() as usize;
+                let data = scanned_data.borrow();
+                if let Some(device) = data.get(idx) {
+                    let name = device.name.clone();
+                    let address = device.address.clone();
+                    let on_connected = on_connected.clone();
+                    let show_error = show_error.clone();
+                    let check_daemon = check_daemon.clone();
+                    glib::spawn_future_local(async move {
+                        match SpacePodsClient::connect(None).await {
+                            Ok(mut client) => match client.connect_device(address.clone()).await {
+                                Ok(_) => {
+                                    add_known_device(name, address);
+                                    tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
+                                    let pid = client.get_status().await.ok().and_then(|s| s.product_id);
+                                    on_connected(pid);
+                                }
+                                Err(e) => { show_error(&e.to_string()); check_daemon(); }
+                            },
+                            Err(e) => { show_error(&e.to_string()); check_daemon(); }
+                        }
+                    });
+                }
+            }
+        ));
+
+        toast_overlay.upcast()
+    }
+
+    // ── Device row (scanned) ──
+    fn device_row(device: &ScannedDevice) -> ListBoxRow {
+        let row = ListBoxRow::new();
+        row.add_css_class("activatable");
+
+        let outer = Box::new(Orientation::Vertical, 4);
+        outer.set_margin_top(10);
+        outer.set_margin_bottom(10);
+        outer.set_margin_start(14);
+        outer.set_margin_end(14);
+
+        let line1 = Box::new(Orientation::Horizontal, 8);
+        let product = device.product_name.as_deref().unwrap_or("SpaceBuds");
+        let display = if product == "Oraimo SpaceBuds" || product.is_empty() {
+            device.name.clone()
+        } else {
+            product.to_string()
+        };
+        let name_lbl = Label::new(Some(&display));
+        name_lbl.set_hexpand(true);
+        name_lbl.set_halign(gtk4::Align::Start);
+        name_lbl.add_css_class("heading");
+        line1.append(&name_lbl);
+
+        if let Some(_r) = device.rssi {
+            let dist = Label::new(Some(rssi_label(device.rssi)));
+            dist.add_css_class("caption");
+            dist.add_css_class(rssi_css(device.rssi));
+            line1.append(&dist);
+        }
+        if device.already_connected {
+            let warn = Label::new(Some("⚠ In use"));
+            warn.add_css_class("warning");
+            warn.add_css_class("caption");
+            line1.append(&warn);
+        }
+        outer.append(&line1);
+
+        let line2 = Box::new(Orientation::Horizontal, 8);
+        let ble_info = if device.name != display {
+            device.name.clone()
+        } else {
+            device.address.clone()
+        };
+        let addr_lbl = Label::new(Some(&ble_info));
+        addr_lbl.add_css_class("dim-label");
+        addr_lbl.add_css_class("caption");
+        addr_lbl.set_hexpand(true);
+        addr_lbl.set_halign(gtk4::Align::Start);
+        line2.append(&addr_lbl);
+
+        if device.battery_left.is_some() || device.battery_right.is_some() {
+            let mut s = format!("🦻{}% / {}%",
+                device.battery_left.map_or("?".into(), |b| b.to_string()),
+                device.battery_right.map_or("?".into(), |b| b.to_string()),
+            );
+            if let Some(c) = device.battery_case {
+                s = format!("{}  📦{}%", s, c);
+            }
+            let bat = Label::new(Some(&s));
+            bat.add_css_class("caption");
+            bat.add_css_class("accent");
+            line2.append(&bat);
+        }
+        if let Some(v) = device.beacon_version {
+            let ver = Label::new(Some(&format!("V{}", v)));
+            ver.add_css_class("caption");
+            ver.add_css_class("dim-label");
+            line2.append(&ver);
+        }
+        outer.append(&line2);
+        row.set_child(Some(&outer));
+        row
+    }
+
+    // ── Saved device row ──
+    fn saved_row(
+        dev: &crate::storage::KnownDevice,
+        on_connected: impl Fn(Option<u16>) + 'static + Clone,
+        show_error: impl Fn(&str) + 'static + Clone,
+    ) -> ListBoxRow {
+        let row = ListBoxRow::new();
+        row.set_activatable(false);
+
+        let outer = Box::new(Orientation::Vertical, 4);
+        outer.set_margin_top(10);
+        outer.set_margin_bottom(10);
+        outer.set_margin_start(14);
+        outer.set_margin_end(14);
+
+        let line1 = Box::new(Orientation::Horizontal, 8);
+        let name_lbl = Label::new(Some(&dev.name));
+        name_lbl.set_hexpand(true);
+        name_lbl.set_halign(gtk4::Align::Start);
+        name_lbl.add_css_class("heading");
+        line1.append(&name_lbl);
+
+        let time_lbl = Label::new(Some(&format_last_used(dev.last_connected)));
+        time_lbl.add_css_class("caption");
+        time_lbl.add_css_class("accent");
+        line1.append(&time_lbl);
+
+        outer.append(&line1);
+
+        let line2 = Box::new(Orientation::Horizontal, 8);
+        let addr_lbl = Label::new(Some(&dev.address));
+        addr_lbl.add_css_class("dim-label");
+        addr_lbl.add_css_class("caption");
+        addr_lbl.set_hexpand(true);
+        addr_lbl.set_halign(gtk4::Align::Start);
+        line2.append(&addr_lbl);
+
+        // Delete button
+        let del_btn = Button::from_icon_name("user-trash-symbolic");
+        del_btn.add_css_class("flat");
+        del_btn.add_css_class("circular");
+        del_btn.set_valign(Align::Center);
+        del_btn.set_tooltip_text(Some("Forget this device"));
+        line2.append(&del_btn);
+
+        // Connect button
+        let conn_btn = Button::with_label("Connect");
+        conn_btn.add_css_class("suggested-action");
+        conn_btn.add_css_class("pill");
+        conn_btn.set_valign(Align::Center);
+        line2.append(&conn_btn);
+
+        outer.append(&line2);
+        row.set_child(Some(&outer));
+
+        // Wire delete
+        let addr = dev.address.clone();
+        let row_weak = row.downgrade();
+        del_btn.connect_clicked(move |_| {
+            remove_known_device(&addr);
+            if let Some(r) = row_weak.upgrade() {
+                if let Some(parent) = r.parent() {
+                    if let Ok(list) = parent.downcast::<ListBox>() {
+                        list.remove(&r);
+                    }
+                }
+            }
+        });
+
+        // Wire connect
+        let name = dev.name.clone();
+        let address = dev.address.clone();
+        conn_btn.connect_clicked(move |b| {
+            b.set_sensitive(false);
+            b.set_label("Connecting…");
+            let name = name.clone();
+            let address = address.clone();
+            let on_connected = on_connected.clone();
+            let show_error = show_error.clone();
+            let btn = b.clone();
+            glib::spawn_future_local(async move {
+                match SpacePodsClient::connect(None).await {
+                    Ok(mut client) => match client.connect_device(address.clone()).await {
+                        Ok(_) => {
+                            add_known_device(name, address);
+                            tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
+                            let pid = client.get_status().await.ok().and_then(|s| s.product_id);
+                            on_connected(pid);
+                        }
+                        Err(e) => {
+                            show_error(&e.to_string());
+                            btn.set_sensitive(true);
+                            btn.set_label("Connect");
+                        }
+                    },
                     Err(e) => {
-                        Log::info("SETUP", &format!("Service unreachable: {}", e));
-                        format!("Service unreachable: {}", e)
-                    }
-                };
-
-                // Reset on error
-                spinner_clone.stop();
-                spinner_clone.set_visible(false);
-                status_lbl_clone.set_text(&outcome);
-                status_lbl_clone.add_css_class("error");
-                status_lbl_clone.set_visible(true);
-                btn_clone.set_label("Connect");
-                btn_clone.set_sensitive(true);
-
-                {
-                    let mut flags = flags_clone.borrow_mut();
-                    if idx < flags.len() {
-                        flags[idx] = false;
+                        show_error(&e.to_string());
+                        btn.set_sensitive(true);
+                        btn.set_label("Connect");
                     }
                 }
             });
         });
 
-        row.upcast()
+        row
     }
 }

@@ -1,11 +1,7 @@
 use gtk4::prelude::*;
-use libadwaita::{Application, ApplicationWindow};
+use libadwaita::{Application, ApplicationWindow, ToastOverlay};
 use libadwaita::prelude::AdwApplicationWindowExt;
-use std::rc::Rc;
 
-use crate::home::HomeView;
-use crate::log::Log;
-use crate::pages::loading_page::{LoadingPage, LoadingOutcome};
 use crate::pages::setup_page::SetupPage;
 use crate::storage::load_settings;
 use crate::service::write_autostart_entry;
@@ -21,63 +17,33 @@ pub fn run_app() -> glib::ExitCode {
 
     app.connect_activate(move |app| {
         let window = ApplicationWindow::new(app);
+
+        // Set app icon from resources
+        gtk4::Window::set_default_icon_name("com.spacepods.ui");
+
+        // Register custom icons once a display is available
+        if let Some(display) = gtk4::gdk::Display::default() {
+            let icon_theme = gtk4::IconTheme::for_display(&display);
+            icon_theme.add_resource_path("/com/spacepods/ui/icons");
+        }
+
         window.set_title(Some("SpacePods"));
         window.set_default_size(850, 600);
         window.set_width_request(360);
         window.set_height_request(480);
 
-        // ── Navigation callbacks ──
+        // Wrap everything in a ToastOverlay so toasts work everywhere
+        let toast_overlay = ToastOverlay::new();
+
         let window_weak = window.downgrade();
-        let callback_holder: Rc<std::cell::RefCell<Option<Rc<dyn Fn(LoadingOutcome)>>>> =
-            Rc::new(std::cell::RefCell::new(None));
-
-        let ch_closure = callback_holder.clone();
-        let ch_store = callback_holder.clone();
-
-        {
-            let window_weak = window_weak.clone();
-
-            let callback: Rc<dyn Fn(LoadingOutcome)> = Rc::new(move |outcome| {
-                let window = match window_weak.upgrade() {
-                    Some(w) => w,
-                    None => return,
-                };
-
-                match outcome {
-                    LoadingOutcome::Connected { product_id, .. } => {
-                        Log::info("APP", &format!("Navigating to home (product_id={:?})", product_id));
-                        let home_view = HomeView::new(&window, product_id);
-                        window.set_content(Some(&home_view));
-                    }
-                    LoadingOutcome::NoDevice => {
-                        Log::info("APP", "Navigating to setup (no saved device)");
-                        let window_clone = window.clone();
-                        let go_to_home = move || {
-                            let win = window_clone.clone();
-                            glib::spawn_future_local(async move {
-                                let home_view = HomeView::new(&win, None);
-                                win.set_content(Some(&home_view));
-                            });
-                        };
-                        let setup_page = SetupPage::new(go_to_home);
-                        window.set_content(Some(&setup_page));
-                    }
-                    LoadingOutcome::Retry => {
-                        Log::info("APP", "Retrying connection…");
-                        if let Some(cb) = ch_closure.borrow().as_ref() {
-                            let new_loading = LoadingPage::new(cb.clone());
-                            window.set_content(Some(&new_loading));
-                        }
-                    }
-                }
-            });
-
-            let cb_for_loading = callback.clone();
-            *ch_store.borrow_mut() = Some(callback);
-            let loading_page = LoadingPage::new(cb_for_loading);
-            window.set_content(Some(&loading_page));
-        }
-
+        let setup_page = SetupPage::new(move |product_id| {
+            if let Some(win) = window_weak.upgrade() {
+                let home_view = crate::home::HomeView::new(&win, product_id);
+                win.set_content(Some(&home_view));
+            }
+        });
+        toast_overlay.set_child(Some(&setup_page));
+        window.set_content(Some(&toast_overlay));
         window.present();
     });
 

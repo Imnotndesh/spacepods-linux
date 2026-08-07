@@ -65,6 +65,10 @@ pub enum ServiceCommand {
     #[serde(rename = "unsubscribe")]
     Unsubscribe,
 
+    /// Disconnect from the current device.
+    #[serde(rename = "disconnect")]
+    Disconnect,
+
     /// Send a raw BLE command by its command ID.
     /// The daemon will forward this directly to the earbuds.
     #[serde(rename = "custom")]
@@ -101,6 +105,31 @@ pub enum IpcResult {
 pub struct ScannedDevice {
     pub name: String,
     pub address: String,
+    /// Product name from beacon (e.g. "SpaceBuds Neo 2")
+    #[serde(default)]
+    pub product_name: Option<String>,
+    /// Product ID from beacon
+    #[serde(default)]
+    pub product_id: Option<u16>,
+    /// Real Bluetooth MAC from beacon (de-obfuscated)
+    #[serde(default)]
+    pub real_mac: Option<String>,
+    /// Beacon version (1-4)
+    #[serde(default)]
+    pub beacon_version: Option<u8>,
+    /// Battery levels from beacon (V1 only)
+    #[serde(default)]
+    pub battery_left: Option<u8>,
+    #[serde(default)]
+    pub battery_right: Option<u8>,
+    #[serde(default)]
+    pub battery_case: Option<u8>,
+    /// Whether the device is currently connected to another phone
+    #[serde(default)]
+    pub already_connected: bool,
+    /// Signal strength in dBm (closer to 0 = stronger)
+    #[serde(default)]
+    pub rssi: Option<i16>,
 }
 
 // ── Device Status (composed) ──

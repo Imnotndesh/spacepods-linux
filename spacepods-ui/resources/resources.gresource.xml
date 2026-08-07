@@ -1,7 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <gresources>
-    <gresource prefix="/com/spacepods/app/icons">
-        <file alias="scalable/actions/hearing-health-symbolic.svg">icons/hicolor/scalable/actions/hearing-health-symbolic.svg</file>
-        <file alias="scalable/actions/settings-symbolic.svg">icons/hicolor/scalable/actions/settings-symbolic.svg</file>
+    <gresource prefix="/com/spacepods/ui/icons/scalable/actions">
+        <file alias="hearing-health-symbolic.svg">icons/hicolor/scalable/actions/hearing-health-symbolic.svg</file>
+        <file alias="settings-symbolic.svg">icons/hicolor/scalable/actions/settings-symbolic.svg</file>
+        <file alias="gesture-swipe-right-symbolic.svg">icons/hicolor/scalable/actions/gesture-swipe-right-symbolic.svg</file>
+        <file alias="com.spacepods.ui.svg">icons/hicolor/scalable/actions/com.spacepods.ui.svg</file>
     </gresource>
 </gresources>

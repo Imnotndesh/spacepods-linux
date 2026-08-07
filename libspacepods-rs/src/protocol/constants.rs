@@ -6,6 +6,10 @@ pub const UUID_FAST_PAIR: uuid::Uuid = uuid::Uuid::from_u128(0x0000fe2c_0000_100
 pub const UUID_BATTERY_SERVICE: uuid::Uuid = uuid::Uuid::from_u128(0x0000180f_0000_1000_8000_00805f9b34fb);
 pub const UUID_BATTERY_LEVEL: uuid::Uuid = uuid::Uuid::from_u128(0x00002a19_0000_1000_8000_00805f9b34fb);
 
+// Aliases used by beacon/scanner for scan filtering
+pub const UUID_FF17: uuid::Uuid = UUID_WRITE;
+pub const UUID_FE2C: uuid::Uuid = UUID_FAST_PAIR;
+
 // ── Command IDs (mapped from bluetrum SDK Command.java) ──
 // These are the `COMMAND_*` constants, sent as request command bytes.
 

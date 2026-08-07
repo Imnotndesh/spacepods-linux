@@ -302,8 +302,27 @@ impl SpacePodsService {
             }
 
             ServiceCommand::Scan { timeout_secs } => {
-                match DeviceScanner::scan_devices(Duration::from_secs(timeout_secs)).await {
-                    Ok(devices) => IpcResult::ScanResults { devices },
+                match crate::beacon::scanner::scan_for_devices(Duration::from_secs(timeout_secs)).await {
+                    Ok(discovered) => {
+                        let devices: Vec<ScannedDevice> = discovered.into_iter().map(|d| {
+                            let name = d.local_name.unwrap_or_else(|| d.beacon.product_name().to_string());
+                            let address = d.ble_address.unwrap_or_else(|| "unknown".to_string());
+                            ScannedDevice {
+                                name,
+                                address,
+                                product_name: Some(d.beacon.product_name().to_string()),
+                                product_id: Some(d.beacon.product_id),
+                                real_mac: d.beacon.bt_address_string(),
+                                beacon_version: Some(d.beacon.version),
+                                battery_left: d.beacon.left_battery,
+                                battery_right: d.beacon.right_battery,
+                                battery_case: d.beacon.case_battery,
+                                already_connected: d.beacon.connected,
+                                rssi: d.rssi,
+                            }
+                        }).collect();
+                        IpcResult::ScanResults { devices }
+                    }
                     Err(e) => IpcResult::Error {
                         message: format!("Scan failed: {}", e),
                     },
@@ -311,14 +330,14 @@ impl SpacePodsService {
             }
 
 
-            ServiceCommand::Connect { .. } => {
+            ServiceCommand::Connect { address } => {
                 if buds.is_connected().await {
                     return IpcResult::Success {
                         message: Some("Already connected".to_string()),
                         data: None,
                     };
                 }
-                match buds.connect().await {
+                match buds.connect_to(&address).await {
                     Ok(_) => IpcResult::Success {
                         message: Some("Connected".to_string()),
                         data: None,
@@ -471,6 +490,23 @@ impl SpacePodsService {
                     }
                     Err(e) => IpcResult::Error {
                         message: format!("Failed to set dual device: {}", e),
+                    },
+                }
+            }
+
+            // ── Disconnect ──
+            ServiceCommand::Disconnect => {
+                match buds.disconnect().await {
+                    Ok(_) => {
+                        let mut s = status.write().await;
+                        *s = DeviceStatus::default_disconnected();
+                        IpcResult::Success {
+                            message: Some("Disconnected".to_string()),
+                            data: None,
+                        }
+                    }
+                    Err(e) => IpcResult::Error {
+                        message: format!("Disconnect failed: {}", e),
                     },
                 }
             }

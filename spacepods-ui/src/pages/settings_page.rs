@@ -1,26 +1,29 @@
 use gtk4::prelude::*;
-use gtk4::{Box, Label, Orientation, ScrolledWindow};
+use gtk4::{Box, Label, Orientation};
 use libadwaita::prelude::*;
-use libadwaita::{ActionRow, Clamp, PreferencesGroup, SwitchRow};
+use libadwaita::{PreferencesGroup, ActionRow, Clamp, StatusPage, SwitchRow};
+use glib::clone;
 
 use crate::storage::{load_settings, update_settings};
-use crate::service::{self, check_daemon_running};
+use crate::service;
 
 pub struct SettingsPage;
 
 impl SettingsPage {
-    pub fn page() -> gtk4::Widget {
+    pub fn page(on_disconnect: impl Fn() + 'static + Clone) -> gtk4::Widget {
         let saved_settings = load_settings();
 
-        let clamp = Clamp::new();
-        clamp.set_maximum_size(600);
-        clamp.set_tightening_threshold(480);
+        // Header
+        let header_row = Box::new(Orientation::Horizontal, 0);
+        header_row.set_margin_top(24);
+        header_row.set_margin_bottom(8);
+        let title = Label::new(Some("Settings"));
+        title.add_css_class("title-1");
+        title.set_halign(gtk4::Align::Start);
+        title.set_hexpand(true);
+        header_row.append(&title);
 
-        let content = Box::new(Orientation::Vertical, 24);
-        content.set_margin_top(16);
-        content.set_margin_bottom(32);
-        content.set_margin_start(16);
-        content.set_margin_end(16);
+        // General
         let general_group = PreferencesGroup::new();
         general_group.set_title("General");
 
@@ -33,29 +36,29 @@ impl SettingsPage {
             update_settings(|s| s.autostart = enabled);
             service::write_autostart_entry(enabled);
         });
-
         general_group.add(&autostart_row);
 
+        // Service
         let service_group = PreferencesGroup::new();
         service_group.set_title("Background Service");
         service_group.set_description(Some(
-            "The SpacePods daemon (libspacepods) handles Bluetooth communication. \
-             Start it from a terminal: `libspacepods service`",
+            "The SpacePods daemon handles Bluetooth communication. \
+             Start it from a terminal: spacepods service",
         ));
 
         let service_row = ActionRow::new();
         service_row.set_title("SpacePods daemon");
-
         let service_status = Label::new(Some("Checking…"));
         service_status.add_css_class("dim-label");
         service_status.add_css_class("caption");
         service_status.set_valign(gtk4::Align::Center);
+        service_row.add_suffix(&service_status);
+        service_group.add(&service_row);
 
-        // Check daemon status on open
         {
             let status_label = service_status.clone();
             glib::spawn_future_local(async move {
-                let running = check_daemon_running().await;
+                let running = service::check_daemon_running().await;
                 if running {
                     status_label.set_text("Running");
                     status_label.remove_css_class("dim-label");
@@ -70,38 +73,17 @@ impl SettingsPage {
             });
         }
 
-        service_row.add_suffix(&service_status);
-        service_group.add(&service_row);
-
-        let about_group = PreferencesGroup::new();
-        about_group.set_title("About");
-
-        let version_row = ActionRow::new();
-        version_row.set_title("Version");
-        let version_label = Label::new(Some(env!("CARGO_PKG_VERSION")));
-        version_label.add_css_class("dim-label");
-        version_label.set_valign(gtk4::Align::Center);
-        version_row.add_suffix(&version_label);
-
-        let source_row = ActionRow::new();
-        source_row.set_title("Source code");
-        source_row.set_subtitle("github.com/Imnotndesh/spacepods-linux");
-        source_row.set_activatable(true);
-        source_row.connect_activated(|_| {
-            let _ = gtk4::UriLauncher::new("https://github.com/Imnotndesh/spacepods-linux")
-                .launch(gtk4::Window::NONE, gio::Cancellable::NONE, |_| {});
-        });
-        let chevron = gtk4::Image::from_icon_name("go-next-symbolic");
-        chevron.add_css_class("dim-label");
-        source_row.add_suffix(&chevron);
-
-        about_group.add(&version_row);
-        about_group.add(&source_row);
-
-        // ── Device Actions ──
+        // Device
         let device_group = PreferencesGroup::new();
         device_group.set_title("Device");
         device_group.set_description(Some("Actions that affect your connected SpaceBuds"));
+
+        let disconnect_row = ActionRow::new();
+        disconnect_row.set_title("Disconnect");
+        disconnect_row.set_subtitle("Disconnect from the current device and return to setup");
+        disconnect_row.set_activatable(true);
+        disconnect_row.add_suffix(&gtk4::Image::from_icon_name("go-next-symbolic"));
+        device_group.add(&disconnect_row);
 
         let rename_row = ActionRow::new();
         rename_row.set_title("Change Bluetooth Name");
@@ -124,41 +106,58 @@ impl SettingsPage {
         clear_status.set_visible(false);
         device_group.add(&clear_status);
 
+        // About
+        let about_group = PreferencesGroup::new();
+        about_group.set_title("About");
+
+        let version_row = ActionRow::new();
+        version_row.set_title("Version");
+        let version_label = Label::new(Some(env!("CARGO_PKG_VERSION")));
+        version_label.add_css_class("dim-label");
+        version_label.set_valign(gtk4::Align::Center);
+        version_row.add_suffix(&version_label);
+        about_group.add(&version_row);
+
+        let source_row = ActionRow::new();
+        source_row.set_title("Source code");
+        source_row.set_subtitle("github.com/Imnotndesh/spacepods-linux");
+        source_row.set_activatable(true);
+        source_row.connect_activated(|_| {
+            let _ = gtk4::UriLauncher::new("https://github.com/Imnotndesh/spacepods-linux")
+                .launch(gtk4::Window::NONE, gio::Cancellable::NONE, |_| {});
+        });
+        let chevron = gtk4::Image::from_icon_name("go-next-symbolic");
+        chevron.add_css_class("dim-label");
+        source_row.add_suffix(&chevron);
+        about_group.add(&source_row);
+
+        let content = Box::new(Orientation::Vertical, 12);
+        content.set_margin_top(0);
+        content.set_margin_bottom(32);
+        content.set_margin_start(16);
+        content.set_margin_end(16);
+        content.append(&header_row);
         content.append(&general_group);
         content.append(&service_group);
         content.append(&device_group);
         content.append(&about_group);
-        clamp.set_child(Some(&content));
 
-        let scroll = ScrolledWindow::new();
-        scroll.set_hscrollbar_policy(gtk4::PolicyType::Never);
-        scroll.set_vexpand(true);
-        scroll.set_child(Some(&clamp));
-
-        // ── Clear Pairing Record handler ──
-        {
-            let clear_status = clear_status.clone();
-            clear_pair_row.connect_activated(move |_| {
-                let cs = clear_status.clone();
-                cs.set_text("Clearing pairing records…");
-                cs.set_visible(true);
+        // Handlers
+        disconnect_row.connect_activated({
+            let on_disconnect = on_disconnect.clone();
+            move |_| {
+                let on_disconnect = on_disconnect.clone();
                 glib::spawn_future_local(async move {
                     use libspacepods::client::SpacePodsClient;
-                    let cc = libspacepods::ipc::ServiceCommand::Custom { command_id: 0x2F, payload: vec![] };
-                    match SpacePodsClient::connect(None).await {
-                        Ok(mut client) => match client.send_command_raw(cc).await {
-                            Ok(_) => cs.set_text("Pairing records cleared. Device will restart."),
-                            Err(e) => cs.set_text(&format!("Failed: {}", e)),
-                        },
-                        Err(e) => cs.set_text(&format!("Service unreachable: {}", e)),
+                    if let Ok(mut client) = SpacePodsClient::connect(None).await {
+                        let _ = client.disconnect_device().await;
                     }
+                    on_disconnect();
                 });
-            });
-        }
+            }
+        });
 
-        // ── Rename handler ──
         rename_row.connect_activated(move |_| {
-            // Open an input dialog — for now use a simple approach
             let dialog = gtk4::Dialog::new();
             dialog.set_title(Some("Rename Device"));
             dialog.set_modal(true);
@@ -176,7 +175,9 @@ impl SettingsPage {
                     let name = entry.text().to_string();
                     if !name.is_empty() {
                         let payload: Vec<u8> = name.bytes().collect();
-                        let cc = libspacepods::ipc::ServiceCommand::Custom { command_id: 0x2D, payload };
+                        let cc = libspacepods::ipc::ServiceCommand::Custom {
+                            command_id: 0x2D, payload,
+                        };
                         glib::spawn_future_local(async move {
                             use libspacepods::client::SpacePodsClient;
                             if let Ok(mut client) = SpacePodsClient::connect(None).await {
@@ -190,6 +191,31 @@ impl SettingsPage {
             dialog.present();
         });
 
-        scroll.upcast()
+        {
+            let clear_status = clear_status.clone();
+            clear_pair_row.connect_activated(move |_| {
+                let cs = clear_status.clone();
+                cs.set_text("Clearing pairing records…");
+                cs.set_visible(true);
+                glib::spawn_future_local(async move {
+                    use libspacepods::client::SpacePodsClient;
+                    let cc = libspacepods::ipc::ServiceCommand::Custom {
+                        command_id: 0x2F, payload: vec![],
+                    };
+                    match SpacePodsClient::connect(None).await {
+                        Ok(mut client) => match client.send_command_raw(cc).await {
+                            Ok(_) => cs.set_text("Pairing records cleared. Device will restart."),
+                            Err(e) => cs.set_text(&format!("Failed: {}", e)),
+                        },
+                        Err(e) => cs.set_text(&format!("Service unreachable: {}", e)),
+                    }
+                });
+            });
+        }
+
+        let clamp = Clamp::new();
+        clamp.set_maximum_size(500);
+        clamp.set_child(Some(&content));
+        clamp.upcast()
     }
 }

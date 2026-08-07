@@ -1,5 +1,6 @@
 use gtk4::prelude::*;
 use gtk4::{Box, Label, Orientation, Image, ListBox, ListBoxRow, SelectionMode};
+use glib::clone;
 use libadwaita::{
     HeaderBar, ToolbarView, ToastOverlay, OverlaySplitView,
     Breakpoint, BreakpointCondition, ApplicationWindow,
@@ -112,7 +113,7 @@ impl HomeView {
             PageDef {
                 id: "gestures",
                 title: "Gestures",
-                icon: "input-touchpad-symbolic",
+                icon: "gesture-swipe-right-symbolic",
                 section: Section::Controls,
                 feature: Some(libspacepods::device_profile::DetailFeature::EarControl),
                 widget: SpecialPage::new(ctx.clone()),
@@ -128,7 +129,7 @@ impl HomeView {
             PageDef {
                 id: "hearing",
                 title: "Hearing Health",
-                icon: "heart-symbolic",
+                icon: "hearing-health-symbolic",
                 section: Section::Health,
                 feature: Some(libspacepods::device_profile::DetailFeature::HearingCare),
                 widget: HearingPage::new(ctx.clone()).upcast(),
@@ -138,8 +139,26 @@ impl HomeView {
                 title: "Settings",
                 icon: "settings-symbolic",
                 section: Section::Settings,
-                feature: None, // always show settings
-                widget: SettingsPage::page(),
+                feature: None,
+                widget: SettingsPage::page({
+                    let ww = window.downgrade();
+                    move || {
+                        if let Some(win) = ww.upgrade() {
+                            let ww2 = ww.clone();
+                            let setup = crate::pages::setup_page::SetupPage::new(
+                                move |product_id| {
+                                    if let Some(win) = ww2.upgrade() {
+                                        let home = HomeView::new(&win, product_id);
+                                        win.set_content(Some(&home));
+                                    }
+                                }
+                            );
+                            let toast = libadwaita::ToastOverlay::new();
+                            toast.set_child(Some(&setup));
+                            win.set_content(Some(&toast));
+                        }
+                    }
+                }),
             },
         ];
 
@@ -223,14 +242,32 @@ impl HomeView {
             .max_sidebar_width(280.0)
             .sidebar_width_fraction(0.28)
             .build();
+
+        // Create content_scroll early so we can reference it in the selection handler
+        let content_scroll = gtk4::ScrolledWindow::new();
+        content_scroll.set_hscrollbar_policy(gtk4::PolicyType::Never);
+        content_scroll.set_vexpand(true);
+
         {
             let stack = content_stack.clone();
             let row_to_id = row_to_id.clone();
             let split_view_weak = split_view.downgrade();
+            let content_scroll = content_scroll.clone();
             sidebar_list.connect_row_selected(move |_, row| {
                 let Some(row) = row else { return };
                 if let Some((_, id)) = row_to_id.iter().find(|(r, _)| r == row) {
                     stack.set_visible_child_name(id);
+                    // Reset the outer content scroll AND all inner scrolls
+                    content_scroll.vadjustment().set_value(0.0);
+                    let id_owned = id.to_string();
+                    let stack_weak = stack.downgrade();
+                    glib::idle_add_local_once(move || {
+                        if let Some(s) = stack_weak.upgrade() {
+                            if let Some(child) = s.child_by_name(&id_owned) {
+                                reset_scroll(&child);
+                            }
+                        }
+                    });
                     if let Some(sv) = split_view_weak.upgrade() {
                         if sv.is_collapsed() {
                             sv.set_show_sidebar(false);
@@ -240,10 +277,13 @@ impl HomeView {
             });
         }
         
+        // Now set the stack as child of content_scroll
+        content_scroll.set_child(Some(&content_stack));
+        
         let sidebar_header = HeaderBar::builder()
             .show_title(false)
             .build();
-        let sidebar_title = libadwaita::WindowTitle::new("SpacePods", "");
+        let sidebar_title = libadwaita::WindowTitle::new("SpacePods Linux", "Earbud Manager");
         sidebar_header.set_title_widget(Some(&sidebar_title));
 
         let sidebar_scroll = gtk4::ScrolledWindow::new();
@@ -259,14 +299,26 @@ impl HomeView {
         sidebar_toolbar.set_content(Some(&sidebar_content));
         
         let content_header = HeaderBar::new();
-        let content_title = libadwaita::WindowTitle::new("", "");
-        content_header.set_title_widget(Some(&content_title));
-        content_header.set_show_back_button(false);
-
-        let content_scroll = gtk4::ScrolledWindow::new();
-        content_scroll.set_hscrollbar_policy(gtk4::PolicyType::Never);
-        content_scroll.set_vexpand(true);
-        content_scroll.set_child(Some(&content_stack));
+        let back_btn = gtk4::Button::from_icon_name("go-previous-symbolic");
+        back_btn.add_css_class("flat");
+        back_btn.set_visible(false);
+        content_header.pack_start(&back_btn);
+        content_header.set_title_widget(Some(&libadwaita::WindowTitle::new("", "")));
+        {
+            let split_view_weak = split_view.downgrade();
+            back_btn.connect_clicked(move |_| {
+                if let Some(sv) = split_view_weak.upgrade() {
+                    sv.set_show_sidebar(true);
+                }
+            });
+        }
+        split_view.connect_collapsed_notify(glib::clone!(
+            #[weak] back_btn,
+            move |sv| {
+                back_btn.set_visible(sv.is_collapsed());
+            }
+        ));
+        back_btn.set_visible(split_view.is_collapsed());
 
         let content_toolbar = ToolbarView::new();
         content_toolbar.add_top_bar(&content_header);
@@ -287,5 +339,17 @@ impl HomeView {
         window.add_breakpoint(breakpoint);
 
         toast_overlay
+    }
+}
+
+/// Recursively find all ScrolledWindows and reset their vertical scroll to top.
+fn reset_scroll(widget: &gtk4::Widget) {
+    if let Some(sw) = widget.downcast_ref::<gtk4::ScrolledWindow>() {
+        sw.vadjustment().set_value(0.0);
+    }
+    let mut child = widget.first_child();
+    while let Some(c) = child {
+        reset_scroll(&c);
+        child = c.next_sibling();
     }
 }

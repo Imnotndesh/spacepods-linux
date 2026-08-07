@@ -111,9 +111,9 @@ impl EqPage {
 
         {
             let gains_ref = current_gains.clone();
-            drawing.set_draw_func(move |_area, cr, width, height| {
+            drawing.set_draw_func(move |area, cr, width, height| {
                 let gains = gains_ref.borrow();
-                draw_eq_curve(cr, width as f64, height as f64, &*gains);
+                draw_eq_curve(area, cr, width as f64, height as f64, &*gains);
             });
         }
 
@@ -505,8 +505,9 @@ fn make_preset_button(name: &str, gains: &[i8; 7], is_custom: bool) -> ToggleBut
     preview.set_content_height(36);
     preview.set_hexpand(true);
     let g = *gains;
-    preview.set_draw_func(move |_area, cr, w, h| {
-        draw_mini_curve(cr, w as f64, h as f64, &g);
+    preview.set_draw_func(move |area, cr, w, h| {
+        let (ar, ag, ab) = accent_color_from_drawing(area);
+        draw_mini_curve(cr, w as f64, h as f64, &g, (ar, ag, ab));
     });
 
     let name_lbl = Label::new(Some(name));
@@ -526,6 +527,16 @@ fn make_preset_button(name: &str, gains: &[i8; 7], is_custom: bool) -> ToggleBut
     btn
 }
 
+fn accent_color_from_drawing(area: &DrawingArea) -> (f64, f64, f64) {
+    let color = area.style_context().color();
+    (color.red() as f64, color.green() as f64, color.blue() as f64)
+}
+
+fn get_accent_rgba(area: &DrawingArea, alpha: f64) -> (f64, f64, f64, f64) {
+    let (r, g, b) = accent_color_from_drawing(area);
+    (r, g, b, alpha)
+}
+
 fn db_to_y(db: f64, height: f64) -> f64 {
     height * (1.0 - (db.max(-12.0).min(12.0) + 12.0) / 24.0)
 }
@@ -534,7 +545,8 @@ fn band_center_x(i: usize, n: usize, width: f64) -> f64 {
     ((i as f64 + 0.5) / n as f64) * width
 }
 
-fn draw_eq_curve(cr: &gtk4::cairo::Context, w: f64, h: f64, gains: &[i8]) {
+fn draw_eq_curve(area: &DrawingArea, cr: &gtk4::cairo::Context, w: f64, h: f64, gains: &[i8]) {
+    let (ar, ag, ab) = accent_color_from_drawing(area);
     let n = gains.len();
 
     for &db in &[-12.0f64, -6.0, 0.0, 6.0, 12.0] {
@@ -573,7 +585,7 @@ fn draw_eq_curve(cr: &gtk4::cairo::Context, w: f64, h: f64, gains: &[i8]) {
     }
     cr.line_to(pts[n-1].0, h);
     cr.close_path();
-    cr.set_source_rgba(0.208, 0.518, 0.894, 0.18);
+    cr.set_source_rgba(ar, ag, ab, 0.18);
     let _ = cr.fill();
 
     cr.new_path();
@@ -582,13 +594,13 @@ fn draw_eq_curve(cr: &gtk4::cairo::Context, w: f64, h: f64, gains: &[i8]) {
         let cpx = (pts[i-1].0 + pts[i].0) / 2.0;
         cr.curve_to(cpx, pts[i-1].1, cpx, pts[i].1, pts[i].0, pts[i].1);
     }
-    cr.set_source_rgba(0.208, 0.518, 0.894, 0.95);
+    cr.set_source_rgba(ar, ag, ab, 0.95);
     cr.set_line_width(2.5);
     let _ = cr.stroke();
 
     for &(x, y) in &pts {
         cr.arc(x, y, 4.5, 0.0, std::f64::consts::TAU);
-        cr.set_source_rgba(0.208, 0.518, 0.894, 1.0);
+        cr.set_source_rgba(ar, ag, ab, 1.0);
         let _ = cr.fill();
         cr.arc(x, y, 4.5, 0.0, std::f64::consts::TAU);
         cr.set_source_rgba(1.0, 1.0, 1.0, 0.9);
@@ -597,7 +609,8 @@ fn draw_eq_curve(cr: &gtk4::cairo::Context, w: f64, h: f64, gains: &[i8]) {
     }
 }
 
-fn draw_mini_curve(cr: &gtk4::cairo::Context, w: f64, h: f64, gains: &[i8; 7]) {
+fn draw_mini_curve(cr: &gtk4::cairo::Context, w: f64, h: f64, gains: &[i8; 7], accent: (f64, f64, f64)) {
+    let (ar, ag, ab) = accent;
     let n = gains.len();
     let pts: Vec<(f64, f64)> = (0..n)
         .map(|i| (band_center_x(i, n, w), db_to_y(gains[i] as f64, h)))
@@ -612,7 +625,7 @@ fn draw_mini_curve(cr: &gtk4::cairo::Context, w: f64, h: f64, gains: &[i8; 7]) {
     }
     cr.line_to(pts[n-1].0, h);
     cr.close_path();
-    cr.set_source_rgba(0.208, 0.518, 0.894, 0.22);
+    cr.set_source_rgba(ar, ag, ab, 0.22);
     let _ = cr.fill();
 
     cr.new_path();
@@ -621,7 +634,7 @@ fn draw_mini_curve(cr: &gtk4::cairo::Context, w: f64, h: f64, gains: &[i8; 7]) {
         let cpx = (pts[i-1].0 + pts[i].0) / 2.0;
         cr.curve_to(cpx, pts[i-1].1, cpx, pts[i].1, pts[i].0, pts[i].1);
     }
-    cr.set_source_rgba(0.208, 0.518, 0.894, 0.85);
+    cr.set_source_rgba(ar, ag, ab, 0.85);
     cr.set_line_width(1.5);
     let _ = cr.stroke();
 }

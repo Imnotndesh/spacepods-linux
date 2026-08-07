@@ -129,7 +129,19 @@ impl DeviceScanner {
         for p in found {
             let name = Self::resolve_device_name(&p).await;
             let address = p.address().to_string();
-            devices.push(ScannedDevice { name, address });
+            devices.push(ScannedDevice {
+                name,
+                address,
+                product_name: None,
+                product_id: None,
+                real_mac: None,
+                beacon_version: None,
+                battery_left: None,
+                battery_right: None,
+                battery_case: None,
+                already_connected: false,
+                rssi: None,
+            });
         }
 
         Ok(devices)

@@ -157,12 +157,6 @@ impl AncPage {
         offline_status.set_visible(false);
         offline_status.set_vexpand(true);
 
-        // ── Refresh button ──
-        let refresh_btn = gtk4::Button::with_label("Refresh");
-        refresh_btn.add_css_class("flat");
-        refresh_btn.set_halign(gtk4::Align::Center);
-        refresh_btn.set_margin_top(4);
-
         container.append(&header_row);
         container.append(&refresh_btn);
         container.append(&mode_row);

@@ -3,6 +3,7 @@ pub mod errors;
 pub mod connection;
 pub mod commands;
 pub mod ipc;
+pub mod beacon;
 pub mod cli;
 pub mod device_profile;
 pub mod log;
@@ -66,7 +67,12 @@ impl SpaceBuds {
 
     /// Connect to the device.
     pub async fn connect(&self) -> Result<()> {
-        self.manager.connect().await
+        self.manager.connect(None).await
+    }
+
+    /// Connect to a specific device by BLE address.
+    pub async fn connect_to(&self, address: &str) -> Result<()> {
+        self.manager.connect(Some(address)).await
     }
 
     /// Disconnect from the device.
@@ -196,7 +202,7 @@ impl SpaceBudsBuilder {
         };
 
         if self.auto_connect {
-            buds.manager.connect().await?;
+            buds.manager.connect(None).await?;
         }
 
         Ok(buds)

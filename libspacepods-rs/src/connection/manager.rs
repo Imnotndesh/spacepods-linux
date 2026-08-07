@@ -74,7 +74,7 @@ impl ConnectionManager {
 
     // ── Connection lifecycle ──
 
-    pub async fn connect(&self) -> Result<()> {
+    pub async fn connect(&self, address: Option<&str>) -> Result<()> {
         let already_connected = {
             let inner = self.inner.read().await;
             if let Some(ref conn) = inner.connection {
@@ -85,14 +85,41 @@ impl ConnectionManager {
             inner.connection.is_some()
         };
 
-        // If we had an old connection, disconnect first
         if already_connected {
             self.disconnect().await?;
         }
 
         self.set_state(ConnectionState::Scanning).await;
 
-        let peripheral = DeviceScanner::find_device(self.config.scan_timeout).await?;
+        let peripheral = if let Some(addr) = address {
+            // Quick targeted scan to find the peripheral by address
+            use btleplug::platform::Manager;
+            use btleplug::api::{Central, Manager as _, Peripheral as _, ScanFilter};
+            use std::str::FromStr;
+            let manager = Manager::new().await?;
+            let adapters = manager.adapters().await?;
+            let adapter = adapters.into_iter().next()
+                .ok_or(Error::DeviceNotFound { retries: 0 })?;
+            let bdaddr = btleplug::api::BDAddr::from_str(addr)
+                .map_err(|_| Error::Ipc(format!("Invalid address: {}", addr)))?;
+            // Scan briefly with service filter to discover the peripheral
+            adapter.start_scan(ScanFilter {
+                services: vec![crate::protocol::UUID_FF17, crate::protocol::UUID_FE2C],
+            }).await?;
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            let peripherals = adapter.peripherals().await?;
+            let _ = adapter.stop_scan().await;
+            let mut found = None;
+            for p in &peripherals {
+                if p.address() == bdaddr {
+                    found = Some(p.clone());
+                    break;
+                }
+            }
+            found.ok_or(Error::DeviceNotFound { retries: 0 })?
+        } else {
+            DeviceScanner::find_device(self.config.scan_timeout).await?
+        };
 
         self.set_state(ConnectionState::Connecting).await;
 
@@ -120,7 +147,7 @@ impl ConnectionManager {
         self.set_state(ConnectionState::Reconnecting).await;
 
         // Try normal reconnect first
-        if let Ok(()) = self.connect().await {
+        if let Ok(()) = self.connect(None).await {
             return Ok(());
         }
 

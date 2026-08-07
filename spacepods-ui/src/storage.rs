@@ -25,6 +25,16 @@ pub fn load_known_devices() -> Vec<KnownDevice> {
         .unwrap_or_default()
 }
 
+pub fn remove_known_device(address: &str) {
+    let mut devices = load_known_devices();
+    devices.retain(|d| d.address != address);
+    let path = devices_file();
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write(&path, serde_json::to_string_pretty(&devices).unwrap());
+}
+
 pub fn add_known_device(name: String, address: String) {
     let mut devices = load_known_devices();
     devices.retain(|d| d.address != address);

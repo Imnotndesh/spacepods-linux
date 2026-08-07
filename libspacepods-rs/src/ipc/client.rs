@@ -127,6 +127,11 @@ impl SpacePodsClient {
         Ok(())
     }
 
+    pub async fn disconnect_device(&mut self) -> Result<()> {
+        self.send_command_raw(ServiceCommand::Disconnect).await?;
+        Ok(())
+    }
+
     /// Subscribe to real-time status updates.
     /// Returns a broadcast receiver that yields `DeviceStatus` values.
     pub async fn subscribe(&mut self) -> Result<broadcast::Receiver<DeviceStatus>> {
