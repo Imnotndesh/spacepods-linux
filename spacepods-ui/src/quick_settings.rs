@@ -2,22 +2,20 @@
 //!
 //! A lightweight, standalone popup window positioned near the tray icon
 //! using coordinates received from the SNI activate signal. Contains
-//! battery rings, Noise Control segmented control, Ambient Level slider,
+//! Noise Control segmented control, Ambient Level slider,
 //! and Conversation Awareness toggle.
 
 use std::cell::Cell;
 use std::rc::Rc;
 
 use gtk4::prelude::*;
-use gtk4::{Box, Button, Label, Orientation, Scale, DrawingArea, ToggleButton, Window};
-use gtk4::cairo;
+use gtk4::{Box, Button, Label, Orientation, Scale, ToggleButton, Window};
 
 use crate::context::AppContext;
 use crate::log::Log;
 
 /// Build and pop up the quick-settings panel as a standalone popup window
-/// near the given screen coordinates. Returns the window (it will be
-/// destroyed automatically when it loses focus or is dismissed by the user).
+/// near the given screen coordinates.
 pub fn show_popup(ctx: &Rc<AppContext>, x: i32, y: i32) {
     let panel = build_panel(ctx);
 
@@ -38,13 +36,13 @@ pub fn show_popup(ctx: &Rc<AppContext>, x: i32, y: i32) {
     });
 
     window.show();
-    // FIXME: position near the tray icon using wayland/x11 popup protocol.
     let _ = (x, y);
 }
 
 /// Build the quick-settings panel (the contents of the popup window).
 fn build_panel(ctx: &Rc<AppContext>) -> Box {
     let panel = Box::new(Orientation::Vertical, 0);
+    panel.set_size_request(260, -1);
 
     // ── Header strip ──
     let header = Box::new(Orientation::Horizontal, 8);
@@ -60,18 +58,6 @@ fn build_panel(ctx: &Rc<AppContext>) -> Box {
     title.set_hexpand(true);
 
     header.append(&title);
-
-    // ── Battery row ──
-    let battery_row = Box::new(Orientation::Horizontal, 12);
-    battery_row.set_halign(gtk4::Align::Center);
-    battery_row.set_margin_bottom(12);
-
-    let left_ring = BatteryRing::new('L');
-    let right_ring = BatteryRing::new('R');
-    let left_wg = left_ring.widget();
-    let right_wg = right_ring.widget();
-    battery_row.append(&left_wg);
-    battery_row.append(&right_wg);
 
     // ── Noise control segmented control ──
     let noise_label = Label::new(Some("Noise Control"));
@@ -145,7 +131,6 @@ fn build_panel(ctx: &Rc<AppContext>) -> Box {
     chat_block.append(&chat_row);
 
     panel.append(&header);
-    panel.append(&battery_row);
     panel.append(&noise_block);
     panel.append(&level_block);
     panel.append(&chat_block);
@@ -153,7 +138,6 @@ fn build_panel(ctx: &Rc<AppContext>) -> Box {
     // Wire to the daemon.
     let ctx = ctx.clone();
     wiring(
-        left_ring, right_ring,
         off_btn.clone(), trans_btn.clone(), anc_btn.clone(),
         level.clone(), minus_btn.clone(), plus_btn.clone(),
         chat_on.clone(), chat_off.clone(),
@@ -164,8 +148,6 @@ fn build_panel(ctx: &Rc<AppContext>) -> Box {
 }
 
 fn wiring(
-    left_ring: BatteryRing,
-    right_ring: BatteryRing,
     off_btn: ToggleButton,
     trans_btn: ToggleButton,
     anc_btn: ToggleButton,
@@ -180,8 +162,6 @@ fn wiring(
 
     // Populate initial state from the daemon.
     {
-        let left_ring = left_ring.clone();
-        let right_ring = right_ring.clone();
         let off_btn = off_btn.clone();
         let trans_btn = trans_btn.clone();
         let anc_btn = anc_btn.clone();
@@ -195,8 +175,6 @@ fn wiring(
                 match SpacePodsClient::connect(None).await {
                     Ok(mut client) => match client.get_status().await {
                         Ok(s) => {
-                            left_ring.set_percent(s.battery.left);
-                            right_ring.set_percent(s.battery.right);
                             match s.anc.mode as u8 {
                                 0 => off_btn.set_active(true),
                                 1 => anc_btn.set_active(true),
@@ -211,9 +189,8 @@ fn wiring(
                                 if v { chat_on.set_active(true); } else { chat_off.set_active(true); }
                             }
                             Log::full("QUICKSET", &format!(
-                                "batt={:?}/{:?} mode={} level={} adaptive={:?}",
-                                s.battery.left, s.battery.right, s.anc.mode as u8,
-                                s.anc.level, s.features.adaptive_anc
+                                "mode={} level={} adaptive={:?}",
+                                s.anc.mode as u8, s.anc.level, s.features.adaptive_anc
                             ));
                         }
                         Err(e) => ctx.daemon_unreachable(e),
@@ -284,65 +261,4 @@ fn set_adaptive(on: bool, ctx: &Rc<AppContext>) {
             Err(e) => ctx.daemon_unreachable(e),
         }
     });
-}
-
-// ───────────────────────────────────────────────────────────────────────
-// Battery ring (cairo-drawn)
-// ───────────────────────────────────────────────────────────────────────
-
-#[derive(Clone)]
-struct BatteryRing {
-    area: DrawingArea,
-    percent: Rc<Cell<f64>>,
-}
-
-impl BatteryRing {
-    fn new(badge: char) -> Self {
-        let percent: Rc<Cell<f64>> = Rc::new(Cell::new(0.0));
-        let area = DrawingArea::new();
-        area.set_size_request(64, 64);
-
-        let p = percent.clone();
-        area.set_draw_func(move |_, cr, w, h| {
-            let pct = p.get();
-            let cx = w as f64 / 2.0;
-            let cy = h as f64 / 2.0;
-            let radius = (w.min(h) as f64 / 2.0) - 6.0;
-
-            cr.set_source_rgba(0.25, 0.25, 0.27, 1.0);
-            cr.set_line_width(5.0);
-            cr.set_line_cap(cairo::LineCap::Round);
-            cr.arc(cx, cy, radius, 0.0, std::f64::consts::TAU);
-            let _ = cr.stroke();
-
-            let frac = (pct / 100.0).clamp(0.0, 1.0);
-            if frac > 0.001 {
-                let start = -std::f64::consts::FRAC_PI_2;
-                let end = start + frac * std::f64::consts::TAU;
-                cr.set_source_rgba(0.35, 0.9, 0.45, 1.0);
-                cr.arc(cx, cy, radius, start, end);
-                let _ = cr.stroke();
-            }
-
-            cr.set_source_rgba(1.0, 1.0, 1.0, 0.85);
-            cr.select_font_face("sans-serif", cairo::FontSlant::Normal, cairo::FontWeight::Bold);
-            cr.set_font_size((radius * 0.32).max(8.0));
-            let txt = format!("{}  {}", badge, pct.round() as u64);
-            if let Ok(extents) = cr.text_extents(&txt) {
-                cr.move_to(cx - extents.width() / 2.0, cy + extents.height() / 2.0);
-                let _ = cr.show_text(&txt);
-            }
-        });
-
-        Self { area, percent }
-    }
-
-    fn widget(&self) -> DrawingArea {
-        self.area.clone()
-    }
-
-    fn set_percent(&self, value: Option<u8>) {
-        self.percent.set(value.unwrap_or(0) as f64);
-        self.area.queue_draw();
-    }
 }
