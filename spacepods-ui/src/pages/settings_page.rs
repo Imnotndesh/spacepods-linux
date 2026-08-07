@@ -38,6 +38,16 @@ impl SettingsPage {
         });
         general_group.add(&autostart_row);
 
+        let tray_row = SwitchRow::new();
+        tray_row.set_title("Close to tray");
+        tray_row.set_subtitle("Closing the window keeps SpacePods running in the background");
+        tray_row.set_active(saved_settings.close_to_background);
+        tray_row.connect_active_notify(|row| {
+            let enabled = row.is_active();
+            update_settings(|s| s.close_to_background = enabled);
+        });
+        general_group.add(&tray_row);
+
         // Service
         let service_group = PreferencesGroup::new();
         service_group.set_title("Background Service");

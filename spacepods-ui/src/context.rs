@@ -16,6 +16,10 @@ use crate::tray::TrayHandle;
 #[derive(Clone, Default)]
 pub struct WindowController {
     window: Rc<std::cell::RefCell<glib::WeakRef<libadwaita::ApplicationWindow>>>,
+    /// Set when a real quit is requested (e.g. via tray "Quit") so the window's
+    /// close-request handler allows the window to actually close instead of
+    /// hiding-to-background.
+    force_close: Rc<std::cell::Cell<bool>>,
 }
 
 impl WindowController {
@@ -47,6 +51,23 @@ impl WindowController {
         if let Some(w) = self.upgrade() {
             w.close();
         }
+    }
+
+    /// Whether a real quit has been requested (bypasses close-to-background).
+    pub fn force_close_requested(&self) -> bool {
+        self.force_close.get()
+    }
+
+    /// Clear the real-quit flag after it has been honoured.
+    pub fn clear_force_close(&self) {
+        self.force_close.set(false);
+    }
+
+    /// Request a real quit: the window will be allowed to close on its next
+    /// close request regardless of the close-to-background setting.
+    pub fn force_quit(&self) {
+        self.force_close.set(true);
+        self.close();
     }
 
     /// Whether the window is currently visible.

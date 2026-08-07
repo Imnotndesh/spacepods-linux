@@ -20,10 +20,8 @@ fn drain_tray_commands(rx: std::sync::mpsc::Receiver<TrayCommand>, window: Rc<Wi
                 TrayCommand::PresentWindow => window.present(),
                 TrayCommand::HideWindow => window.hide(),
                 TrayCommand::Quit => {
-                    // Close the window; with close-to-background disabled this
-                    // quits the app. (Close-to-background is wired in a later
-                    // step and will draw the distinction there.)
-                    window.close();
+                    // A real quit that bypasses close-to-background.
+                    window.force_quit();
                 }
                 _ => {}
             }
@@ -66,6 +64,24 @@ pub fn run_app() -> glib::ExitCode {
         window.set_default_size(850, 600);
         window.set_width_request(360);
         window.set_height_request(480);
+
+        // Close-to-background: when the setting is enabled, closing the window
+        // hides it (the tray keeps the app alive) instead of quitting. A tray
+        // "Quit" bypasses this via WindowController::force_quit().
+        let close_wc = window_controller.clone();
+        window.connect_close_request(move |win| {
+            // Real quit requested (tray Quit / etc.).
+            if close_wc.force_close_requested() {
+                close_wc.clear_force_close();
+                return glib::Propagation::Proceed;
+            }
+            if crate::storage::load_settings().close_to_background {
+                win.set_visible(false);
+                glib::Propagation::Stop
+            } else {
+                glib::Propagation::Proceed
+            }
+        });
 
         // Wrap everything in a ToastOverlay so toasts work everywhere
         let toast_overlay = ToastOverlay::new();
