@@ -7,57 +7,77 @@ on:
 
 permissions:
   contents: write
-  packages: write
 
 jobs:
-  # ── Build and release libspacepods CLI binary ──
+  # ── Build libspacepods CLI ──
   libspacepods:
-    name: Build libspacepods (${{ matrix.target }})
+    name: Build libspacepods (x86_64)
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        target:
-          - x86_64-unknown-linux-gnu
-          - aarch64-unknown-linux-gnu
-
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
+      - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
 
-      - name: Install cross-compilation dependencies
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
-
-      - name: Install system dependencies
+      - name: Install system deps
         run: |
           sudo apt-get update
           sudo apt-get install -y libdbus-1-dev libglib2.0-dev
 
-      - name: Build libspacepods
+      - name: Build
         env:
           GIT_TAG: ${{ github.ref_name }}
-        run: cargo build --release -p libspacepods --bin libspacepods --target ${{ matrix.target }}
+        run: cargo build --release -p libspacepods --bin libspacepods
 
-      - name: Strip binary
-        run: strip target/${{ matrix.target }}/release/libspacepods
+      - name: Strip
+        run: strip target/release/libspacepods
 
-      - name: Package
+      - name: Package tar.gz
         run: |
           mkdir -p release
-          cp target/${{ matrix.target }}/release/libspacepods release/libspacepods-${{ matrix.target }}
-          cd release && tar -czf libspacepods-${{ matrix.target }}.tar.gz libspacepods-${{ matrix.target }}
+          cp target/release/libspacepods release/
+          cd release && tar -czf libspacepods-x86_64.tar.gz libspacepods
 
       - name: Upload artifact
         uses: actions/upload-artifact@v5
         with:
-          name: libspacepods-${{ matrix.target }}
-          path: release/libspacepods-${{ matrix.target }}.tar.gz
+          name: libspacepods-x86_64
+          path: release/libspacepods-x86_64.tar.gz
+
+  # ── Build spacepods-ui binary ──
+  spacepods-ui:
+    name: Build spacepods-ui (x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev libglib2.0-dev
+
+      - name: Build
+        env:
+          GIT_TAG: ${{ github.ref_name }}
+        run: cargo build --release -p spacepods-ui
+
+      - name: Strip
+        run: strip target/release/spacepods-ui
+
+      - name: Package tar.gz
+        run: |
+          mkdir -p release
+          cp target/release/spacepods-ui release/
+          cd release && tar -czf spacepods-ui-x86_64.tar.gz spacepods-ui
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: spacepods-ui-x86_64
+          path: release/spacepods-ui-x86_64.tar.gz
 
   # ── Build Flatpak ──
   flatpak:
@@ -66,11 +86,10 @@ jobs:
     container:
       image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-47
       options: --privileged
-
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
+      - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Build Flatpak
@@ -80,72 +99,60 @@ jobs:
           manifest-path: spacepods-ui/com.spacepods.ui.json
           cache-key: flatpak-builder-${{ github.sha }}
 
-      - name: Upload Flatpak bundle
+      - name: Upload Flatpak
         uses: actions/upload-artifact@v5
         with:
           name: spacepods-flatpak
           path: spacepods.flatpak
 
-  # ── Create GitHub Release ──
+  # ── Release ──
   release:
     name: Create Release
     runs-on: ubuntu-latest
-    needs: [libspacepods, flatpak]
-
+    needs: [libspacepods, spacepods-ui, flatpak]
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download all artifacts
+      - name: Download artifacts
         uses: actions/download-artifact@v5
         with:
           path: artifacts
 
-      - name: Prepare release assets
+      - name: Prepare assets
         env:
           GITHUB_REPOSITORY: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
           mkdir -p release-assets
-          cp artifacts/libspacepods-x86_64-unknown-linux-gnu/libspacepods-x86_64-unknown-linux-gnu.tar.gz release-assets/
-          cp artifacts/libspacepods-aarch64-unknown-linux-gnu/libspacepods-aarch64-unknown-linux-gnu.tar.gz release-assets/
+          cp artifacts/libspacepods-x86_64/libspacepods-x86_64.tar.gz release-assets/
+          cp artifacts/spacepods-ui-x86_64/spacepods-ui-x86_64.tar.gz release-assets/
           cp artifacts/spacepods-flatpak/spacepods.flatpak release-assets/
 
-          # Create install script
           cat > release-assets/install.sh << SCRIPT
           #!/bin/sh
           set -eu
-          ARCH=\$(uname -m)
-          case "\$ARCH" in
-            x86_64)  TARGET="x86_64-unknown-linux-gnu" ;;
-            aarch64) TARGET="aarch64-unknown-linux-gnu" ;;
-            *)       echo "Unsupported architecture: \$ARCH"; exit 1 ;;
-          esac
-          echo "Installing libspacepods ${TAG} for \$TARGET..."
-          URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/libspacepods-\${TARGET}.tar.gz"
+          echo "Installing libspacepods ${TAG}..."
+          URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/libspacepods-x86_64.tar.gz"
           curl -sSL "\$URL" | sudo tar -xzf - -C /usr/local/bin
-          sudo chmod +x /usr/local/bin/libspacepods-\${TARGET}
-          sudo ln -sf /usr/local/bin/libspacepods-\${TARGET} /usr/local/bin/libspacepods
-          echo "libspacepods ${TAG} installed! Run 'libspacepods service' to start."
+          echo "libspacepods ${TAG} installed. Run 'libspacepods service' to start."
           SCRIPT
           chmod +x release-assets/install.sh
 
-          # Generate release notes
           cat > release-assets/notes.md << NOTES
           ## SpacePods Linux ${TAG}
 
-          ### libspacepods (CLI daemon)
+          ### libspacepods daemon
           \`\`\`sh
           curl -sSL https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/install.sh | sudo sh
           \`\`\`
 
-          ### SpacePods UI (Flatpak)
+          ### spacepods-ui binary
+          Download \`spacepods-ui-x86_64.tar.gz\` and extract.
+
+          ### Flatpak
           \`\`\`sh
           flatpak install --user spacepods.flatpak
           \`\`\`
-
-          ## Running
-          1. Start daemon: \`libspacepods service\`
-          2. Launch UI: \`flatpak run com.spacepods.ui\`
           NOTES
 
       - name: Create Release
@@ -153,8 +160,6 @@ jobs:
         with:
           files: release-assets/*
           body_path: release-assets/notes.md
-          draft: false
-          prerelease: false
           name: ${{ github.ref_name }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
