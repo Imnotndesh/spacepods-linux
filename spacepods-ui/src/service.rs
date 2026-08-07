@@ -11,11 +11,12 @@ pub fn write_autostart_entry(enable: bool) {
     if enable {
         let content = "[Desktop Entry]\n\
             Type=Application\n\
-            Name=SpacePods\n\
-            Exec=spacepods\n\
-            Icon=audio-headset\n\
+            Name=SpacePods Linux\n\
+            Exec=spacepods-ui\n\
+            Icon=com.spacepods.ui\n\
             Comment=SpacePods earbuds manager\n\
-            X-GNOME-Autostart-enabled=true\n";
+            X-GNOME-Autostart-enabled=true\n\
+            ";
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
