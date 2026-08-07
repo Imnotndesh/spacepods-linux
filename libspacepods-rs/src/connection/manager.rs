@@ -1,0 +1,279 @@
+use crate::commands::BleCommand;
+use crate::connection::ble::BleConnection;
+use crate::connection::scanner::DeviceScanner;
+use crate::protocol::{ConnectionState, Packet, TlvParser, CMD_HANDSHAKE,
+    ID_ANC_MODE, ID_ANC_GAIN, ID_ANC_MAX, ID_TRANS_GAIN, ID_TRANS_MAX,
+    ID_EQ_SETTING, ID_ENV_ADAPTIVE, ID_DUAL_DEVICE, ID_KEY_SETTINGS,
+    ID_WORK_MODE, ID_IN_EAR_STATUS, ID_AUTO_ANSWER,
+    ID_TONE_VOLUME, ID_HEARING_CARE, ID_VOICE_PROMPT,
+};
+use crate::{Error, Result};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::{broadcast, Mutex, RwLock};
+
+#[derive(Debug, Clone)]
+pub struct ConnectionConfig {
+    pub scan_timeout: Duration,
+    pub max_retries: usize,
+    pub reconnect_delay: Duration,
+}
+
+impl Default for ConnectionConfig {
+    fn default() -> Self {
+        Self {
+            scan_timeout: Duration::from_secs(10),
+            max_retries: 3,
+            reconnect_delay: Duration::from_secs(1),
+        }
+    }
+}
+
+struct Inner {
+    state: ConnectionState,
+    connection: Option<BleConnection>,
+}
+
+/// Manages the BLE connection lifecycle with a state machine.
+/// All access goes through `send()`.
+/// Battery tracking has been removed — the OS Bluetooth stack handles this.
+pub struct ConnectionManager {
+    inner: Arc<RwLock<Inner>>,
+    config: ConnectionConfig,
+    state_tx: broadcast::Sender<ConnectionState>,
+}
+
+impl ConnectionManager {
+    pub fn new(config: ConnectionConfig) -> Self {
+        let (state_tx, _) = broadcast::channel(16);
+        Self {
+            inner: Arc::new(RwLock::new(Inner {
+                state: ConnectionState::Disconnected,
+                connection: None,
+            })),
+            config,
+            state_tx,
+        }
+    }
+
+    // ── State management ──
+
+    pub fn state(&self) -> ConnectionState {
+        self.inner.try_read().map(|i| i.state.clone()).unwrap_or(ConnectionState::Disconnected)
+    }
+
+    pub fn subscribe_state(&self) -> broadcast::Receiver<ConnectionState> {
+        self.state_tx.subscribe()
+    }
+
+    async fn set_state(&self, new_state: ConnectionState) {
+        let mut inner = self.inner.write().await;
+        inner.state = new_state.clone();
+        let _ = self.state_tx.send(new_state);
+    }
+
+    // ── Connection lifecycle ──
+
+    pub async fn connect(&self, address: Option<&str>) -> Result<()> {
+        let already_connected = {
+            let inner = self.inner.read().await;
+            if let Some(ref conn) = inner.connection {
+                if conn.is_connected().await {
+                    return Ok(());
+                }
+            }
+            inner.connection.is_some()
+        };
+
+        if already_connected {
+            self.disconnect().await?;
+        }
+
+        self.set_state(ConnectionState::Scanning).await;
+
+        let peripheral = if let Some(addr) = address {
+            // Quick targeted scan to find the peripheral by address
+            use btleplug::platform::Manager;
+            use btleplug::api::{Central, Manager as _, Peripheral as _, ScanFilter};
+            use std::str::FromStr;
+            let manager = Manager::new().await?;
+            let adapters = manager.adapters().await?;
+            let adapter = adapters.into_iter().next()
+                .ok_or(Error::DeviceNotFound { retries: 0 })?;
+            let bdaddr = btleplug::api::BDAddr::from_str(addr)
+                .map_err(|_| Error::Ipc(format!("Invalid address: {}", addr)))?;
+            // Scan briefly with service filter to discover the peripheral
+            adapter.start_scan(ScanFilter {
+                services: vec![crate::protocol::UUID_FF17, crate::protocol::UUID_FE2C],
+            }).await?;
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            let peripherals = adapter.peripherals().await?;
+            let _ = adapter.stop_scan().await;
+            let mut found = None;
+            for p in &peripherals {
+                if p.address() == bdaddr {
+                    found = Some(p.clone());
+                    break;
+                }
+            }
+            found.ok_or(Error::DeviceNotFound { retries: 0 })?
+        } else {
+            DeviceScanner::find_device(self.config.scan_timeout).await?
+        };
+
+        self.set_state(ConnectionState::Connecting).await;
+
+        let conn = BleConnection::new(peripheral).await?;
+
+        let mut inner = self.inner.write().await;
+        inner.connection = Some(conn);
+        inner.state = ConnectionState::Connected;
+        let _ = self.state_tx.send(ConnectionState::Connected);
+
+        Ok(())
+    }
+
+    pub async fn disconnect(&self) -> Result<()> {
+        let mut inner = self.inner.write().await;
+        if let Some(conn) = inner.connection.take() {
+            conn.disconnect().await?;
+        }
+        inner.state = ConnectionState::Disconnected;
+        let _ = self.state_tx.send(ConnectionState::Disconnected);
+        Ok(())
+    }
+
+    pub async fn reconnect(&self) -> Result<()> {
+        self.set_state(ConnectionState::Reconnecting).await;
+
+        // Try normal reconnect first
+        if let Ok(()) = self.connect(None).await {
+            return Ok(());
+        }
+
+        // Fall back to rediscovery reconnect
+        let inner = self.inner.read().await;
+        if let Some(ref conn) = inner.connection {
+            conn.reconnect_with_rediscovery().await?;
+            return Ok(());
+        }
+
+        Err(Error::ConnectionLost)
+    }
+
+    /// Ensure we have an active connection, reconnecting if needed.
+    pub async fn ensure_connected(&self) -> Result<()> {
+        let is_ok = {
+            let inner = self.inner.read().await;
+            match inner.connection.as_ref() {
+                Some(conn) => conn.is_connected().await,
+                None => false,
+            }
+        };
+
+        if is_ok {
+            return Ok(());
+        }
+
+        self.reconnect().await
+    }
+
+    // ── Send commands ──
+
+    /// Send a typed command and get back a typed response.
+    ///
+    /// For handshake (query) commands, this waits for a notification response.
+    /// For direct commands, it fires and forgets with a small delay.
+    pub async fn send<C: BleCommand>(&self, cmd: &C) -> Result<C::Response> {
+        self.ensure_connected().await?;
+
+        let inner = self.inner.read().await;
+        let conn = inner.connection.as_ref().ok_or(Error::NotConnected)?;
+
+        let seq = conn.next_seq().await;
+        let packet = Packet::new_request(seq, cmd.cmd_id(), cmd.encode());
+        conn.write(&packet).await?;
+
+        // Handshake commands expect TLV response via notifications
+        if cmd.cmd_id() == CMD_HANDSHAKE {
+            let mut rx = conn.response_rx();
+            tokio::select! {
+                Ok(pkt) = rx.recv() => {
+                    cmd.decode(&pkt.payload)
+                }
+                _ = tokio::time::sleep(Duration::from_secs(3)) => {
+                    Err(Error::Timeout(Duration::from_secs(3)))
+                }
+            }
+        } else {
+            // Fire-and-forget: brief pause for device processing
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            cmd.decode(&[])
+        }
+    }
+
+    // ── Convenience ──
+
+    /// Check if currently connected.
+    pub async fn is_connected(&self) -> bool {
+        let inner = self.inner.read().await;
+        match inner.connection.as_ref() {
+            Some(conn) => conn.is_connected().await,
+            None => false,
+        }
+    }
+
+    /// Get the device address.
+    pub async fn address(&self) -> Option<String> {
+        let inner = self.inner.read().await;
+        inner.connection.as_ref().map(|c| c.address())
+    }
+
+    /// Try to detect the product ID from BLE advertisement manufacturer data.
+    pub async fn detect_product_id(&self) -> Option<u16> {
+        let inner = self.inner.read().await;
+        if let Some(conn) = inner.connection.as_ref() {
+            conn.detect_product_id().await
+        } else {
+            None
+        }
+    }
+
+    /// Query multiple device info IDs at once and return raw TLV payload bytes.
+    pub async fn query_device_info(&self, info_ids: &[u8]) -> Result<Vec<u8>> {
+        // Build payload: [0xFF, 0x00, id1, 0x00, id2, 0x00, ...]
+        let mut payload = vec![0xFF, 0x00];
+        for &id in info_ids {
+            payload.push(id);
+            payload.push(0x00);
+        }
+
+        self.ensure_connected().await?;
+        let inner = self.inner.read().await;
+        let conn = inner.connection.as_ref().ok_or(Error::NotConnected)?;
+
+        let seq = conn.next_seq().await;
+        let packet = Packet::new_request(seq, CMD_HANDSHAKE, payload);
+        conn.write(&packet).await?;
+
+        let mut rx = conn.response_rx();
+        tokio::select! {
+            Ok(pkt) = rx.recv() => {
+                Ok(pkt.payload)
+            }
+            _ = tokio::time::sleep(Duration::from_secs(5)) => {
+                Err(Error::Timeout(Duration::from_secs(5)))
+            }
+        }
+    }
+}
+
+impl Clone for ConnectionManager {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            config: self.config.clone(),
+            state_tx: self.state_tx.clone(),
+        }
+    }
+}

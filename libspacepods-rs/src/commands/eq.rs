@@ -1,51 +1,55 @@
-// commands/eq.rs - Updated EQ Presets
-use crate::ble::BleConnection;
-use crate::errors::{Result, SpaceBudsError};
-use crate::protocol::{CMD_EQ_SETTING, CMD_HANDSHAKE, ID_EQ_SETTING, TlvParser};
-use crate::SpaceBuds;
+use crate::commands::BleCommand;
+use crate::protocol::tlv::TlvParser;
+use crate::protocol::constants::{CMD_EQ_SETTING, CMD_HANDSHAKE, ID_EQ_SETTING};
+use crate::{Error, Result};
 use std::time::Duration;
-use tokio::sync::MutexGuard;
 
-// Frequency bands (for reference)
-// [50Hz, 100Hz, 400Hz, 1kHz, 2.5kHz, 6.3kHz, 16kHz, ...extras]
+// ── EQ Preset Struct ──
 
-// Professionally tuned EQ presets following Harman curves and industry standards
-pub const EQ_PRESETS: [(u8, &str, &str, [i8; 10]); 7] = [
-    (0, "Flat", "Neutral, uncolored sound", [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+#[derive(Debug, Clone)]
+pub struct EqPreset {
+    pub id: u8,
+    pub name: &'static str,
+    pub description: &'static str,
+    pub gains: [i8; 10],
+}
 
-    (1, "Bass Boost", "Warm, punchy bass (Harman headphone curve inspired)",
-     [6, 4, 1, 0, 0, 1, 2, 0, 0, 0]),
+impl EqPreset {
+    pub const fn new(id: u8, name: &'static str, description: &'static str, gains: [i8; 10]) -> Self {
+        Self { id, name, description, gains }
+    }
+}
 
-    (2, "Rock", "Energetic V-shape for guitars and drums",
-     [4, 3, -1, -1, 2, 4, 5, 0, 0, 0]),
-
-    (3, "Jazz", "Smooth mids, detailed cymbals",
-     [2, 2, 1, 1, -1, 2, 4, 0, 0, 0]),
-
-    (4, "Vocal", "Enhanced presence for vocals and speech",
-     [-2, -1, 0, 4, 3, 1, 1, 0, 0, 0]),
-
-    (5, "Treble Boost", "Crisp highs for classical and acoustic",
-     [-2, -1, 0, 1, 3, 5, 7, 0, 0, 0]),
-
-    (6, "Custom", "User-defined EQ curve",
-     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+pub const EQ_PRESETS: &[EqPreset] = &[
+    EqPreset::new(0, "Flat", "Neutral, uncolored sound", [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+    EqPreset::new(1, "Bass Boost", "Warm, punchy bass (Harman headphone curve inspired)", [6, 4, 1, 0, 0, 1, 2, 0, 0, 0]),
+    EqPreset::new(2, "Rock", "Energetic V-shape for guitars and drums", [4, 3, -1, -1, 2, 4, 5, 0, 0, 0]),
+    EqPreset::new(3, "Jazz", "Smooth mids, detailed cymbals", [2, 2, 1, 1, -1, 2, 4, 0, 0, 0]),
+    EqPreset::new(4, "Vocal", "Enhanced presence for vocals and speech", [-2, -1, 0, 4, 3, 1, 1, 0, 0, 0]),
+    EqPreset::new(5, "Treble Boost", "Crisp highs for classical and acoustic", [-2, -1, 0, 1, 3, 5, 7, 0, 0, 0]),
+    EqPreset::new(6, "Custom", "User-defined EQ curve", [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
 ];
 
-// Additional specialized presets (accessible via extended commands)
-pub const SPECIAL_PRESETS: [(u8, &str, &str, [i8; 10]); 4] = [
-    (10, "Harman AE/OE", "Research-optimized consumer curve",
-     [4, 3, 1, 0, -1, 1, 3, 0, 0, 0]),
-
-    (11, "Cinema", "Enhanced for movies and dialogue",
-     [2, 2, 0, 3, 2, 0, 2, 0, 0, 0]),
-
-    (12, "Podcast", "Clear speech, reduced sibilance",
-     [-1, 0, 2, 5, 2, -1, -2, 0, 0, 0]),
-
-    (13, "Night Listening", "Reduced dynamics for quiet environments",
-     [-3, -2, -1, 0, 0, -1, -2, 0, 0, 0]),
+pub const SPECIAL_PRESETS: &[EqPreset] = &[
+    EqPreset::new(10, "Harman AE/OE", "Research-optimized consumer curve", [4, 3, 1, 0, -1, 1, 3, 0, 0, 0]),
+    EqPreset::new(11, "Cinema", "Enhanced for movies and dialogue", [2, 2, 0, 3, 2, 0, 2, 0, 0, 0]),
+    EqPreset::new(12, "Podcast", "Clear speech, reduced sibilance", [-1, 0, 2, 5, 2, -1, -2, 0, 0, 0]),
+    EqPreset::new(13, "Night Listening", "Reduced dynamics for quiet environments", [-3, -2, -1, 0, 0, -1, -2, 0, 0, 0]),
 ];
+
+impl EqPreset {
+    pub fn find(id: u8) -> Option<&'static Self> {
+        EQ_PRESETS.iter().chain(SPECIAL_PRESETS.iter()).find(|p| p.id == id)
+    }
+
+    pub fn gains_description(gains: &[i8; 10]) -> String {
+        let bass = (gains[0] + gains[1]) / 2;
+        let mid = (gains[2] + gains[3] + gains[4]) / 3;
+        let treble = (gains[5] + gains[6]) / 2;
+        format!("Bass: {}dB, Mid: {}dB, Treble: {}dB", bass, mid, treble)
+    }
+}
+
 
 #[derive(Debug, Clone)]
 pub struct EqState {
@@ -61,163 +65,157 @@ impl EqState {
     }
 }
 
-pub struct EqController {
-    buds: SpaceBuds,
+// ── EqCommand ──
+
+#[derive(Debug, Clone)]
+pub enum EqCommand {
+    GetState,
+    SetPreset(u8),
+    SetCustom(Vec<i8>),
 }
 
-impl EqController {
-    pub fn new(buds: SpaceBuds) -> Self {
-        Self { buds }
+#[derive(Debug, Clone)]
+pub enum EqResponse {
+    State(Option<EqState>),
+    Ack,
+}
+
+/// Convert an i8 gain value to its u8 wire representation.
+fn gain_to_u8(gain: i8) -> u8 {
+    gain as u8
+}
+
+/// Convert a u8 wire value back to an i8 gain value.
+fn u8_to_gain(byte: u8) -> i8 {
+    if byte < 128 {
+        byte as i8
+    } else {
+        (byte as i16 - 256) as i8
+    }
+}
+
+impl BleCommand for EqCommand {
+    type Response = EqResponse;
+
+    fn cmd_id(&self) -> u8 {
+        match self {
+            Self::GetState => CMD_HANDSHAKE,
+            Self::SetPreset(_) | Self::SetCustom(_) => CMD_EQ_SETTING,
+        }
     }
 
-    async fn get_connection(&self) -> Result<MutexGuard<'_, Option<BleConnection>>> {
-        self.buds.ensure_connected().await?;
-        Ok(self.buds.conn.lock().await)
+    fn encode(&self) -> Vec<u8> {
+        match self {
+            Self::GetState => vec![0xFF, 0x00, ID_EQ_SETTING, 0x00],
+            Self::SetPreset(preset_id) => {
+                if let Some(preset) = EqPreset::find(*preset_id) {
+                    let mut payload = vec![10, preset.id];
+                    for &gain in preset.gains.iter() {
+                        payload.push(gain_to_u8(gain));
+                    }
+                    payload
+                } else {
+                    vec![]
+                }
+            }
+            Self::SetCustom(gains) => {
+                let mut final_gains = gains.clone();
+                final_gains.resize(10, 0);
+                let mut payload = vec![10, 6]; // mode = 6 (Custom)
+                for &gain in final_gains.iter().take(10) {
+                    payload.push(gain_to_u8(gain));
+                }
+                payload
+            }
+        }
     }
 
-    pub async fn get_state(&self) -> Result<Option<EqState>> {
-        let conn_guard = self.get_connection().await?;
-        let conn = conn_guard.as_ref().unwrap();
+    fn decode(&self, payload: &[u8]) -> Result<Self::Response> {
+        match self {
+            Self::GetState => {
+                let mut parser = TlvParser::new(payload);
+                if let Some(eq_data) = parser.get_bytes(ID_EQ_SETTING) {
+                    if eq_data.len() >= 2 {
+                        let mode = eq_data[1];
+                        let gains: Vec<i8> = eq_data[2..]
+                            .iter()
+                            .map(|&b| u8_to_gain(b))
+                            .collect();
 
-        let result = conn.query(
-            CMD_HANDSHAKE,
-            vec![0xFF, 0x00, ID_EQ_SETTING, 0x00],
-            |packet| {
-                if packet.cmd_id == CMD_HANDSHAKE {
-                    let mut parser = TlvParser::new(&packet.payload);
-                    if let Some(eq_data) = parser.get_bytes(ID_EQ_SETTING) {
-                        if eq_data.len() >= 2 {
-                            let mode = eq_data[1];
-                            let gains: Vec<i8> = eq_data[2..]
-                                .iter()
-                                .map(|&b| {
-                                    if b < 128 {
-                                        b as i8
-                                    } else {
-                                        (b as i16 - 256) as i8
-                                    }
-                                })
-                                .collect();
+                        let preset = EqPreset::find(mode);
+                        let (name, description) = if let Some(p) = preset {
+                            (p.name.to_string(), p.description.to_string())
+                        } else {
+                            ("Unknown".to_string(), "Unknown preset".to_string())
+                        };
 
-                            // Check both regular and special presets
-                            let preset_info = EQ_PRESETS
-                                .iter()
-                                .find(|(id, _, _, _)| *id == mode)
-                                .map(|(_, name, desc, _)| (name, desc));
-
-                            let special_info = SPECIAL_PRESETS
-                                .iter()
-                                .find(|(id, _, _, _)| *id == mode)
-                                .map(|(_, name, desc, _)| (name, desc));
-
-                            let (name, description) = if let Some((n, d)) = preset_info {
-                                (*n, *d)
-                            } else if let Some((n, d)) = special_info {
-                                (*n, *d)
-                            } else {
-                                ("Unknown", "Unknown preset")
-                            };
-
-                            return Some(EqState {
-                                mode,
-                                name: name.to_string(),
-                                description: description.to_string(),
-                                gains,
-                            });
-                        }
+                        return Ok(EqResponse::State(Some(EqState {
+                            mode,
+                            name,
+                            description,
+                            gains,
+                        })));
                     }
                 }
-                None
-            },
-            Duration::from_secs(3),
-        ).await?;
+                Ok(EqResponse::State(None))
+            }
+            Self::SetPreset(_) | Self::SetCustom(_) => Ok(EqResponse::Ack),
+        }
+    }
+}
 
-        Ok(result)
+// ── EqController ──
+
+pub struct EqController<'a> {
+    pub(crate) buds: &'a crate::SpaceBuds,
+}
+
+impl EqController<'_> {
+    pub async fn get_state(&self) -> Result<Option<EqState>> {
+        let resp = self.buds.manager.send(&EqCommand::GetState).await?;
+        match resp {
+            EqResponse::State(state) => Ok(state),
+            _ => Err(Error::Parse("Unexpected response type for get_state")),
+        }
     }
 
     pub async fn set_preset(&self, preset_id: u8) -> Result<()> {
-        // Check regular presets first
-        if let Some((id, name, _, gains)) = EQ_PRESETS.iter().find(|(id, _, _, _)| *id == preset_id) {
-            println!("Setting EQ preset: {} - {}", name, gains_description(gains));
-            self.send_eq_command(*id, gains).await?;
-            return Ok(());
+        if EqPreset::find(preset_id).is_none() {
+            return Err(Error::InvalidPreset(preset_id));
         }
-
-        // Check special presets
-        if let Some((id, name, _, gains)) = SPECIAL_PRESETS.iter().find(|(id, _, _, _)| *id == preset_id) {
-            println!("Setting special EQ preset: {} - {}", name, gains_description(gains));
-            self.send_eq_command(*id, gains).await?;
-            return Ok(());
-        }
-
-        Err(SpaceBudsError::InvalidPreset(preset_id))
-    }
-
-    async fn send_eq_command(&self, mode: u8, gains: &[i8; 10]) -> Result<()> {
-        let mut payload = vec![10, mode];
-        for &gain in gains.iter() {
-            payload.push(gain as u8);
-        }
-
-        let conn_guard = self.get_connection().await?;
-        let conn = conn_guard.as_ref().unwrap();
-        conn.command(CMD_EQ_SETTING, payload).await?;
-
+        self.buds.manager.send(&EqCommand::SetPreset(preset_id)).await?;
         tokio::time::sleep(Duration::from_millis(300)).await;
         Ok(())
     }
 
     pub async fn set_custom(&self, gains: Vec<i8>) -> Result<()> {
-        // Pad to 10 bands
-        let mut final_gains = gains;
-        final_gains.resize(10, 0);
-
-        // Store gains array for the command
-        let gains_array: [i8; 10] = final_gains[..10].try_into().unwrap();
-
-        println!("Setting custom EQ curve");
-        self.send_eq_command(6, &gains_array).await?;
-
+        self.buds.manager.send(&EqCommand::SetCustom(gains)).await?;
+        tokio::time::sleep(Duration::from_millis(300)).await;
         Ok(())
     }
 
-    pub async fn list_presets(&self) -> Vec<(u8, String, String)> {
-        let mut presets: Vec<(u8, String, String)> = EQ_PRESETS
+    pub fn list_presets() -> Vec<(u8, String, String, String)> {
+        let mut presets: Vec<_> = EQ_PRESETS
             .iter()
-            .map(|(id, name, desc, gains)| {
-                (*id,
-                 format!("{} - {}", name, desc),
-                 gains_description(gains))
+            .map(|p| {
+                (
+                    p.id,
+                    p.name.to_string(),
+                    p.description.to_string(),
+                    EqPreset::gains_description(&p.gains),
+                )
             })
             .collect();
 
-        // Add special presets
-        presets.extend(SPECIAL_PRESETS.iter().map(|(id, name, desc, gains)| {
-            (*id,
-             format!("{} (Special) - {}", name, desc),
-             gains_description(gains))
+        presets.extend(SPECIAL_PRESETS.iter().map(|p| {
+            (
+                p.id,
+                format!("{} (Special)", p.name),
+                p.description.to_string(),
+                EqPreset::gains_description(&p.gains),
+            )
         }));
 
         presets
     }
-
-    pub async fn analyze_current_eq(&self) -> Result<String> {
-        if let Some(state) = self.get_state().await? {
-            if state.is_custom() {
-                Ok(format!("Custom EQ: {}", gains_description(&state.gains[..10].try_into().unwrap_or(*&[0;10]))))
-            } else {
-                Ok(format!("{}: {}", state.name, state.description))
-            }
-        } else {
-            Ok("Unknown EQ state".to_string())
-        }
-    }
-}
-
-fn gains_description(gains: &[i8; 10]) -> String {
-    let bass = (gains[0] + gains[1]) / 2;
-    let mids = (gains[2] + gains[3] + gains[4]) / 3;
-    let treble = (gains[5] + gains[6]) / 2;
-
-    format!("Bass: {}dB, Mids: {}dB, Treble: {}dB", bass, mids, treble)
 }

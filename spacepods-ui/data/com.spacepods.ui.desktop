@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=SpacePods Linux
+Comment=Control your SpaceBuds earbuds
+Exec=spacepods-ui
+Icon=com.spacepods.ui
+Categories=Audio;Settings;HardwareSettings;
+Terminal=false
+StartupNotify=true

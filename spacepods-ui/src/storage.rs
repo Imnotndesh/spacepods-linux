@@ -25,6 +25,16 @@ pub fn load_known_devices() -> Vec<KnownDevice> {
         .unwrap_or_default()
 }
 
+pub fn remove_known_device(address: &str) {
+    let mut devices = load_known_devices();
+    devices.retain(|d| d.address != address);
+    let path = devices_file();
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write(&path, serde_json::to_string_pretty(&devices).unwrap());
+}
+
 pub fn add_known_device(name: String, address: String) {
     let mut devices = load_known_devices();
     devices.retain(|d| d.address != address);
@@ -54,9 +64,9 @@ pub struct AppSettings {
     pub last_eq_preset: u8,
     pub adaptive_anc_enabled: bool,
     pub dual_device_enabled: bool,
-    pub tray_enabled: bool,
-    pub close_to_tray: bool,
     pub autostart: bool,
+    #[serde(default)]
+    pub disclaimer_dismissed: bool,
 }
 
 impl Default for AppSettings {
@@ -67,9 +77,8 @@ impl Default for AppSettings {
             last_eq_preset: 0,
             adaptive_anc_enabled: false,
             dual_device_enabled: false,
-            tray_enabled: false,
-            close_to_tray: false,
             autostart: false,
+            disclaimer_dismissed: false,
         }
     }
 }

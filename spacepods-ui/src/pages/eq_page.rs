@@ -11,10 +11,7 @@ use std::cell::{Cell, RefCell};
 use std::fs;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::Arc;
-use tokio::sync::Mutex;
-use libspacepods::client::SpacePodsClient;
-use crate::storage::{update_settings};
+use crate::context::AppContext;
 
 const BUILTIN_PRESETS: [(u8, &str, [i8; 7]); 6] = [
     (0, "Flat",         [0,  0,  0,  0,  0,  0,  0]),
@@ -63,7 +60,7 @@ fn save_custom_presets(presets: &[CustomPreset]) {
 pub struct EqPage;
 
 impl EqPage {
-    pub fn new(client: Arc<Mutex<SpacePodsClient>>) -> gtk4::Widget {
+    pub fn new(ctx: Rc<AppContext>) -> gtk4::Widget {
         let current_gains: Rc<RefCell<[i8; 7]>> = Rc::new(RefCell::new([0; 7]));
         let custom_presets: Rc<RefCell<Vec<CustomPreset>>> =
             Rc::new(RefCell::new(load_custom_presets()));
@@ -114,9 +111,9 @@ impl EqPage {
 
         {
             let gains_ref = current_gains.clone();
-            drawing.set_draw_func(move |_area, cr, width, height| {
+            drawing.set_draw_func(move |area, cr, width, height| {
                 let gains = gains_ref.borrow();
-                draw_eq_curve(cr, width as f64, height as f64, &*gains);
+                draw_eq_curve(area, cr, width as f64, height as f64, &*gains);
             });
         }
 
@@ -143,7 +140,7 @@ impl EqPage {
             let drawing_ref = drawing.clone();
             let gains_ref = current_gains.clone();
             let in_custom_ref = in_custom_mode.clone();
-            let client_ref = Arc::clone(&client);  // add this
+            let ctx = ctx.clone();
 
             btn.connect_toggled(clone!(
                 #[weak] drawing_ref,
@@ -153,12 +150,15 @@ impl EqPage {
                         in_custom_ref.set(false);
                         *gains_ref.borrow_mut() = gains_copy;
                         drawing_ref.queue_draw();
-                        update_settings(|s| s.last_eq_preset = preset_id);
-                        let client = Arc::clone(&client_ref);
+                        // preset saved locally
+                        let ctx = ctx.clone();
                         glib::spawn_future_local(async move {
-                            let mut c = client.lock().await;
-                            if let Err(e) = c.set_eq_preset(preset_id).await {
-                                eprintln!("set_eq_preset {}: {}", preset_id, e);
+                            let result = match libspacepods::client::SpacePodsClient::connect(None).await {
+                                Ok(mut c) => c.set_eq_preset(preset_id).await,
+                                Err(e) => Err(e),
+                            };
+                            if let Err(e) = result {
+                                ctx.error(format!("Couldn't apply EQ preset: {}", e));
                             }
                         });
                     } else {
@@ -277,7 +277,7 @@ impl EqPage {
                         sliders_card_ref.set_visible(true);
                         drawing_ref.queue_draw();
                         // When entering custom mode, set last_eq_preset to 6 (custom)
-                        update_settings(|s| s.last_eq_preset = 6);
+                        // custom mode entry
                     } else {
                         b.remove_css_class("suggested-action");
                         sliders_card_ref.set_visible(false);
@@ -296,10 +296,12 @@ impl EqPage {
             let first_toggle_ref = first_toggle.clone();
             let drawing_ref = drawing.clone();
             let in_custom_ref = in_custom_mode.clone();
+            let ctx = ctx.clone();
 
             save_btn.connect_clicked(move |_| {
                 let name = name_entry_ref.text().trim().to_string();
                 if name.is_empty() {
+                    ctx.error("Give the preset a name before saving");
                     return;
                 }
 
@@ -317,12 +319,13 @@ impl EqPage {
                     drawing_ref.clone(),
                     first_toggle_ref.clone(),
                     in_custom_ref.clone(),
+                    ctx.clone(),
                 );
 
                 name_entry_ref.set_text("");
                 sliders_card_ref.set_visible(false);
                 edit_btn_ref.set_active(false);
-                update_settings(|s| s.last_eq_preset = 6);
+                ctx.success(format!("Saved preset \"{}\"", name));
             });
         }
 
@@ -337,6 +340,7 @@ impl EqPage {
                     drawing.clone(),
                     first_toggle.clone(),
                     in_custom_mode.clone(),
+                    ctx.clone(),
                 );
             }
         }
@@ -369,6 +373,7 @@ fn add_custom_preset_button(
     drawing: DrawingArea,
     first_toggle: Rc<RefCell<Option<ToggleButton>>>,
     in_custom_mode: Rc<Cell<bool>>,
+    ctx: Rc<AppContext>,
 ) {
     let btn = make_preset_button(&preset.name, &preset.gains, true);
 
@@ -390,8 +395,6 @@ fn add_custom_preset_button(
                     in_custom_ref.set(false);
                     *gains_ref.borrow_mut() = gains_copy;
                     drawing_ref.queue_draw();
-                    // For custom preset, we might not have a preset ID; but we can set last_eq_preset to 6
-                    update_settings(|s| s.last_eq_preset = 6);
                 } else {
                     b.remove_css_class("suggested-action");
                 }
@@ -409,9 +412,10 @@ fn add_custom_preset_button(
         let presets_ref = presets_store.clone();
         let name = preset.name.clone();
         let flow_ref = flow.clone();
+        let ctx = ctx.clone();
         gc.connect_pressed(move |g, _n, _x, _y| {
             g.set_state(gtk4::EventSequenceState::Claimed);
-            show_delete_popover(&child_ref, &flow_ref, presets_ref.clone(), &name);
+            show_delete_popover(&child_ref, &flow_ref, presets_ref.clone(), &name, ctx.clone());
         });
     }
     btn.add_controller(gc);
@@ -422,9 +426,10 @@ fn add_custom_preset_button(
         let presets_ref = presets_store.clone();
         let name = preset.name.clone();
         let flow_ref = flow.clone();
+        let ctx = ctx.clone();
         glp.connect_pressed(move |g, _x, _y| {
             g.set_state(gtk4::EventSequenceState::Claimed);
-            show_delete_popover(&child_ref, &flow_ref, presets_ref.clone(), &name);
+            show_delete_popover(&child_ref, &flow_ref, presets_ref.clone(), &name, ctx.clone());
         });
     }
     btn.add_controller(glp);
@@ -437,6 +442,7 @@ fn show_delete_popover(
     flow: &gtk4::FlowBox,
     presets: Rc<RefCell<Vec<CustomPreset>>>,
     name: &str,
+    ctx: Rc<AppContext>,
 ) {
     let popover = gtk4::Popover::new();
     popover.set_parent(child);
@@ -467,6 +473,7 @@ fn show_delete_popover(
         save_custom_presets(&presets.borrow());
         flow_ref.remove(&child_ref);
         popover_ref.popdown();
+        ctx.toast(&format!("Deleted \"{}\"", name_owned));
     });
 
     popover.popup();
@@ -498,8 +505,9 @@ fn make_preset_button(name: &str, gains: &[i8; 7], is_custom: bool) -> ToggleBut
     preview.set_content_height(36);
     preview.set_hexpand(true);
     let g = *gains;
-    preview.set_draw_func(move |_area, cr, w, h| {
-        draw_mini_curve(cr, w as f64, h as f64, &g);
+    preview.set_draw_func(move |area, cr, w, h| {
+        let (ar, ag, ab) = accent_color_from_drawing(area);
+        draw_mini_curve(cr, w as f64, h as f64, &g, (ar, ag, ab));
     });
 
     let name_lbl = Label::new(Some(name));
@@ -519,6 +527,16 @@ fn make_preset_button(name: &str, gains: &[i8; 7], is_custom: bool) -> ToggleBut
     btn
 }
 
+fn accent_color_from_drawing(area: &DrawingArea) -> (f64, f64, f64) {
+    let color = area.style_context().color();
+    (color.red() as f64, color.green() as f64, color.blue() as f64)
+}
+
+fn get_accent_rgba(area: &DrawingArea, alpha: f64) -> (f64, f64, f64, f64) {
+    let (r, g, b) = accent_color_from_drawing(area);
+    (r, g, b, alpha)
+}
+
 fn db_to_y(db: f64, height: f64) -> f64 {
     height * (1.0 - (db.max(-12.0).min(12.0) + 12.0) / 24.0)
 }
@@ -527,7 +545,8 @@ fn band_center_x(i: usize, n: usize, width: f64) -> f64 {
     ((i as f64 + 0.5) / n as f64) * width
 }
 
-fn draw_eq_curve(cr: &gtk4::cairo::Context, w: f64, h: f64, gains: &[i8]) {
+fn draw_eq_curve(area: &DrawingArea, cr: &gtk4::cairo::Context, w: f64, h: f64, gains: &[i8]) {
+    let (ar, ag, ab) = accent_color_from_drawing(area);
     let n = gains.len();
 
     for &db in &[-12.0f64, -6.0, 0.0, 6.0, 12.0] {
@@ -566,7 +585,7 @@ fn draw_eq_curve(cr: &gtk4::cairo::Context, w: f64, h: f64, gains: &[i8]) {
     }
     cr.line_to(pts[n-1].0, h);
     cr.close_path();
-    cr.set_source_rgba(0.208, 0.518, 0.894, 0.18);
+    cr.set_source_rgba(ar, ag, ab, 0.18);
     let _ = cr.fill();
 
     cr.new_path();
@@ -575,13 +594,13 @@ fn draw_eq_curve(cr: &gtk4::cairo::Context, w: f64, h: f64, gains: &[i8]) {
         let cpx = (pts[i-1].0 + pts[i].0) / 2.0;
         cr.curve_to(cpx, pts[i-1].1, cpx, pts[i].1, pts[i].0, pts[i].1);
     }
-    cr.set_source_rgba(0.208, 0.518, 0.894, 0.95);
+    cr.set_source_rgba(ar, ag, ab, 0.95);
     cr.set_line_width(2.5);
     let _ = cr.stroke();
 
     for &(x, y) in &pts {
         cr.arc(x, y, 4.5, 0.0, std::f64::consts::TAU);
-        cr.set_source_rgba(0.208, 0.518, 0.894, 1.0);
+        cr.set_source_rgba(ar, ag, ab, 1.0);
         let _ = cr.fill();
         cr.arc(x, y, 4.5, 0.0, std::f64::consts::TAU);
         cr.set_source_rgba(1.0, 1.0, 1.0, 0.9);
@@ -590,7 +609,8 @@ fn draw_eq_curve(cr: &gtk4::cairo::Context, w: f64, h: f64, gains: &[i8]) {
     }
 }
 
-fn draw_mini_curve(cr: &gtk4::cairo::Context, w: f64, h: f64, gains: &[i8; 7]) {
+fn draw_mini_curve(cr: &gtk4::cairo::Context, w: f64, h: f64, gains: &[i8; 7], accent: (f64, f64, f64)) {
+    let (ar, ag, ab) = accent;
     let n = gains.len();
     let pts: Vec<(f64, f64)> = (0..n)
         .map(|i| (band_center_x(i, n, w), db_to_y(gains[i] as f64, h)))
@@ -605,7 +625,7 @@ fn draw_mini_curve(cr: &gtk4::cairo::Context, w: f64, h: f64, gains: &[i8; 7]) {
     }
     cr.line_to(pts[n-1].0, h);
     cr.close_path();
-    cr.set_source_rgba(0.208, 0.518, 0.894, 0.22);
+    cr.set_source_rgba(ar, ag, ab, 0.22);
     let _ = cr.fill();
 
     cr.new_path();
@@ -614,7 +634,7 @@ fn draw_mini_curve(cr: &gtk4::cairo::Context, w: f64, h: f64, gains: &[i8; 7]) {
         let cpx = (pts[i-1].0 + pts[i].0) / 2.0;
         cr.curve_to(cpx, pts[i-1].1, cpx, pts[i].1, pts[i].0, pts[i].1);
     }
-    cr.set_source_rgba(0.208, 0.518, 0.894, 0.85);
+    cr.set_source_rgba(ar, ag, ab, 0.85);
     cr.set_line_width(1.5);
     let _ = cr.stroke();
 }

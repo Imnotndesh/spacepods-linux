@@ -1,12 +1,12 @@
-use crate::client::SpacePodsClient;
-use crate::service::DeviceStatus;
+use crate::ipc::client::SpacePodsClient;
+use crate::ipc::protocol::DeviceStatus;
+use crate::commands::eq::EqPreset;
 use anyhow::{Context, Result};
-use crate::commands::eq::{EQ_PRESETS, SPECIAL_PRESETS};
-use rustyline::config::{ Config, EditMode};
+use rustyline::config::{Config, EditMode};
 use rustyline::error::ReadlineError;
 use rustyline::highlight::{Highlighter, MatchingBracketHighlighter};
-use rustyline::hint::{HistoryHinter};
-use rustyline::validate::{MatchingBracketValidator};
+use rustyline::hint::HistoryHinter;
+use rustyline::validate::MatchingBracketValidator;
 use rustyline::{Cmd, CompletionType, Editor, EventHandler, KeyEvent};
 use rustyline::history::FileHistory;
 use std::borrow::Cow::{self, Borrowed, Owned};
@@ -55,7 +55,7 @@ impl Highlighter for CliHelper {
 
 pub struct InteractiveCli {
     client: Arc<Mutex<SpacePodsClient>>,
-    status: Arc<tokio::sync::RwLock<DeviceStatus>>, // Use RwLock instead of Mutex
+    status: Arc<tokio::sync::RwLock<DeviceStatus>>,
 }
 
 impl InteractiveCli {
@@ -66,10 +66,10 @@ impl InteractiveCli {
 
         let client = Arc::new(Mutex::new(client));
 
-        // Get initial status
+        // Get initial status — service may be disconnected, that's fine
         let status = {
             let mut client_lock = client.lock().await;
-            client_lock.get_status().await?
+            client_lock.get_status().await.unwrap_or(DeviceStatus::default_disconnected())
         };
 
         Ok(Self {
@@ -98,7 +98,6 @@ impl InteractiveCli {
         rl.bind_sequence(KeyEvent::alt('n'), EventHandler::Simple(Cmd::HistorySearchForward));
         rl.bind_sequence(KeyEvent::alt('p'), EventHandler::Simple(Cmd::HistorySearchBackward));
 
-        // Load history
         if rl.load_history(".spacepods_history").is_err() {
             println!("No command history found");
         }
@@ -106,16 +105,16 @@ impl InteractiveCli {
         println!("\x1b[1;32mSpacePods Interactive CLI\x1b[0m");
         println!("Type 'help' for commands, 'exit' to quit");
 
-        // Check connection and show initial status
         match self.check_connection().await {
             Ok(true) => {
-                println!("Service connection: \x1b[1;32m✓\x1b[0m");
-                self.refresh_status().await?;
+                println!("Service connection: \x1b[1;32m\u{2713}\x1b[0m");
+                self.refresh_status().await.unwrap_or(());
                 self.print_status().await;
             }
             _ => {
-                println!("Service connection: \x1b[1;31m✗\x1b[0m");
+                println!("Service connection: \x1b[1;31m\u{2717}\x1b[0m");
                 println!("Cannot connect to SpacePods service. Is it running?");
+                return Ok(());
             }
         }
 
@@ -196,6 +195,67 @@ impl InteractiveCli {
                 self.watch_status().await?;
             }
 
+            // ── Scan for devices ──
+            "scan" => {
+                let timeout: u64 = if parts.len() > 1 {
+                    parts[1].parse().unwrap_or(10)
+                } else {
+                    10
+                };
+                let mut client = self.client.lock().await;
+                println!("Scanning for SpaceBuds devices ({}s)...", timeout);
+                match client.scan(timeout).await {
+                    Ok(devices) => {
+                        if devices.is_empty() {
+                            println!("No SpaceBuds devices found.");
+                        } else {
+                            println!("\nFound {} device(s):", devices.len());
+                            for (i, d) in devices.iter().enumerate() {
+                                println!("  {}. {}  ({})", i + 1, d.name, d.address);
+                            }
+                            println!("\nUse 'connect <address>' to connect to a device.");
+                        }
+                    }
+                    Err(e) => {
+                        println!("Scan failed: {}", e);
+                    }
+                }
+            }
+
+            // ── Connect to a device ──
+            "connect" => {
+                if parts.len() < 2 {
+                    println!("Usage: connect <address>");
+                    println!("       Use 'scan' first to find devices and their addresses.");
+                    return Ok(false);
+                }
+                let address = parts[1..].join(" ");
+                let mut client = self.client.lock().await;
+                println!("Connecting to {}...", address);
+                match client.connect_device(address).await {
+                    Ok(_) => {
+                        println!("\x1b[1;32m\u{2713}\x1b[0m Connected!");
+                        // Give the service a moment to populate status
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        drop(client);
+                        self.refresh_status().await?;
+                        self.print_status().await;
+                    }
+                    Err(e) => {
+                        println!("\x1b[1;31mFailed to connect: {}\x1b[0m", e);
+                    }
+                }
+            }
+
+            // ── Disconnect ──
+            "disconnect" => {
+                // The service doesn't have a disconnect command directly;
+                // we can just refresh to show disconnected state.
+                self.refresh_status().await?;
+                self.print_status().await;
+            }
+
+            // ── Feature commands (require service connection to BLE) ──
             "anc" => {
                 if parts.len() < 2 {
                     println!("Usage: anc <on|off|transparency>");
@@ -204,8 +264,8 @@ impl InteractiveCli {
                 let mode = parts[1];
                 let mut client = self.client.lock().await;
                 client.set_anc_mode(mode).await?;
-                drop(client); // Release lock before refresh
-                println!("\x1b[1;32m✓\x1b[0m ANC mode set to: {}", mode);
+                drop(client);
+                println!("\x1b[1;32m\u{2713}\x1b[0m ANC mode set to: {}", mode);
                 self.refresh_status().await?;
             }
 
@@ -218,7 +278,7 @@ impl InteractiveCli {
                 let mut client = self.client.lock().await;
                 client.set_level(level).await?;
                 drop(client);
-                println!("\x1b[1;32m✓\x1b[0m Level set to: {}", level);
+                println!("\x1b[1;32m\u{2713}\x1b[0m Level set to: {}", level);
                 self.refresh_status().await?;
             }
 
@@ -226,14 +286,14 @@ impl InteractiveCli {
                 if parts.len() < 2 {
                     println!("Usage: eq <preset_id>");
                     println!("\nStandard Presets:");
-                    for (id, name, desc, _) in EQ_PRESETS.iter() {
-                        println!("  \x1b[1;33m{:<2}\x1b[0m: {} - {}", id, name, desc);
+                    for p in crate::commands::eq::EQ_PRESETS {
+                        println!("  \x1b[1;33m{:<2}\x1b[0m: {} - {}", p.id, p.name, p.description);
                     }
                     println!("\n\x1b[1;36mSpecial Presets:\x1b[0m");
-                    for (id, name, desc, _) in SPECIAL_PRESETS.iter() {
-                        println!("  \x1b[1;33m{:<2}\x1b[0m: {} - {}", id, name, desc);
+                    for p in crate::commands::eq::SPECIAL_PRESETS {
+                        println!("  \x1b[1;33m{:<2}\x1b[0m: {} - {}", p.id, p.name, p.description);
                     }
-                    println!("\nExample: eq 1  (sets Bass Boost preset)");
+                    println!("\nExample: eq 1");
                     return Ok(false);
                 }
 
@@ -245,9 +305,10 @@ impl InteractiveCli {
                 self.refresh_status().await?;
 
                 let status = self.status.read().await;
-                let preset_name = status.eq_name.as_deref().unwrap_or("Unknown");
-                println!("\x1b[1;32m✓\x1b[0m EQ preset set to: {} ({})", preset, preset_name);
+                let preset_name = status.eq.as_ref().map(|e| e.name.as_str()).unwrap_or("Unknown");
+                println!("\x1b[1;32m\u{2713}\x1b[0m EQ preset set to: {} ({})", preset, preset_name);
             }
+
             "adaptive" => {
                 if parts.len() < 2 {
                     println!("Usage: adaptive <on|off>");
@@ -257,7 +318,7 @@ impl InteractiveCli {
                 let mut client = self.client.lock().await;
                 client.set_adaptive_anc(enable).await?;
                 drop(client);
-                println!("\x1b[1;32m✓\x1b[0m Adaptive ANC: {}", if enable { "ON" } else { "OFF" });
+                println!("\x1b[1;32m\u{2713}\x1b[0m Adaptive ANC: {}", if enable { "ON" } else { "OFF" });
                 self.refresh_status().await?;
             }
 
@@ -270,8 +331,87 @@ impl InteractiveCli {
                 let mut client = self.client.lock().await;
                 client.set_dual_device(enable).await?;
                 drop(client);
-                println!("\x1b[1;32m✓\x1b[0m Dual Device: {}", if enable { "ON" } else { "OFF" });
+                println!("\x1b[1;32m\u{2713}\x1b[0m Dual Device: {}", if enable { "ON" } else { "OFF" });
                 self.refresh_status().await?;
+            }
+
+            "chat" => {
+                if parts.len() < 2 {
+                    println!("Usage: chat <on|off>");
+                    return Ok(false);
+                }
+                let enable = parts[1] == "on";
+                let mut client = self.client.lock().await;
+                client.send_command_raw(crate::ipc::ServiceCommand::Custom {
+                    command_id: 0x35,
+                    payload: vec![if enable { 0x01 } else { 0x00 }],
+                }).await?;
+                println!("\x1b[1;32m\u{2713}\x1b[0m Chat Mode: {}", if enable { "ON" } else { "OFF" });
+            }
+
+            "endurance" => {
+                if parts.len() < 2 {
+                    println!("Usage: endurance <on|off>");
+                    return Ok(false);
+                }
+                let enable = parts[1] == "on";
+                let mut client = self.client.lock().await;
+                client.send_command_raw(crate::ipc::ServiceCommand::Custom {
+                    command_id: 0x38,
+                    payload: vec![if enable { 0x01 } else { 0x00 }],
+                }).await?;
+                println!("\x1b[1;32m\u{2713}\x1b[0m Long Endurance: {}", if enable { "ON" } else { "OFF" });
+            }
+
+            "rename" => {
+                if parts.len() < 2 {
+                    println!("Usage: rename <new-name>");
+                    return Ok(false);
+                }
+                let name = parts[1..].join(" ");
+                let mut client = self.client.lock().await;
+                client.send_command_raw(crate::ipc::ServiceCommand::Custom {
+                    command_id: 0x2D,
+                    payload: name.bytes().collect(),
+                }).await?;
+                println!("\x1b[1;32m\u{2713}\x1b[0m Device renamed to: {}", name);
+            }
+
+            "clearpair" => {
+                let mut client = self.client.lock().await;
+                client.send_command_raw(crate::ipc::ServiceCommand::Custom {
+                    command_id: 0x2F,
+                    payload: vec![],
+                }).await?;
+                println!("\x1b[1;32m\u{2713}\x1b[0m Pairing records cleared. Device will restart.");
+            }
+
+            "gamemode" => {
+                if parts.len() < 2 {
+                    println!("Usage: gamemode <on|off>");
+                    return Ok(false);
+                }
+                let enable = parts[1] == "on";
+                let mut client = self.client.lock().await;
+                client.send_command_raw(crate::ipc::ServiceCommand::Custom {
+                    command_id: 0x25,
+                    payload: vec![if enable { 0x01 } else { 0x00 }],
+                }).await?;
+                println!("\x1b[1;32m\u{2713}\x1b[0m Game Mode: {}", if enable { "ON" } else { "OFF" });
+            }
+
+            "find" => {
+                let enable = parts.get(1).map_or(true, |s| *s == "on");
+                let mut client = self.client.lock().await;
+                client.send_command_raw(crate::ipc::ServiceCommand::Custom {
+                    command_id: 0x2A,
+                    payload: vec![if enable { 0x01 } else { 0x00 }],
+                }).await?;
+                if enable {
+                    println!("\x1b[1;32m\u{2713}\x1b[0m Ringing earbuds! Use 'find off' to stop.");
+                } else {
+                    println!("\x1b[1;32m\u{2713}\x1b[0m Stopped ringing.");
+                }
             }
 
             "clear" => {
@@ -302,28 +442,25 @@ impl InteractiveCli {
     async fn print_status(&self) {
         let status = self.status.read().await;
 
-        println!("\x1b[1;36m╔════════════════════════════════════╗\x1b[0m");
-        println!("\x1b[1;36m║         SpacePods Status          ║\x1b[0m");
-        println!("\x1b[1;36m╚════════════════════════════════════╝\x1b[0m");
+        println!("\x1b[1;36m\u{2554}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2557}\x1b[0m");
+        println!("\x1b[1;36m\u{2551}         SpacePods Status          \u{2551}\x1b[0m");
+        println!("\x1b[1;36m\u{255a}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{255d}\x1b[0m");
 
-        println!("  Connected    : {}", if status.connected {
-            "\x1b[1;32m✓\x1b[0m"
+        println!("  Connected    : {}", if status.connection.connected {
+            "\x1b[1;32m\u{2713}\x1b[0m"
         } else {
-            "\x1b[1;31m✗\x1b[0m"
+            "\x1b[1;31m\u{2717}\x1b[0m Use 'scan' then 'connect <address>'"
         });
 
-        if let Some(addr) = &status.address {
+        if let Some(ref addr) = status.connection.address {
             println!("  Address      : {}", addr);
         }
 
-        // Battery status with icons
-        match (status.battery_left, status.battery_right, status.battery_case) {
+        // Battery
+        let b = &status.battery;
+        match (b.left, b.right, b.case) {
             (Some(l), Some(r), Some(c)) => {
-                let l_icon = if l > 80 { "🔋" } else if l > 20 { "🔋" } else { "🪫" };
-                let r_icon = if r > 80 { "🔋" } else if r > 20 { "🔋" } else { "🪫" };
-                let c_icon = if c > 80 { "🔋" } else if c > 20 { "🔋" } else { "🪫" };
-                println!("  Battery      : {} L:{}%  {} R:{}%  {} Case:{}%",
-                         l_icon, l, r_icon, r, c_icon, c);
+                println!("  Battery      : L:{}%  R:{}%  Case:{}%", l, r, c);
             }
             (Some(l), Some(r), None) => {
                 println!("  Battery      : L:{}%  R:{}%", l, r);
@@ -334,34 +471,23 @@ impl InteractiveCli {
             _ => {}
         }
 
-        // ANC Mode with icon
-        let anc_icon = match status.anc_mode {
-            Some(0) => "🔇",
-            Some(1) => "🎧",
-            Some(2) => "👂",
-            _ => "❓",
-        };
-        println!("  ANC Mode     : {} {}", anc_icon, match status.anc_mode {
-            Some(0) => "OFF",
-            Some(1) => "ANC",
-            Some(2) => "TRANSPARENCY",
-            _ => "UNKNOWN",
-        });
+        // ANC
+        println!("  ANC Mode     : {}", status.anc.mode);
+        println!("  Level        : {}/{}", status.anc.level, status.anc.max_level);
 
-        println!("  Level        : {}/{}", status.anc_level, status.anc_max);
-
-        if let Some(name) = &status.eq_name {
-            let eq_icon = "🎛️";
-            println!("  EQ           : {} {}", eq_icon, name);
+        // EQ
+        if let Some(ref eq) = status.eq {
+            println!("  EQ           : {} ({})", eq.name, eq.description);
         }
 
-        println!("  Adaptive ANC : {}", match status.adaptive_anc {
+        // Features
+        println!("  Adaptive ANC : {}", match status.features.adaptive_anc {
             Some(true) => "\x1b[1;32mON\x1b[0m",
             Some(false) => "\x1b[1;33mOFF\x1b[0m",
             None => "UNKNOWN",
         });
 
-        println!("  Dual Device  : {}", match status.dual_device {
+        println!("  Dual Device  : {}", match status.features.dual_device {
             Some(true) => "\x1b[1;32mON\x1b[0m",
             Some(false) => "\x1b[1;33mOFF\x1b[0m",
             None => "UNKNOWN",
@@ -388,7 +514,7 @@ impl InteractiveCli {
                     *status_lock = status;
                     drop(status_lock);
 
-                    print!("\x1b[2J\x1b[1;1H"); // Clear screen
+                    print!("\x1b[2J\x1b[1;1H");
                     self.print_status().await;
                 }
                 Ok::<_, anyhow::Error>(())
@@ -401,22 +527,30 @@ impl InteractiveCli {
     }
 
     fn print_help(&self) {
-        println!("\x1b[1;36m╔════════════════════════════════════╗\x1b[0m");
-        println!("\x1b[1;36m║        Available Commands         ║\x1b[0m");
-        println!("\x1b[1;36m╚════════════════════════════════════╝\x1b[0m");
+        println!("\x1b[1;36m\u{2554}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2557}\x1b[0m");
+        println!("\x1b[1;36m\u{2551}        Available Commands         \u{2551}\x1b[0m");
+        println!("\x1b[1;36m\u{255a}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{255d}\x1b[0m");
         println!();
+        println!("  \x1b[1;33mscan [timeout]\x1b[0m       - Scan for SpaceBuds devices");
+        println!("  \x1b[1;33mconnect <address>\x1b[0m     - Connect to a device by address");
         println!("  \x1b[1;33mstatus\x1b[0m              - Show device status");
         println!("  \x1b[1;33mwatch\x1b[0m               - Live watch status updates");
         println!("  \x1b[1;33manc <on|off|transparency>\x1b[0m - Set ANC mode");
         println!("  \x1b[1;33mlevel <0-15>\x1b[0m        - Set ANC/transparency level");
-        println!("  \x1b[1;33meq <0-6>\x1b[0m            - Set EQ preset");
+        println!("  \x1b[1;33meq <0-13>\x1b[0m            - Set EQ preset");
         println!("  \x1b[1;33madaptive <on|off>\x1b[0m   - Set adaptive ANC");
         println!("  \x1b[1;33mdual <on|off>\x1b[0m       - Set dual device mode");
+        println!("  \x1b[1;33mgamemode <on|off>\x1b[0m   - Toggle gaming mode");
+        println!("  \x1b[1;33mchat <on|off>\x1b[0m       - Toggle chat mode");
+        println!("  \x1b[1;33mendurance <on|off>\x1b[0m  - Toggle long endurance mode");
+        println!("  \x1b[1;33mrename <name>\x1b[0m       - Rename Bluetooth device");
+        println!("  \x1b[1;33mclearpair\x1b[0m           - Clear pairing records");
+        println!("  \x1b[1;33mfind [on|off]\x1b[0m      - Ring earbuds (default: on)");
         println!("  \x1b[1;33mclear\x1b[0m               - Clear screen");
         println!("  \x1b[1;33mexit|quit\x1b[0m           - Exit CLI");
         println!();
-        println!("  \x1b[1;90mTip: Use up/down arrows for history\x1b[0m");
-        println!("  \x1b[1;90m     Tab for command completion\x1b[0m");
+        println!("  \x1b[1;90mWorkflow: scan -> connect <addr> -> anc/eq/level/etc.\x1b[0m");
+        println!("  \x1b[1;90mThe connection lives in the service, shared by all clients.\x1b[0m");
         println!();
     }
 }

@@ -1,71 +1,46 @@
-// commands/anc.rs
-use crate::ble::BleConnection;
-use crate::errors::Result;
-use crate::protocol::*;
-use crate::SpaceBuds;
+use crate::commands::BleCommand;
+use crate::protocol::{AncMode, TlvParser, *};
+use crate::{Error, Result};
 use std::time::Duration;
-use tokio::sync::MutexGuard;
 
-pub struct AncController {
-    buds: SpaceBuds,
+// ── AncCommand enum ──
+
+#[derive(Debug, Clone)]
+pub enum AncCommand {
+    GetMode,
+    SetMode(AncMode),
+    GetLevel,
+    SetLevel(u8),
+    SetAncLevel(u8),
+    SetTransparencyLevel(u8),
 }
 
-impl AncController {
-    pub fn new(buds: SpaceBuds) -> Self {
-        Self { buds }
+#[derive(Debug, Clone)]
+pub enum AncResponse {
+    Mode(AncMode),
+    Level { current: u8, max: u8 },
+    Ack,
+}
+
+impl BleCommand for AncCommand {
+    type Response = AncResponse;
+
+    fn cmd_id(&self) -> u8 {
+        match self {
+            Self::GetMode => CMD_HANDSHAKE,
+            Self::SetMode(_) => CMD_ANC_MODE,
+            Self::GetLevel => CMD_HANDSHAKE,
+            Self::SetLevel(_) => CMD_ANC_MODE, // inferred from current mode
+            Self::SetAncLevel(_) => CMD_ANC_GAIN,
+            Self::SetTransparencyLevel(_) => CMD_TRANS_GAIN,
+        }
     }
 
-    async fn get_connection(&self) -> Result<MutexGuard<'_, Option<BleConnection>>> {
-        self.buds.ensure_connected().await?;
-        Ok(self.buds.conn.lock().await)
-    }
-
-    pub async fn set_mode(&self, mode: u8) -> Result<()> {
-        let conn_guard = self.get_connection().await?;
-        let conn = conn_guard.as_ref().unwrap();
-        conn.command(CMD_ANC_MODE, vec![mode]).await?;
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        Ok(())
-    }
-
-    pub async fn get_mode(&self) -> Result<Option<u8>> {
-        let conn_guard = self.get_connection().await?;
-        let conn = conn_guard.as_ref().unwrap();
-
-        conn.query(
-            CMD_HANDSHAKE,
-            vec![0xFF, 0x00, ID_ANC_MODE, 0x00],
-            |packet| {
-                if packet.cmd_id == CMD_HANDSHAKE {
-                    let mut parser = TlvParser::new(&packet.payload);
-                    parser.get_int(ID_ANC_MODE)
-                } else {
-                    None
-                }
-            },
-            Duration::from_secs(3),
-        ).await
-    }
-
-    pub async fn set_anc(&self) -> Result<()> {
-        self.set_mode(MODE_ANC).await
-    }
-
-    pub async fn set_transparency(&self) -> Result<()> {
-        self.set_mode(MODE_TRANSPARENCY).await
-    }
-
-    pub async fn set_off(&self) -> Result<()> {
-        self.set_mode(MODE_OFF).await
-    }
-
-    pub async fn get_level(&self) -> Result<(u8, u8)> {
-        let conn_guard = self.get_connection().await?;
-        let conn = conn_guard.as_ref().unwrap();
-
-        let result = conn.query(
-            CMD_HANDSHAKE,
-            vec![
+    fn encode(&self) -> Vec<u8> {
+        match self {
+            Self::GetMode => vec![0xFF, 0x00, ID_ANC_MODE, 0x00],
+            Self::SetMode(mode) => vec![(*mode).into()],
+            Self::GetLevel => vec![
                 0xFF, 0x00,
                 ID_ANC_MODE, 0x00,
                 ID_ANC_GAIN, 0x00,
@@ -73,57 +48,118 @@ impl AncController {
                 ID_TRANS_GAIN, 0x00,
                 ID_TRANS_MAX, 0x00,
             ],
-            |packet| {
-                if packet.cmd_id == CMD_HANDSHAKE {
-                    let mut parser = TlvParser::new(&packet.payload);
-                    let mode = parser.get_int(ID_ANC_MODE).unwrap_or(0);
+            Self::SetLevel(level) => vec![*level],
+            Self::SetAncLevel(level) => vec![*level],
+            Self::SetTransparencyLevel(level) => vec![*level],
+        }
+    }
 
-                    match mode {
-                        MODE_ANC => {
-                            let current = parser.get_int(ID_ANC_GAIN).unwrap_or(0);
-                            let max = parser.get_int(ID_ANC_MAX).unwrap_or(0);
-                            Some((current, max))
-                        }
-                        MODE_TRANSPARENCY => {
-                            let current = parser.get_int(ID_TRANS_GAIN).unwrap_or(0);
-                            let max = parser.get_int(ID_TRANS_MAX).unwrap_or(0);
-                            Some((current, max))
-                        }
-                        _ => Some((0, 0)),
+    fn decode(&self, payload: &[u8]) -> Result<Self::Response> {
+        match self {
+            Self::GetMode => {
+                let mut parser = TlvParser::new(payload);
+                let mode_id = parser
+                    .get_int(ID_ANC_MODE)
+                    .ok_or(Error::Parse("ANC mode not found in response"))?;
+                let mode = AncMode::from_u8(mode_id)
+                    .ok_or(Error::UnknownAncMode(mode_id))?;
+                Ok(AncResponse::Mode(mode))
+            }
+            Self::GetLevel => {
+                let mut parser = TlvParser::new(payload);
+                let mode_id = parser.get_int(ID_ANC_MODE).unwrap_or(0);
+                let (current, max) = match mode_id {
+                    1 => {
+                        let c = parser.get_int(ID_ANC_GAIN).unwrap_or(0);
+                        let m = parser.get_int(ID_ANC_MAX).unwrap_or(0);
+                        (c, m)
                     }
-                } else {
-                    None
-                }
-            },
-            Duration::from_secs(3),
-        ).await?;
+                    2 => {
+                        let c = parser.get_int(ID_TRANS_GAIN).unwrap_or(0);
+                        let m = parser.get_int(ID_TRANS_MAX).unwrap_or(0);
+                        (c, m)
+                    }
+                    _ => (0, 0),
+                };
+                Ok(AncResponse::Level { current, max })
+            }
+            Self::SetMode(_) | Self::SetLevel(_) | Self::SetAncLevel(_) | Self::SetTransparencyLevel(_) => {
+                Ok(AncResponse::Ack)
+            }
+        }
+    }
+}
 
-        Ok(result.unwrap_or((0, 0)))
+// ── AncController ──
+
+pub struct AncController<'a> {
+    pub(crate) buds: &'a crate::SpaceBuds,
+}
+
+impl AncController<'_> {
+    pub async fn get_mode(&self) -> Result<AncMode> {
+        let resp = self.buds.manager.send(&AncCommand::GetMode).await?;
+        match resp {
+            AncResponse::Mode(m) => Ok(m),
+            _ => Err(Error::Parse("Unexpected response type for get_mode")),
+        }
+    }
+
+    pub async fn set_mode(&self, mode: AncMode) -> Result<()> {
+        self.buds.manager.send(&AncCommand::SetMode(mode)).await?;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        Ok(())
+    }
+
+    pub async fn set_anc(&self) -> Result<()> {
+        self.set_mode(AncMode::Active).await
+    }
+
+    pub async fn set_transparency(&self) -> Result<()> {
+        self.set_mode(AncMode::Transparency).await
+    }
+
+    pub async fn set_off(&self) -> Result<()> {
+        self.set_mode(AncMode::Off).await
+    }
+
+    pub async fn get_level(&self) -> Result<(u8, u8)> {
+        let resp = self.buds.manager.send(&AncCommand::GetLevel).await?;
+        match resp {
+            AncResponse::Level { current, max } => Ok((current, max)),
+            _ => Err(Error::Parse("Unexpected response type for get_level")),
+        }
     }
 
     pub async fn set_level(&self, level: u8) -> Result<bool> {
         let (_, max_level) = self.get_level().await?;
-
         if max_level == 0 {
             return Ok(false);
         }
-
         let level = level.min(max_level);
-        let mode = self.get_mode().await?.unwrap_or(0);
-
-        let conn_guard = self.get_connection().await?;
-        let conn = conn_guard.as_ref().unwrap();
-
+        let mode = self.get_mode().await?;
         match mode {
-            MODE_ANC => {
-                conn.command(CMD_ANC_GAIN, vec![level]).await?;
-                Ok(true)
+            AncMode::Active => {
+                self.buds.manager.send(&AncCommand::SetAncLevel(level)).await?;
             }
-            MODE_TRANSPARENCY => {
-                conn.command(CMD_TRANS_GAIN, vec![level]).await?;
-                Ok(true)
+            AncMode::Transparency => {
+                self.buds.manager.send(&AncCommand::SetTransparencyLevel(level)).await?;
             }
-            _ => Ok(false),
+            AncMode::Off => return Ok(false),
         }
+        Ok(true)
+    }
+
+    pub async fn set_level_direct(&self, level: u8, mode: AncMode) -> Result<()> {
+        match mode {
+            AncMode::Active => {
+                self.buds.manager.send(&AncCommand::SetAncLevel(level)).await?;
+            }
+            AncMode::Transparency => {
+                self.buds.manager.send(&AncCommand::SetTransparencyLevel(level)).await?;
+            }
+            AncMode::Off => { /* no-op */ }
+        }
+        Ok(())
     }
 }
