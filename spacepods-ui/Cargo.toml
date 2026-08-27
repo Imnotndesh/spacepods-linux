@@ -2,6 +2,8 @@
 name = "spacepods-ui"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+description = "Desktop companion GUI for oraimo SpaceBuds earbuds on Linux."
 
 [dependencies]
 gtk4 = { version = "0.11.3", features = ["v4_10"] }
