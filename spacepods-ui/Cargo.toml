@@ -38,5 +38,5 @@ assets = [
     { source = "target/release/spacepods-ui", dest = "/usr/bin/spacepods-ui", mode = "755" },
     { source = "assets/com.spacepods.ui.desktop", dest = "/usr/share/applications/com.spacepods.ui.desktop", mode = "644" },
     { source = "resources/app-icon.svg", dest = "/usr/share/icons/hicolor/scalable/apps/com.spacepods.ui.svg", mode = "644" },
-    { source = "com.spacepods.ui.metainfo.xml", dest = "/usr/share/metainfo/com.spacepods.ui.metainfo.xml", mode = "644" },
+    { source = "data/com.spacepods.ui.metainfo.xml", dest = "/usr/share/metainfo/com.spacepods.ui.metainfo.xml", mode = "644" },
 ]
