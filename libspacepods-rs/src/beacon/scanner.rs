@@ -110,7 +110,6 @@ pub async fn scan_for_devices(duration: Duration) -> Result<Vec<DiscoveredDevice
             }
         }
     }
-
     Ok(found.into_values().collect())
 }
 

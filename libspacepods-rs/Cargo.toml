@@ -2,6 +2,8 @@
 name = "libspacepods"
 version = "0.5.0"
 edition = "2024"
+license.workspace = true
+description = "Linux CLI/daemon for controlling oraimo SpaceBuds earbuds over Bluetooth LE."
 
 [dependencies]
 btleplug = "0.11.8"
@@ -15,3 +17,21 @@ rustyline = "17.0.2"
 anyhow = "1.0"
 rustyline-derive = "0.11.1"
 uuid = { version = "1.20.0", features = ["v4"] }
+[package.metadata.deb]
+maintainer = "Imnotndesh"
+copyright = "2026, Imnotndesh"
+license-file = ["../LICENSE", "0"]
+extended-description = "Linux CLI/daemon for controlling oraimo SpaceBuds earbuds over Bluetooth LE."
+depends = "$auto"
+section = "utils"
+priority = "optional"
+assets = [
+    ["target/release/libspacepods", "usr/bin/", "755"],
+    ["assets/libspacepods.service", "usr/lib/systemd/user/", "644"],
+]
+
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/libspacepods", dest = "/usr/bin/libspacepods", mode = "755" },
+    { source = "assets/libspacepods.service", dest = "/usr/lib/systemd/user/libspacepods.service", mode = "644" },
+]

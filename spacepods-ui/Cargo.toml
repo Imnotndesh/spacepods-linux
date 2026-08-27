@@ -2,6 +2,8 @@
 name = "spacepods-ui"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+description = "Desktop companion GUI for oraimo SpaceBuds earbuds on Linux."
 
 [dependencies]
 gtk4 = { version = "0.11.3", features = ["v4_10"] }
@@ -16,3 +18,25 @@ btleplug = "0.11.8"
 tokio = "1.52.3"
 [build-dependencies]
 glib-build-tools = "0.22.8"
+[package.metadata.deb]
+maintainer = "Imnotndesh"
+copyright = "2026, Imnotndesh"
+license-file = ["../LICENSE", "0"]
+extended-description = "Desktop companion GUI for oraimo SpaceBuds earbuds on Linux."
+depends = "$auto"
+section = "utils"
+priority = "optional"
+assets = [
+    ["target/release/spacepods-ui", "usr/bin/", "755"],
+    ["assets/com.spacepods.ui.desktop", "usr/share/applications/", "644"],
+    ["resources/app-icon.svg", "usr/share/icons/hicolor/scalable/apps/com.spacepods.ui.svg", "644"],
+    ["data/com.spacepods.ui.metainfo.xml", "usr/share/metainfo/", "644"],
+]
+
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/spacepods-ui", dest = "/usr/bin/spacepods-ui", mode = "755" },
+    { source = "assets/com.spacepods.ui.desktop", dest = "/usr/share/applications/com.spacepods.ui.desktop", mode = "644" },
+    { source = "resources/app-icon.svg", dest = "/usr/share/icons/hicolor/scalable/apps/com.spacepods.ui.svg", mode = "644" },
+    { source = "data/com.spacepods.ui.metainfo.xml", dest = "/usr/share/metainfo/com.spacepods.ui.metainfo.xml", mode = "644" },
+]
