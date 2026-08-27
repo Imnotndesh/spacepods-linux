@@ -19,6 +19,7 @@ uuid = { version = "1.20.0", features = ["v4"] }
 maintainer = "Imnotndesh"
 copyright = "2026, Imnotndesh"
 license-file = ["../LICENSE", "0"]
+description = "Linux CLI/daemon for controlling oraimo SpaceBuds earbuds over Bluetooth LE."
 extended-description = "Linux CLI/daemon for controlling oraimo SpaceBuds earbuds over Bluetooth LE."
 depends = "$auto"
 section = "utils"

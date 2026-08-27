@@ -20,6 +20,7 @@ glib-build-tools = "0.22.8"
 maintainer = "Imnotndesh"
 copyright = "2026, Imnotndesh"
 license-file = ["../LICENSE", "0"]
+description = "Desktop companion GUI for oraimo SpaceBuds earbuds on Linux."
 extended-description = "Desktop companion GUI for oraimo SpaceBuds earbuds on Linux."
 depends = "$auto"
 section = "utils"
@@ -27,8 +28,8 @@ priority = "optional"
 assets = [
     ["target/release/spacepods-ui", "usr/bin/", "755"],
     ["assets/com.spacepods.ui.desktop", "usr/share/applications/", "644"],
-    ["resources/app-icon.svg", "usr/share/icons/hicolor/scalable/apps/com.spacepods.ui.svg", "644"],
-    ["com.spacepods.ui.metainfo.xml", "usr/share/metainfo/", "644"],
+    ["spacepods-ui/resources/app-icon.svg", "usr/share/icons/hicolor/scalable/apps/com.spacepods.ui.svg", "644"],
+    ["spacepods-ui/data/com.spacepods.ui.metainfo.xml", "usr/share/metainfo/", "644"],
 ]
 
 [package.metadata.generate-rpm]
