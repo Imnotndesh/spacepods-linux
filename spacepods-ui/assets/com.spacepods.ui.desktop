@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=SpacePods Linux
+Comment=Control your Oraimo earbuds seemlessly
+Exec=spacepods-ui
+Icon=com.spacepods.ui
+Terminal=false
+Categories=Utility;

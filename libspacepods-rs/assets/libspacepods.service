@@ -1,0 +1,12 @@
+[Unit]
+Description=SpacePods earbuds control daemon
+After=bluetooth.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/libspacepods service
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
