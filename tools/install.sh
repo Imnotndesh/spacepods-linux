@@ -15,8 +15,8 @@
 #
 # Targets:
 #   all          Everything (default)
-#   libspacepods The libspacepods daemon + CLI (installed to /usr/local/bin)
-#   spacepods-ui The SpacePods GUI binary + desktop entry + icon
+#   libspacepods The libspacepods daemon + CLI (native deb/rpm, tarball fallback)
+#   spacepods-ui The SpacePods GUI (native deb/rpm, tarball fallback, or flatpak)
 #   flatpak      The SpacePods GUI via the Flatpak bundle
 #   service      Install/remove the systemd USER unit for the daemon
 #                (logs to journald; enable with: systemctl --user enable --now spacepods)
@@ -25,31 +25,35 @@
 #   ./install.sh install all
 #   ./install.sh install service --enable     # install + enable at login
 #   ./install.sh --no-flatpak install all service
+#   ./install.sh --version=v0.2.0 install all
 #   ./install.sh remove flatpak
 #   ./install.sh remove service
 #   ./install.sh upgrade libspacepods
 #
 # Options:
 #   --no-flatpak     Skip the flatpak install even when 'all' is selected
+#   --version=TAG    Install a specific release tag instead of latest
+#                     (e.g. --version=v0.2.0)
 #   --prefix=PATH    Install binaries under PATH instead of /usr/local
+#                     (used only for the tarball fallback path)
 #   --no-sudo        Do not use sudo (assume write access to prefix)
 #   --enable         With 'install service': run 'systemctl --user enable --now'
 #   --no-enable      With 'remove service': do NOT disable/stop before removing
 #   --log-level=LVL  Log verbosity for the unit (info|warn|full, default: warn)
 #                    'warn' is minimal output; journald captures everything.
 #
-# Note for private repositories:
-#   If the GitHub release is not publicly downloadable, this script will fail
-#   with a clear error instead of piping a "Not Found" body to a shell.
-#   Authenticated clients must fetch assets through the GitHub API with a token.
+# The daemon (libspacepods) always installs natively - it never installs as
+# a flatpak. The GUI (spacepods-ui) installs natively by default (auto-
+# detecting dpkg/rpm, falling back to a tarball) or as a flatpak with the
+# 'flatpak' target / when --no-flatpak is not passed for 'all'.
 
 set -eu
 umask 022
 
 # ----- Configuration -----
 GH_REPO="Imnotndesh/spacepods-linux"
-# Allow overriding the download base for testing / self-hosted mirrors.
-BASE_URL="${SPACEPODS_BASE_URL:-https://github.com/${GH_REPO}/releases/latest/download}"
+GH_API="https://api.github.com/repos/${GH_REPO}"
+VERSION="latest"
 PREFIX="/usr/local"
 USE_SUDO=1
 DO_FLATPAK=1
@@ -70,6 +74,7 @@ for arg in "$@"; do
     --no-flatpak) DO_FLATPAK=0 ;;
     --no-sudo)   USE_SUDO=0 ;;
     --prefix=*)  PREFIX="${arg#--prefix=}" ;;
+    --version=*) VERSION="${arg#--version=}" ;;
     --enable)    DO_ENABLE=1 ;;
     --no-enable) DO_DISABLE=0 ;;
     --log-level=*) LOG_LEVEL="${arg#--log-level=}" ;;
@@ -130,13 +135,13 @@ EOF
 show_help() {
   banner
   echo
-  sed -n '2,39p' "$0" | sed -n 's/^#//p'
+  sed -n '2,44p' "$0" | sed -n 's/^#//p'
   cat <<'EOF'
 
 Important:
   If your shell prints "command not found", the download returned an error
-  page (e.g. GitHub blocked an anonymous/private download). Always download
-  the script to a file first and inspect it, never pipe directly into sh:
+  page. Always download the script to a file first and inspect it, never
+  pipe directly into sh:
 
       curl -fSL -O \
         https://github.com/Imnotndesh/spacepods-linux/releases/latest/download/install.sh
@@ -145,21 +150,103 @@ Important:
 EOF
 }
 
+# ----- Package manager / release resolution -----
+
+# Detect the native package format for this system.
+# Prints one of: deb rpm none
+pkg_kind() {
+  if command -v dpkg >/dev/null 2>&1; then
+    echo deb
+  elif command -v rpm >/dev/null 2>&1; then
+    echo rpm
+  else
+    echo none
+  fi
+}
+
+# Resolve $VERSION ("latest" or a tag) into a release JSON blob from the
+# GitHub API, cached in a temp file for the life of the script run.
+_RELEASE_JSON=""
+release_json() {
+  if [ -n "$_RELEASE_JSON" ] && [ -s "$_RELEASE_JSON" ]; then
+    cat "$_RELEASE_JSON"
+    return 0
+  fi
+  _RELEASE_JSON="$(mktemp)"
+  if [ "$VERSION" = "latest" ]; then
+    url="$GH_API/releases/latest"
+  else
+    url="$GH_API/releases/tags/$VERSION"
+  fi
+  if ! fetch "$url" "$_RELEASE_JSON"; then
+    die "Failed to fetch release metadata for '$VERSION'. URL: $url"
+  fi
+  cat "$_RELEASE_JSON"
+}
+
+# Find the download URL of an asset whose name contains a substring.
+# $1 = substring to match against asset "name" fields.
+asset_url() {
+  pattern="$1"
+  if command -v jq >/dev/null 2>&1; then
+    release_json | jq -r --arg p "$pattern" \
+      '.assets[] | select(.name | contains($p)) | .browser_download_url' | head -n1
+  else
+    # Fallback without jq: crude grep/sed over the JSON text.
+    release_json \
+      | grep -o '"browser_download_url"[[:space:]]*:[[:space:]]*"[^"]*"' \
+      | sed 's/.*: *"\(.*\)"/\1/' \
+      | grep -F "$pattern" \
+      | head -n1
+  fi
+}
+
 # ---------------------------------------------------------------------------
 # libspacepods
 # ---------------------------------------------------------------------------
 install_libspacepods() {
   echo
   banner
-  log "Installing libspacepods (daemon + CLI) -> $PREFIX/bin"
+  log "Installing libspacepods (daemon + CLI) [version: $VERSION]"
   command -v tar >/dev/null 2>&1 || die "tar is required."
   TMP_DIR="$(mktemp -d)"
   trap 'rm -rf "$TMP_DIR"' EXIT
-  URL="$BASE_URL/libspacepods-x86_64.tar.gz"
-  log "Downloading $URL"
-  if ! fetch "$URL" "$TMP_DIR/lib.tar.gz"; then
-    die "Failed to download libspacepods. URL: $URL"
-  fi
+
+  kind="$(pkg_kind)"
+  case "$kind" in
+    deb)
+      url="$(asset_url "libspacepods_")"
+      case "$url" in *.deb) ;; *) url="" ;; esac
+      if [ -n "$url" ]; then
+        log "Detected dpkg - downloading .deb package"
+        log "Downloading $url"
+        fetch "$url" "$TMP_DIR/libspacepods.deb" || die "Failed to download .deb asset."
+        sudo_cmd dpkg -i "$TMP_DIR/libspacepods.deb" || sudo_cmd apt-get install -f -y
+        log "Installed via dpkg. Start the daemon with:  libspacepods service"
+        trap - EXIT; rm -rf "$TMP_DIR"; return 0
+      fi
+      warn "No .deb asset found for this release; falling back to tarball."
+      ;;
+    rpm)
+      url="$(asset_url "libspacepods-")"
+      case "$url" in *.rpm) ;; *) url="" ;; esac
+      if [ -n "$url" ]; then
+        log "Detected rpm - downloading .rpm package"
+        log "Downloading $url"
+        fetch "$url" "$TMP_DIR/libspacepods.rpm" || die "Failed to download .rpm asset."
+        sudo_cmd rpm -Uvh --replacepkgs "$TMP_DIR/libspacepods.rpm"
+        log "Installed via rpm. Start the daemon with:  libspacepods service"
+        trap - EXIT; rm -rf "$TMP_DIR"; return 0
+      fi
+      warn "No .rpm asset found for this release; falling back to tarball."
+      ;;
+  esac
+
+  log "Installing from tarball -> $PREFIX/bin"
+  url="$(asset_url "libspacepods-x86_64.tar.gz")"
+  [ -n "$url" ] || die "Could not find libspacepods tarball asset for version '$VERSION'."
+  log "Downloading $url"
+  fetch "$url" "$TMP_DIR/lib.tar.gz" || die "Failed to download libspacepods. URL: $url"
   sudo_cmd mkdir -p "$PREFIX/bin"
   sudo_cmd tar -xzf "$TMP_DIR/lib.tar.gz" -C "$PREFIX/bin"
   sudo_cmd chmod +x "$PREFIX/bin/libspacepods" 2>/dev/null || true
@@ -172,7 +259,13 @@ remove_libspacepods() {
   echo
   banner
   log "Removing libspacepods"
-  sudo_cmd rm -f "$PREFIX/bin/libspacepods"
+  if command -v dpkg >/dev/null 2>&1 && dpkg -l libspacepods >/dev/null 2>&1; then
+    sudo_cmd dpkg -r libspacepods
+  elif command -v rpm >/dev/null 2>&1 && rpm -q libspacepods >/dev/null 2>&1; then
+    sudo_cmd rpm -e libspacepods
+  else
+    sudo_cmd rm -f "$PREFIX/bin/libspacepods"
+  fi
   log "libspacepods removed."
 }
 
@@ -221,7 +314,7 @@ install_service() {
   banner
   log "Installing systemd user unit for libspacepods"
   command -v systemctl >/dev/null 2>&1 || die "systemd (systemctl) is required for the service target."
-  if [ ! -x "$PREFIX/bin/libspacepods" ]; then
+  if [ ! -x "$PREFIX/bin/libspacepods" ] && ! command -v libspacepods >/dev/null 2>&1; then
     warn "libspacepods is not installed yet; installing it first."
     install_libspacepods
   fi
@@ -258,20 +351,50 @@ remove_service() {
 install_spacepods_ui() {
   echo
   banner
-  log "Installing spacepods-ui (GUI) -> $PREFIX/bin, $PREFIX/share"
+  log "Installing spacepods-ui (GUI, native) [version: $VERSION]"
   command -v tar >/dev/null 2>&1 || die "tar is required."
   TMP_DIR="$(mktemp -d)"
   trap 'rm -rf "$TMP_DIR"' EXIT
-  URL="$BASE_URL/spacepods-ui-x86_64.tar.gz"
-  log "Downloading $URL"
-  if ! fetch "$URL" "$TMP_DIR/ui.tar.gz"; then
-    die "Failed to download spacepods-ui. URL: $URL"
-  fi
+
+  kind="$(pkg_kind)"
+  case "$kind" in
+    deb)
+      url="$(asset_url "spacepods-ui_")"
+      case "$url" in *.deb) ;; *) url="" ;; esac
+      if [ -n "$url" ]; then
+        log "Detected dpkg - downloading .deb package"
+        log "Downloading $url"
+        fetch "$url" "$TMP_DIR/spacepods-ui.deb" || die "Failed to download .deb asset."
+        sudo_cmd dpkg -i "$TMP_DIR/spacepods-ui.deb" || sudo_cmd apt-get install -f -y
+        log "Installed via dpkg. Launch it with:  spacepods-ui"
+        trap - EXIT; rm -rf "$TMP_DIR"; return 0
+      fi
+      warn "No .deb asset found for this release; falling back to tarball."
+      ;;
+    rpm)
+      url="$(asset_url "spacepods-ui-")"
+      case "$url" in *.rpm) ;; *) url="" ;; esac
+      if [ -n "$url" ]; then
+        log "Detected rpm - downloading .rpm package"
+        log "Downloading $url"
+        fetch "$url" "$TMP_DIR/spacepods-ui.rpm" || die "Failed to download .rpm asset."
+        sudo_cmd rpm -Uvh --replacepkgs "$TMP_DIR/spacepods-ui.rpm"
+        log "Installed via rpm. Launch it with:  spacepods-ui"
+        trap - EXIT; rm -rf "$TMP_DIR"; return 0
+      fi
+      warn "No .rpm asset found for this release; falling back to tarball."
+      ;;
+  esac
+
+  log "Installing from tarball -> $PREFIX/bin, $PREFIX/share"
+  url="$(asset_url "spacepods-ui-x86_64.tar.gz")"
+  [ -n "$url" ] || die "Could not find spacepods-ui tarball asset for version '$VERSION'."
+  log "Downloading $url"
+  fetch "$url" "$TMP_DIR/ui.tar.gz" || die "Failed to download spacepods-ui. URL: $url"
   sudo_cmd mkdir -p "$PREFIX/bin" \
     "$PREFIX/share/applications" \
     "$PREFIX/share/icons/hicolor/scalable/apps"
   sudo_cmd tar -xzf "$TMP_DIR/ui.tar.gz" -C "$TMP_DIR"
-  # Locate and install the GUI binary.
   if [ -x "$TMP_DIR/spacepods-ui" ]; then
     sudo_cmd install -m755 "$TMP_DIR/spacepods-ui" "$PREFIX/bin/spacepods-ui"
   else
@@ -284,7 +407,6 @@ install_spacepods_ui() {
     done
     [ "$FOUND" = "1" ] || die "No binary found inside the downloaded tarball."
   fi
-  # Desktop entry + icon so the GUI shows up in launchers.
   cat > "$TMP_DIR/com.spacepods.ui.desktop" <<'EOF'
 [Desktop Entry]
 Type=Application
@@ -312,10 +434,16 @@ remove_spacepods_ui() {
   echo
   banner
   log "Removing spacepods-ui"
-  sudo_cmd rm -f "$PREFIX/bin/spacepods-ui"
-  sudo_cmd rm -f "$PREFIX/share/applications/com.spacepods.ui.desktop"
-  sudo_cmd rm -f "$PREFIX/share/icons/hicolor/scalable/apps/com.spacepods.ui.svg"
-  sudo_cmd update-desktop-database "$PREFIX/share/applications" 2>/dev/null || true
+  if command -v dpkg >/dev/null 2>&1 && dpkg -l spacepods-ui >/dev/null 2>&1; then
+    sudo_cmd dpkg -r spacepods-ui
+  elif command -v rpm >/dev/null 2>&1 && rpm -q spacepods-ui >/dev/null 2>&1; then
+    sudo_cmd rpm -e spacepods-ui
+  else
+    sudo_cmd rm -f "$PREFIX/bin/spacepods-ui"
+    sudo_cmd rm -f "$PREFIX/share/applications/com.spacepods.ui.desktop"
+    sudo_cmd rm -f "$PREFIX/share/icons/hicolor/scalable/apps/com.spacepods.ui.svg"
+    sudo_cmd update-desktop-database "$PREFIX/share/applications" 2>/dev/null || true
+  fi
   log "spacepods-ui removed."
 }
 
@@ -325,15 +453,14 @@ remove_spacepods_ui() {
 install_flatpak() {
   echo
   banner
-  log "Installing SpacePods GUI via Flatpak"
+  log "Installing SpacePods GUI via Flatpak [version: $VERSION]"
   command -v flatpak >/dev/null 2>&1 || die "flatpak is required. Install flatpak first."
   TMP_DIR="$(mktemp -d)"
   trap 'rm -rf "$TMP_DIR"' EXIT
-  URL="$BASE_URL/spacepods.flatpak"
-  log "Downloading $URL"
-  if ! fetch "$URL" "$TMP_DIR/spacepods.flatpak"; then
-    die "Failed to download flatpak bundle. URL: $URL"
-  fi
+  url="$(asset_url "spacepods.flatpak")"
+  [ -n "$url" ] || die "Could not find flatpak asset for version '$VERSION'."
+  log "Downloading $url"
+  fetch "$url" "$TMP_DIR/spacepods.flatpak" || die "Failed to download flatpak bundle. URL: $url"
   flatpak install --user -y "$TMP_DIR/spacepods.flatpak"
   log "Installed. Launch it with:  flatpak run com.spacepods.ui"
   trap - EXIT
@@ -358,7 +485,7 @@ if [ "$ACTION" = "help" ]; then
   exit 0
 fi
 
-echo "==> Action: $ACTION   Targets:$TARGETS"
+echo "==> Action: $ACTION   Version: $VERSION   Targets:$TARGETS"
 
 # ----- Run ------
 for t in $TARGETS; do
