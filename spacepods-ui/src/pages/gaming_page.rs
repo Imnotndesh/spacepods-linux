@@ -46,12 +46,6 @@ impl GamingPage {
                     "Game Mode is OFF — Normal audio mode"
                 });
 
-                let payload = if active { vec![0x01] } else { vec![0x00] };
-                let cc = libspacepods::ipc::ServiceCommand::Custom {
-                    command_id: 0x25,
-                    payload,
-                };
-
                 set_busy(&[&game_switch_row], true);
                 let sw = sw.clone();
                 let ctx = ctx.clone();
@@ -59,7 +53,7 @@ impl GamingPage {
                 let game_switch_row = game_switch_row.clone();
                 glib::spawn_future_local(async move {
                     let result = match libspacepods::client::SpacePodsClient::connect(None).await {
-                        Ok(mut client) => client.send_command_raw(cc).await,
+                        Ok(mut client) => client.set_feature("game_mode", active).await,
                         Err(e) => Err(e),
                     };
                     set_busy(&[&game_switch_row], false);

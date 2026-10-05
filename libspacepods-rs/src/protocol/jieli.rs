@@ -35,6 +35,70 @@ pub const CMD_CUSTOM: u8 = 0xFF;
 /// JieLi's fixed authentication pass response.
 pub const AUTH_PASS: [u8; 5] = [0x02, b'p', b'a', b's', b's'];
 
+/// Sys-info attribute carrying the current voice (noise-control) mode.
+pub const ATTR_VOICE_MODE: u8 = 13;
+/// Bitmask for the current voice-mode attribute (`buildGetCurrentVoiceMode`).
+pub const MASK_VOICE_MODE: u32 = 1 << 13;
+
+/// Build a `SET_SYS_INFO` payload that sets the current voice mode.
+///
+/// `VoiceMode.getBytes()` is `[mode, leftMax(2), rightMax(2), leftCur(2),
+/// rightCur(2)]` and the attribute is wrapped as `[len+1][type][data…]`
+/// (`AttrBean.toData`) behind the `0xFF` function byte.
+pub fn voice_mode_set_param(
+    mode: u8,
+    left_max: u16,
+    right_max: u16,
+    left_cur: u16,
+    right_cur: u16,
+) -> Vec<u8> {
+    let mut vm = Vec::with_capacity(9);
+    vm.push(mode);
+    vm.extend_from_slice(&left_max.to_be_bytes());
+    vm.extend_from_slice(&right_max.to_be_bytes());
+    vm.extend_from_slice(&left_cur.to_be_bytes());
+    vm.extend_from_slice(&right_cur.to_be_bytes());
+
+    let mut payload = vec![0xFF]; // function = -1
+    payload.push((vm.len() + 1) as u8);
+    payload.push(ATTR_VOICE_MODE);
+    payload.extend_from_slice(&vm);
+    payload
+}
+
+/// Build a `GET_SYS_INFO` payload: `[function][mask:u32 big-endian]`.
+pub fn get_sys_info_param(function: u8, mask: u32) -> Vec<u8> {
+    let mut p = vec![function];
+    p.extend_from_slice(&mask.to_be_bytes());
+    p
+}
+
+/// Find an attribute value in a sys-info payload/report
+/// (`[function][len+1][type][data…]…`).
+pub fn find_attr(param: &[u8], attr_type: u8) -> Option<&[u8]> {
+    if param.len() < 2 {
+        return None;
+    }
+    let mut i = 1; // skip the function byte
+    while i + 2 <= param.len() {
+        let len = param[i] as usize;
+        if len == 0 {
+            break;
+        }
+        let ty = param[i + 1];
+        let data_len = len - 1;
+        let start = i + 2;
+        if start + data_len > param.len() {
+            break;
+        }
+        if ty == attr_type {
+            return Some(&param[start..start + data_len]);
+        }
+        i = start + data_len;
+    }
+    None
+}
+
 /// Oraimo custom command IDs.
 ///
 /// Sourced from `SDKUtils.onRcspCommand` (notification parsing) and the
@@ -168,6 +232,54 @@ impl OraFeature {
             ora::LDAC => OraFeature::Ldac,
             ora::IN_EAR_DETECTION => OraFeature::InEarDetection,
             ora::VOICE_CONTROL => OraFeature::VoiceControl,
+            _ => return None,
+        })
+    }
+
+    /// Stable, chip-agnostic name used by the IPC `set_feature` command.
+    pub fn name(self) -> &'static str {
+        match self {
+            OraFeature::GameMode => "game_mode",
+            OraFeature::Gesture => "gesture",
+            OraFeature::EarMode => "ear_mode",
+            OraFeature::NoiseEnv => "adaptive_anc",
+            OraFeature::ChatMode => "chat_mode",
+            OraFeature::WindNoise => "wind_noise",
+            OraFeature::AreaTap => "area_tap",
+            OraFeature::DualDevice => "dual_device",
+            OraFeature::LongEndurance => "long_endurance",
+            OraFeature::SpaceAudio => "space_audio",
+            OraFeature::Magnet => "magnet",
+            OraFeature::Vibration => "vibration",
+            OraFeature::VoicePrompt => "voice_prompt",
+            OraFeature::Fm => "fm",
+            OraFeature::VolumeAdaptive => "adaptive_volume",
+            OraFeature::Ldac => "ldac",
+            OraFeature::InEarDetection => "in_ear_detection",
+            OraFeature::VoiceControl => "voice_control",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "game_mode" => OraFeature::GameMode,
+            "gesture" => OraFeature::Gesture,
+            "ear_mode" => OraFeature::EarMode,
+            "adaptive_anc" => OraFeature::NoiseEnv,
+            "chat_mode" => OraFeature::ChatMode,
+            "wind_noise" => OraFeature::WindNoise,
+            "area_tap" => OraFeature::AreaTap,
+            "dual_device" => OraFeature::DualDevice,
+            "long_endurance" => OraFeature::LongEndurance,
+            "space_audio" | "3d_audio" => OraFeature::SpaceAudio,
+            "magnet" => OraFeature::Magnet,
+            "vibration" => OraFeature::Vibration,
+            "voice_prompt" => OraFeature::VoicePrompt,
+            "fm" => OraFeature::Fm,
+            "adaptive_volume" => OraFeature::VolumeAdaptive,
+            "ldac" => OraFeature::Ldac,
+            "in_ear_detection" => OraFeature::InEarDetection,
+            "voice_control" => OraFeature::VoiceControl,
             _ => return None,
         })
     }

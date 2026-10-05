@@ -81,6 +81,14 @@ pub enum ServiceCommand {
     /// parameter bytes (if any).
     #[serde(rename = "jieli_custom")]
     JieliCustom { payload: Vec<u8> },
+
+    /// Set a boolean feature by stable, chip-agnostic name.
+    #[serde(rename = "set_feature")]
+    SetFeature { feature: String, enabled: bool },
+
+    /// Query a boolean feature by stable, chip-agnostic name.
+    #[serde(rename = "get_feature")]
+    GetFeature { feature: String },
 }
 
 // ── IPC Response ──

@@ -171,18 +171,13 @@ impl HearingPage {
             let ctx = ctx.clone();
             let adapt_vol_row = adapt_vol_row.clone();
             adapt_switch.connect_state_set(move |sw, active| {
-                let payload = vec![if active { 0x01 } else { 0x00 }];
-                let cc = libspacepods::ipc::ServiceCommand::Custom {
-                    command_id: 0x45, // CMD_ADAPTIVE_VOLUME
-                    payload,
-                };
                 set_busy(&[&adapt_vol_row], true);
                 let sw = sw.clone();
                 let ctx = ctx.clone();
                 let adapt_vol_row = adapt_vol_row.clone();
                 glib::spawn_future_local(async move {
                     let result = match libspacepods::client::SpacePodsClient::connect(None).await {
-                        Ok(mut client) => client.send_command_raw(cc).await,
+                        Ok(mut client) => client.set_feature("adaptive_volume", active).await,
                         Err(e) => Err(e),
                     };
                     set_busy(&[&adapt_vol_row], false);
@@ -199,18 +194,13 @@ impl HearingPage {
             let ctx = ctx.clone();
             let ear_detect_row = ear_detect_row.clone();
             ear_switch.connect_state_set(move |sw, active| {
-                let payload = vec![if active { 0x01 } else { 0x00 }];
-                let cc = libspacepods::ipc::ServiceCommand::Custom {
-                    command_id: 0x26, // CMD_IN_EAR_DETECT
-                    payload,
-                };
                 set_busy(&[&ear_detect_row], true);
                 let sw = sw.clone();
                 let ctx = ctx.clone();
                 let ear_detect_row = ear_detect_row.clone();
                 glib::spawn_future_local(async move {
                     let result = match libspacepods::client::SpacePodsClient::connect(None).await {
-                        Ok(mut client) => client.send_command_raw(cc).await,
+                        Ok(mut client) => client.set_feature("in_ear_detection", active).await,
                         Err(e) => Err(e),
                     };
                     set_busy(&[&ear_detect_row], false);

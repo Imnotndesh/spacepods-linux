@@ -144,6 +144,29 @@ impl SpacePodsClient {
         }
     }
 
+    /// Set a boolean feature by chip-agnostic name (e.g. `"chat_mode"`).
+    pub async fn set_feature(&mut self, feature: &str, enabled: bool) -> Result<()> {
+        self.send_command_raw(ServiceCommand::SetFeature {
+            feature: feature.to_string(),
+            enabled,
+        })
+        .await?;
+        Ok(())
+    }
+
+    /// Query a boolean feature by chip-agnostic name.
+    pub async fn get_feature(&mut self, feature: &str) -> Result<Option<bool>> {
+        match self
+            .send_command_raw(ServiceCommand::GetFeature {
+                feature: feature.to_string(),
+            })
+            .await?
+        {
+            IpcResult::Success { data, .. } => Ok(data.and_then(|v| serde_json::from_value(v).ok())),
+            _ => Ok(None),
+        }
+    }
+
     /// Subscribe to real-time status updates.
     /// Returns a broadcast receiver that yields `DeviceStatus` values.
     pub async fn subscribe(&mut self) -> Result<broadcast::Receiver<DeviceStatus>> {

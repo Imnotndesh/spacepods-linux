@@ -399,13 +399,11 @@ impl AncPage {
         {
             let ctx = ctx.clone();
             chat_switch.connect_state_set(move |sw, state| {
-                let payload = vec![if state { 0x01 } else { 0x00 }];
-                let cc = libspacepods::ipc::ServiceCommand::Custom { command_id: 0x35, payload };
                 let sw = sw.clone();
                 let ctx = ctx.clone();
                 glib::spawn_future_local(async move {
                     if let Ok(mut client) = libspacepods::client::SpacePodsClient::connect(None).await {
-                        if let Err(e) = client.send_command_raw(cc).await {
+                        if let Err(e) = client.set_feature("chat_mode", state).await {
                             ctx.error(format!("Chat Mode: {}", e));
                             sw.set_state(!state);
                         }
@@ -422,13 +420,11 @@ impl AncPage {
         {
             let ctx = ctx.clone();
             endurance_switch.connect_state_set(move |sw, state| {
-                let payload = vec![if state { 0x01 } else { 0x00 }];
-                let cc = libspacepods::ipc::ServiceCommand::Custom { command_id: 0x38, payload };
                 let sw = sw.clone();
                 let ctx = ctx.clone();
                 glib::spawn_future_local(async move {
                     if let Ok(mut client) = libspacepods::client::SpacePodsClient::connect(None).await {
-                        if let Err(e) = client.send_command_raw(cc).await {
+                        if let Err(e) = client.set_feature("long_endurance", state).await {
                             ctx.error(format!("Long Endurance: {}", e));
                             sw.set_state(!state);
                         }

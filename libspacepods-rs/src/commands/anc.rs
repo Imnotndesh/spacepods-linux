@@ -133,8 +133,7 @@ impl AncController<'_> {
 
     pub async fn get_level(&self) -> Result<(u8, u8)> {
         if self.buds.manager.is_jieli().await {
-            // Level control is not mapped for JieLi yet.
-            return Ok((0, 0));
+            return self.buds.manager.jieli_get_anc_level().await;
         }
         let resp = self.buds.manager.send(&AncCommand::GetLevel).await?;
         match resp {

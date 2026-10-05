@@ -85,6 +85,29 @@ pub struct FeatureController<'a> {
     pub(crate) buds: &'a crate::SpaceBuds,
 }
 
+/// Map a chip-agnostic feature name to a raw Bluetrum command.
+///
+/// Used by the daemon's `set_feature` IPC handler for Bluetrum devices. The
+/// JieLi equivalent is `crate::protocol::OraFeature`.
+pub fn bluetrum_feature_command(feature: &str, enabled: bool) -> Option<(u8, Vec<u8>)> {
+    use crate::protocol::constants::*;
+    let on = if enabled { 0x01u8 } else { 0x00u8 };
+    Some(match feature {
+        "game_mode" => (CMD_WORK_MODE, vec![on]),
+        "chat_mode" => (CMD_CHAT_MODE, vec![on]),
+        "area_tap" => (CMD_AREA_TAP, vec![on]),
+        "in_ear_detection" => (CMD_IN_EAR_DETECT, vec![on]),
+        "adaptive_volume" => (CMD_ADAPTIVE_VOLUME, vec![on]),
+        "voice_prompt" => (CMD_VOICE_PROMPT, vec![on]),
+        "space_audio" | "3d_audio" => (CMD_SOUND_EFFECT_3D, vec![on]),
+        "long_endurance" => (CMD_LONG_ENDURANCE_MODE, vec![on]),
+        "karaoke" => (CMD_KARAOKE_EFFECT, vec![on]),
+        "bass_eq" => (CMD_BASS_EQ_SWITCH, vec![on]),
+        "dual_device" => (CMD_DUAL_DEVICE, vec![0x01, 0x02, on]),
+        _ => return None,
+    })
+}
+
 impl FeatureController<'_> {
     pub async fn get_adaptive_anc(&self) -> Result<bool> {
         if self.buds.manager.is_jieli().await {

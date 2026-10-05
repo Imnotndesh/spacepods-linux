@@ -566,6 +566,81 @@ impl SpacePodsService {
                 }
             }
 
+            // ── Chip-agnostic feature toggles ──
+            ServiceCommand::SetFeature { feature, enabled } => {
+                let _ = buds.manager.ensure_connected().await;
+                if buds.is_jieli().await {
+                    match crate::protocol::OraFeature::from_name(&feature) {
+                        Some(f) => match buds.manager.jieli_set_feature(f, enabled).await {
+                            Ok(_) => IpcResult::Success {
+                                message: Some(format!("{} set to {}", feature, enabled)),
+                                data: None,
+                            },
+                            Err(e) => IpcResult::Error {
+                                message: format!("Failed to set {}: {}", feature, e),
+                            },
+                        },
+                        None => IpcResult::Error {
+                            message: format!("Unknown feature: {}", feature),
+                        },
+                    }
+                } else {
+                    match crate::commands::features::bluetrum_feature_command(&feature, enabled) {
+                        Some((cmd_id, payload)) => match buds.send_raw(cmd_id, payload).await {
+                            Ok(_) => IpcResult::Success {
+                                message: Some(format!("{} set to {}", feature, enabled)),
+                                data: None,
+                            },
+                            Err(e) => IpcResult::Error {
+                                message: format!("Failed to set {}: {}", feature, e),
+                            },
+                        },
+                        None => IpcResult::Error {
+                            message: format!("Unknown feature: {}", feature),
+                        },
+                    }
+                }
+            }
+
+            ServiceCommand::GetFeature { feature } => {
+                let _ = buds.manager.ensure_connected().await;
+                if buds.is_jieli().await {
+                    if let Some(f) = crate::protocol::OraFeature::from_name(&feature) {
+                        match buds.manager.jieli_get_feature(f).await {
+                            Ok(v) => {
+                                return IpcResult::Success {
+                                    message: None,
+                                    data: Some(
+                                        serde_json::to_value(v)
+                                            .unwrap_or(serde_json::Value::Null),
+                                    ),
+                                };
+                            }
+                            Err(e) => {
+                                return IpcResult::Error {
+                                    message: format!("Failed to get {}: {}", feature, e),
+                                };
+                            }
+                        }
+                    }
+                } else {
+                    let value = match feature.as_str() {
+                        "adaptive_anc" => buds.features().get_adaptive_anc().await.ok(),
+                        "dual_device" => buds.features().get_dual_device().await.ok(),
+                        _ => None,
+                    };
+                    if let Some(v) = value {
+                        return IpcResult::Success {
+                            message: None,
+                            data: Some(serde_json::json!(v)),
+                        };
+                    }
+                }
+                IpcResult::Error {
+                    message: format!("Unknown feature: {}", feature),
+                }
+            }
+
             _ => IpcResult::Error {
                 message: "Command not handled".to_string(),
             },

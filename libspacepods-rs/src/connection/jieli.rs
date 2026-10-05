@@ -35,6 +35,8 @@ pub struct JieliConnection {
     /// Last noise-control mode we set (the device ACKs sets without echoing
     /// the new state).
     anc_mode: Arc<Mutex<Option<u8>>>,
+    /// Last voice-mode gains: `(left_max, right_max, left_cur, right_cur)`.
+    anc_level: Arc<Mutex<(u16, u16, u16, u16)>>,
     /// Last reported parameter per Oraimo command id, from device
     /// notifications.
     state: Arc<Mutex<HashMap<u8, Vec<u8>>>>,
@@ -130,6 +132,7 @@ impl JieliConnection {
             seq: Arc::new(Mutex::new(0)),
             rx,
             anc_mode: Arc::new(Mutex::new(None)),
+            anc_level: Arc::new(Mutex::new((0, 0, 0, 0))),
             state,
         })
     }
@@ -240,20 +243,12 @@ impl JieliConnection {
         Self::write_raw(&self.peripheral, &self.write_char, &packet.to_bytes()).await
     }
 
-    /// Send an Oraimo custom command and optionally wait for its response.
-    pub async fn send_custom(
-        &self,
-        payload: Vec<u8>,
-        expect_response: bool,
-    ) -> Result<Option<RcspPacket>> {
-        let sn = self.next_seq().await;
-        let packet = RcspPacket::custom(sn, payload);
+    /// Send an RCSP packet and wait for the matching response.
+    pub async fn send_rcsp(&self, packet: RcspPacket) -> Result<RcspPacket> {
+        let sn = packet.op_code_sn;
+        let op = packet.op_code;
         let mut rx = self.rx.subscribe();
         self.write_frame(&packet).await?;
-
-        if !expect_response {
-            return Ok(None);
-        }
 
         let deadline = time::sleep(CMD_TIMEOUT);
         tokio::pin!(deadline);
@@ -262,25 +257,39 @@ impl JieliConnection {
                 event = rx.recv() => {
                     match event {
                         Ok(RcspEvent::Packet(p))
-                            if !p.is_command
-                                && p.op_code == jieli::CMD_CUSTOM
-                                && p.op_code_sn == sn =>
+                            if !p.is_command && p.op_code == op && p.op_code_sn == sn =>
                         {
                             crate::log::full(
                                 "JIELI",
-                                &format!("rx sn={} status={} param={:02X?}", p.op_code_sn, p.status, p.param),
+                                &format!(
+                                    "rx op={:#x} sn={} status={} param={:02X?}",
+                                    p.op_code, p.op_code_sn, p.status, p.param
+                                ),
                             );
-                            return Ok(Some(p));
+                            return Ok(p);
                         }
                         Ok(_) => {}
                         Err(_) => return Err(Error::ConnectionLost),
                     }
                 }
-                _ = &mut deadline => {
-                    return Err(Error::Timeout(CMD_TIMEOUT));
-                }
+                _ = &mut deadline => return Err(Error::Timeout(CMD_TIMEOUT)),
             }
         }
+    }
+
+    /// Send an Oraimo custom command and optionally wait for its response.
+    pub async fn send_custom(
+        &self,
+        payload: Vec<u8>,
+        expect_response: bool,
+    ) -> Result<Option<RcspPacket>> {
+        let sn = self.next_seq().await;
+        let packet = RcspPacket::custom(sn, payload);
+        if !expect_response {
+            self.write_frame(&packet).await?;
+            return Ok(None);
+        }
+        Ok(Some(self.send_rcsp(packet).await?))
     }
 
     /// Send an Oraimo custom command without waiting (fire and forget).
@@ -292,38 +301,62 @@ impl JieliConnection {
     // ── High-level feature helpers ──
 
     /// Set the noise-control mode (`0` = off, `1` = ANC, `2` = transparency).
+    ///
+    /// This is the JieLi `SET_SYS_INFO` command with attribute type 13
+    /// (`VoiceMode`), matching `TwsOpImpl.setCurrentVoiceMode`. The Oraimo
+    /// `{3, mode}` custom command is only used for the level/UI sync and does
+    /// not change the mode.
     pub async fn set_anc_mode(&self, mode: u8) -> Result<()> {
-        self.send_custom(vec![jieli::ora::ANC, mode], true).await?;
+        let (lm, rm, lc, rc) = *self.anc_level.lock().await;
+        let param = jieli::voice_mode_set_param(mode, lm, rm, lc, rc);
+        let sn = self.next_seq().await;
+        let packet = RcspPacket::command(jieli::CMD_SET_SYS_INFO, sn, param);
+        self.send_rcsp(packet).await?;
         *self.anc_mode.lock().await = Some(mode);
         Ok(())
     }
 
-    /// Query the current noise-control mode.
+    /// Query the current noise-control mode via `GET_SYS_INFO` attr 13.
     pub async fn get_anc_mode(&self) -> Result<u8> {
-        if let Some(mode) = *self.anc_mode.lock().await {
-            return Ok(mode);
+        let sn = self.next_seq().await;
+        let param = jieli::get_sys_info_param(0xFF, jieli::MASK_VOICE_MODE);
+        let packet = RcspPacket::command(jieli::CMD_GET_SYS_INFO, sn, param);
+        let resp = self.send_rcsp(packet).await?;
+        let vm = jieli::find_attr(&resp.param, jieli::ATTR_VOICE_MODE)
+            .ok_or_else(|| Error::Parse("voice mode attr missing"))?;
+        if vm.is_empty() {
+            return Err(Error::Parse("empty voice mode"));
         }
-        // Best-effort query; some firmware ACKs with an empty payload and
-        // reports the state via an unsolicited notification instead.
-        let response = self
-            .send_custom(vec![jieli::ora::ANC, 0x00], true)
-            .await?
-            .ok_or_else(|| Error::Ipc("RCSP: no ANC response".into()))?;
-        response
-            .param
-            .get(1)
-            .copied()
-            .ok_or_else(|| Error::Parse("RCSP: ANC response too short"))
+        if vm.len() >= 9 {
+            *self.anc_level.lock().await = (
+                u16::from_be_bytes([vm[1], vm[2]]),
+                u16::from_be_bytes([vm[3], vm[4]]),
+                u16::from_be_bytes([vm[5], vm[6]]),
+                u16::from_be_bytes([vm[7], vm[8]]),
+            );
+        }
+        let mode = vm[0];
+        *self.anc_mode.lock().await = Some(mode);
+        Ok(mode)
     }
 
-    /// Set the noise-control level (ANC/transparency strength).
+    /// Set the noise-control level (ANC/transparency strength) via the same
+    /// `SET_SYS_INFO` voice-mode attribute.
     pub async fn set_anc_level(&self, mode: u8, level: u8) -> Result<()> {
-        self.send_custom(
-            vec![jieli::ora::ANC, mode, (level >> 8) as u8, level as u8],
-            true,
-        )
-        .await?;
+        let (lm, rm, _lc, _rc) = *self.anc_level.lock().await;
+        let param = jieli::voice_mode_set_param(mode, lm, rm, level as u16, level as u16);
+        let sn = self.next_seq().await;
+        let packet = RcspPacket::command(jieli::CMD_SET_SYS_INFO, sn, param);
+        self.send_rcsp(packet).await?;
+        *self.anc_level.lock().await = (lm, rm, level as u16, level as u16);
         Ok(())
+    }
+
+    /// Current `(level, max)` for the noise-control mode, from the cached
+    /// voice-mode gains.
+    pub async fn get_anc_level(&self) -> Result<(u8, u8)> {
+        let (lm, _rm, lc, _rc) = *self.anc_level.lock().await;
+        Ok((lc.min(255) as u8, lm.min(255) as u8))
     }
 
     /// Enable/disable multipoint (dual device).

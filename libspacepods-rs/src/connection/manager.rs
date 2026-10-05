@@ -394,6 +394,10 @@ impl ConnectionManager {
         self.jieli_conn().await?.set_anc_level(mode, level).await
     }
 
+    pub async fn jieli_get_anc_level(&self) -> Result<(u8, u8)> {
+        self.jieli_conn().await?.get_anc_level().await
+    }
+
     pub async fn jieli_set_dual_device(&self, enable: bool) -> Result<()> {
         self.jieli_conn().await?.set_dual_device(enable).await
     }

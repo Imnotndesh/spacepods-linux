@@ -50,18 +50,12 @@ impl AreaTapPage {
                     "Wide Area Tap is OFF"
                 });
 
-                let payload = if active { vec![0x01] } else { vec![0x00] };
-                let cc = libspacepods::ipc::ServiceCommand::Custom {
-                    command_id: 0x34, // CMD_AREA_TAP
-                    payload,
-                };
-
                 let sw = sw.clone();
                 let ctx = ctx.clone();
                 let status_label = status_label.clone();
                 glib::spawn_future_local(async move {
                     let result = match libspacepods::client::SpacePodsClient::connect(None).await {
-                        Ok(mut client) => client.send_command_raw(cc).await,
+                        Ok(mut client) => client.set_feature("area_tap", active).await,
                         Err(e) => Err(e),
                     };
                     if let Err(e) = result {

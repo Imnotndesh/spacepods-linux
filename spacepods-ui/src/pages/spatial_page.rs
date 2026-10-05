@@ -60,18 +60,12 @@ impl SpatialAudioPage {
                     "Spatial Audio is OFF — Standard stereo"
                 });
                 
-                let payload = if active { vec![0x01] } else { vec![0x00] };
-                let cc = libspacepods::ipc::ServiceCommand::Custom {
-                    command_id: 0x36,
-                    payload,
-                };
-
                 let sw = sw.clone();
                 let ctx = ctx_toggle.clone();
                 let status_label = status_label.clone();
                 glib::spawn_future_local(async move {
                     let result = match libspacepods::client::SpacePodsClient::connect(None).await {
-                        Ok(mut client) => client.send_command_raw(cc).await,
+                        Ok(mut client) => client.set_feature("space_audio", active).await,
                         Err(e) => Err(e),
                     };
                     if let Err(e) = result {
