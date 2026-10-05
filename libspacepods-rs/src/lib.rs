@@ -129,6 +129,19 @@ impl SpaceBuds {
         Ok(())
     }
 
+    /// Send an Oraimo/JieLi RCSP custom command and return the response params.
+    pub async fn jieli_send_custom(
+        &self,
+        payload: Vec<u8>,
+    ) -> Result<Option<crate::protocol::RcspPacket>> {
+        self.manager.jieli_send_custom(payload).await
+    }
+
+    /// Whether the connected device uses the JieLi RCSP protocol.
+    pub async fn is_jieli(&self) -> bool {
+        self.manager.is_jieli().await
+    }
+
     // ── Controllers (borrowing, not cloning) ──
 
     /// Access ANC controls.

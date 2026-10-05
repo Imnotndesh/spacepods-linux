@@ -7,11 +7,12 @@
 
 use crate::errors::{Error, Result};
 use crate::protocol::e1;
-use crate::protocol::jieli::{self, RcspEvent, RcspPacket, RcspStream};
+use crate::protocol::jieli::{self, OraFeature, RcspEvent, RcspPacket, RcspStream};
 use crate::protocol::{UUID_JIELI_NOTIFY, UUID_JIELI_WRITE};
 use btleplug::api::{Characteristic, Peripheral as _, ValueNotification, WriteType};
 use btleplug::platform::Peripheral;
 use futures::stream::{Stream, StreamExt};
+use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
@@ -34,6 +35,9 @@ pub struct JieliConnection {
     /// Last noise-control mode we set (the device ACKs sets without echoing
     /// the new state).
     anc_mode: Arc<Mutex<Option<u8>>>,
+    /// Last reported parameter per Oraimo command id, from device
+    /// notifications.
+    state: Arc<Mutex<HashMap<u8, Vec<u8>>>>,
 }
 
 impl JieliConnection {
@@ -84,11 +88,33 @@ impl JieliConnection {
 
         let (rx, _) = broadcast::channel(64);
         let rx_clone = rx.clone();
+        let state = Arc::new(Mutex::new(HashMap::new()));
+        let state_clone = state.clone();
         tokio::spawn(async move {
             let mut stream = RcspStream::new();
             while let Some(notification) = notifications.next().await {
                 if notification.uuid == UUID_JIELI_NOTIFY {
                     for event in stream.push(&notification.value) {
+                        if let RcspEvent::Packet(ref p) = event {
+                            crate::log::full(
+                                "JIELI",
+                                &format!(
+                                    "pkt cmd={} op={:#x} sn={} status={} param={:02X?}",
+                                    p.is_command, p.op_code, p.op_code_sn, p.status, p.param
+                                ),
+                            );
+                            // Device-initiated commands carry state as
+                            // `{command_id, 0|2, …}`.
+                            if p.is_command && p.param.len() >= 2 {
+                                let cmd = p.param[0];
+                                if OraFeature::from_command_id(cmd).is_some()
+                                    || cmd == jieli::ora::ANC
+                                    || cmd == jieli::ora::DUAL_DEVICE_INFO
+                                {
+                                    state_clone.lock().await.insert(cmd, p.param.clone());
+                                }
+                            }
+                        }
                         let _ = rx_clone.send(event);
                     }
                 }
@@ -101,6 +127,7 @@ impl JieliConnection {
             seq: Arc::new(Mutex::new(0)),
             rx,
             anc_mode: Arc::new(Mutex::new(None)),
+            state,
         })
     }
 
@@ -298,9 +325,60 @@ impl JieliConnection {
 
     /// Enable/disable multipoint (dual device).
     pub async fn set_dual_device(&self, enable: bool) -> Result<()> {
-        self.send_custom(vec![jieli::ora::DUAL_DEVICE, if enable { 2 } else { 1 }], false)
+        self.set_feature(OraFeature::DualDevice, enable).await
+    }
+
+    /// Set a boolean Oraimo feature (`{cmd, 2}` on / `{cmd, 1}` off).
+    pub async fn set_feature(&self, feature: OraFeature, enabled: bool) -> Result<()> {
+        let cmd = feature.command_id();
+        self.send_custom(jieli::toggle_payload(cmd, enabled), true)
             .await?;
+        self.state
+            .lock()
+            .await
+            .insert(cmd, vec![cmd, if enabled { 2 } else { 1 }]);
         Ok(())
+    }
+
+    /// Query a boolean Oraimo feature.
+    ///
+    /// The firmware ACKs the query with an empty payload and reports the state
+    /// as a device notification (`{cmd, 0|2}`), so this waits briefly for that
+    /// notification and falls back to the last known value.
+    pub async fn get_feature(&self, feature: OraFeature) -> Result<Option<bool>> {
+        let cmd = feature.command_id();
+        let mut rx = self.rx.subscribe();
+        if let Err(e) = self.send_custom(jieli::query_payload(cmd), false).await {
+            crate::log::full("JIELI", &format!("query {} failed: {}", cmd, e));
+        }
+        let deadline = time::sleep(Duration::from_millis(800));
+        tokio::pin!(deadline);
+        loop {
+            tokio::select! {
+                event = rx.recv() => {
+                    if let Ok(RcspEvent::Packet(p)) = event {
+                        if p.param.len() >= 2 && p.param[0] == cmd {
+                            let on = p.param[1] == 2;
+                            self.state.lock().await.insert(cmd, p.param.clone());
+                            return Ok(Some(on));
+                        }
+                    }
+                }
+                _ = &mut deadline => break,
+            }
+        }
+        Ok(self
+            .state
+            .lock()
+            .await
+            .get(&cmd)
+            .and_then(|p| p.get(1))
+            .map(|b| *b == 2))
+    }
+
+    /// Read the last reported parameter bytes for an Oraimo command id.
+    pub async fn cached_param(&self, command_id: u8) -> Option<Vec<u8>> {
+        self.state.lock().await.get(&command_id).cloned()
     }
 
     pub async fn is_connected(&self) -> bool {

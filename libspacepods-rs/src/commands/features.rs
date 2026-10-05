@@ -87,6 +87,14 @@ pub struct FeatureController<'a> {
 
 impl FeatureController<'_> {
     pub async fn get_adaptive_anc(&self) -> Result<bool> {
+        if self.buds.manager.is_jieli().await {
+            return Ok(self
+                .buds
+                .manager
+                .jieli_get_feature(crate::protocol::OraFeature::NoiseEnv)
+                .await?
+                .unwrap_or(false));
+        }
         let resp = self.buds.manager.send(&FeatureCommand::GetAdaptiveAnc).await?;
         match resp {
             FeatureResponse::AdaptiveAnc(v) => Ok(v),
@@ -95,12 +103,27 @@ impl FeatureController<'_> {
     }
 
     pub async fn set_adaptive_anc(&self, enable: bool) -> Result<()> {
+        if self.buds.manager.is_jieli().await {
+            return self
+                .buds
+                .manager
+                .jieli_set_feature(crate::protocol::OraFeature::NoiseEnv, enable)
+                .await;
+        }
         self.buds.manager.send(&FeatureCommand::SetAdaptiveAnc(enable)).await?;
         tokio::time::sleep(Duration::from_millis(300)).await;
         Ok(())
     }
 
     pub async fn get_dual_device(&self) -> Result<bool> {
+        if self.buds.manager.is_jieli().await {
+            return Ok(self
+                .buds
+                .manager
+                .jieli_get_feature(crate::protocol::OraFeature::DualDevice)
+                .await?
+                .unwrap_or(false));
+        }
         let resp = self.buds.manager.send(&FeatureCommand::GetDualDevice).await?;
         match resp {
             FeatureResponse::DualDevice(v) => Ok(v),

@@ -76,6 +76,11 @@ pub enum ServiceCommand {
         command_id: u8,
         payload: Vec<u8>,
     },
+
+    /// Send a raw Oraimo/JieLi RCSP custom command and return the response
+    /// parameter bytes (if any).
+    #[serde(rename = "jieli_custom")]
+    JieliCustom { payload: Vec<u8> },
 }
 
 // ── IPC Response ──

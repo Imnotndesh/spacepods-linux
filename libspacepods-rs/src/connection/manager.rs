@@ -392,6 +392,21 @@ impl ConnectionManager {
         self.jieli_conn().await?.set_dual_device(enable).await
     }
 
+    pub async fn jieli_set_feature(
+        &self,
+        feature: crate::protocol::OraFeature,
+        enabled: bool,
+    ) -> Result<()> {
+        self.jieli_conn().await?.set_feature(feature, enabled).await
+    }
+
+    pub async fn jieli_get_feature(
+        &self,
+        feature: crate::protocol::OraFeature,
+    ) -> Result<Option<bool>> {
+        self.jieli_conn().await?.get_feature(feature).await
+    }
+
     pub async fn jieli_send_custom(
         &self,
         payload: Vec<u8>,

@@ -542,6 +542,26 @@ impl SpacePodsService {
                 }
             }
 
+            // ── JieLi RCSP custom command ──
+            ServiceCommand::JieliCustom { payload } => {
+                match buds.jieli_send_custom(payload).await {
+                    Ok(Some(resp)) => IpcResult::Success {
+                        message: Some("JieLi custom command sent".to_string()),
+                        data: Some(
+                            serde_json::to_value(resp.param)
+                                .unwrap_or(serde_json::Value::Null),
+                        ),
+                    },
+                    Ok(None) => IpcResult::Success {
+                        message: Some("JieLi custom command sent (no response)".to_string()),
+                        data: None,
+                    },
+                    Err(e) => IpcResult::Error {
+                        message: format!("JieLi custom command failed: {}", e),
+                    },
+                }
+            }
+
             _ => IpcResult::Error {
                 message: "Command not handled".to_string(),
             },

@@ -35,19 +35,152 @@ pub const CMD_CUSTOM: u8 = 0xFF;
 /// JieLi's fixed authentication pass response.
 pub const AUTH_PASS: [u8; 5] = [0x02, b'p', b'a', b's', b's'];
 
-/// Oraimo custom command IDs (from `DeviceModelJlImpl` / activities).
+/// Oraimo custom command IDs.
+///
+/// Sourced from `SDKUtils.onRcspCommand` (notification parsing) and the
+/// `buildCustomCmd(new byte[]{id, …})` call sites in `DeviceActivity` /
+/// `DeviceNewActivity`. Queries are `{id, 0}`; sets are `{id, 2}` (on) or
+/// `{id, 1}` (off); the device reports state as `{id, 0|2, …}`.
 pub mod ora {
-    /// Noise control. Param: `[mode]` or `[mode, level_hi, level_lo]`.
+    /// Game mode toggle.
+    pub const GAME_MODE: u8 = 1;
+    /// Gesture / ear-control switch.
+    pub const GESTURE: u8 = 2;
+    /// Noise control. Set: `[3, mode]` or `[3, mode, hi, lo]`.
+    /// Report: `[3, mode, hi, lo]`.
     pub const ANC: u8 = 3;
-    /// Ear auto (in-ear wear auto play/pause).
-    pub const EAR_AUTO: u8 = 5;
-    /// Dual device / multipoint. `0` = query, `1` = disconnect, `2` = connect,
-    /// `3` = unpair, optionally followed by a 6-byte MAC.
-    pub const DUAL_DEVICE: u8 = 25;
+    /// Gesture OTA (version/start/data/result).
+    pub const GESTURE_OTA: u8 = 4;
+    /// Ear auto (wear auto play/pause).
+    pub const EAR_MODE: u8 = 5;
+    /// Adaptive noise control (environment mode).
+    pub const NOISE_ENV: u8 = 6;
+    /// Chat mode (voice passthrough).
+    pub const CHAT_MODE: u8 = 7;
+    /// Wind-noise detection.
+    pub const WIND_NOISE: u8 = 8;
+    /// Area tap switch.
+    pub const AREA_TAP: u8 = 9;
+    /// Multipoint / dual device toggle.
+    pub const DUAL_DEVICE: u8 = 10;
+    /// LED info.
+    pub const LED: u8 = 11;
+    /// Tone info (`[12, …]`).
+    pub const TONE_INFO: u8 = 12;
+    /// LED info (300 family).
+    pub const LED_300: u8 = 14;
+    /// Long-endurance mode.
+    pub const LONG_ENDURANCE: u8 = 15;
+    /// 3D / spatial audio.
+    pub const SPACE_AUDIO: u8 = 16;
+    /// Magnet switch.
+    pub const MAGNET: u8 = 17;
+    /// Vibration.
+    pub const VIBRATION: u8 = 18;
+    /// Voice prompt.
+    pub const VOICE_PROMPT: u8 = 19;
+    /// FM radio switch.
+    pub const FM: u8 = 20;
+    /// FM favourites list.
+    pub const FM_FAVORITES: u8 = 22;
+    /// Warehouse / shipping sleep state.
+    pub const WAREHOUSE_SLEEP: u8 = 23;
+    /// Adaptive volume.
+    pub const VOLUME_ADAPTIVE: u8 = 24;
+    /// Multipoint device list (query/report).
+    pub const DUAL_DEVICE_INFO: u8 = 25;
+    /// Tone volume (`[27, level]`).
+    pub const TONE_VOLUME: u8 = 27;
     /// LDAC toggle.
     pub const LDAC: u8 = 28;
     /// In-ear detection toggle.
-    pub const EAR_DETECTION: u8 = 29;
+    pub const IN_EAR_DETECTION: u8 = 29;
+    /// Voice control.
+    pub const VOICE_CONTROL: u8 = 30;
+    /// LED info (671 family).
+    pub const LED_671: u8 = 31;
+}
+
+/// A boolean Oraimo feature that is queried/set with a single command id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OraFeature {
+    GameMode,
+    Gesture,
+    EarMode,
+    NoiseEnv,
+    ChatMode,
+    WindNoise,
+    AreaTap,
+    DualDevice,
+    LongEndurance,
+    SpaceAudio,
+    Magnet,
+    Vibration,
+    VoicePrompt,
+    Fm,
+    VolumeAdaptive,
+    Ldac,
+    InEarDetection,
+    VoiceControl,
+}
+
+impl OraFeature {
+    pub fn command_id(self) -> u8 {
+        match self {
+            OraFeature::GameMode => ora::GAME_MODE,
+            OraFeature::Gesture => ora::GESTURE,
+            OraFeature::EarMode => ora::EAR_MODE,
+            OraFeature::NoiseEnv => ora::NOISE_ENV,
+            OraFeature::ChatMode => ora::CHAT_MODE,
+            OraFeature::WindNoise => ora::WIND_NOISE,
+            OraFeature::AreaTap => ora::AREA_TAP,
+            OraFeature::DualDevice => ora::DUAL_DEVICE,
+            OraFeature::LongEndurance => ora::LONG_ENDURANCE,
+            OraFeature::SpaceAudio => ora::SPACE_AUDIO,
+            OraFeature::Magnet => ora::MAGNET,
+            OraFeature::Vibration => ora::VIBRATION,
+            OraFeature::VoicePrompt => ora::VOICE_PROMPT,
+            OraFeature::Fm => ora::FM,
+            OraFeature::VolumeAdaptive => ora::VOLUME_ADAPTIVE,
+            OraFeature::Ldac => ora::LDAC,
+            OraFeature::InEarDetection => ora::IN_EAR_DETECTION,
+            OraFeature::VoiceControl => ora::VOICE_CONTROL,
+        }
+    }
+
+    pub fn from_command_id(id: u8) -> Option<Self> {
+        Some(match id {
+            ora::GAME_MODE => OraFeature::GameMode,
+            ora::GESTURE => OraFeature::Gesture,
+            ora::EAR_MODE => OraFeature::EarMode,
+            ora::NOISE_ENV => OraFeature::NoiseEnv,
+            ora::CHAT_MODE => OraFeature::ChatMode,
+            ora::WIND_NOISE => OraFeature::WindNoise,
+            ora::AREA_TAP => OraFeature::AreaTap,
+            ora::DUAL_DEVICE => OraFeature::DualDevice,
+            ora::LONG_ENDURANCE => OraFeature::LongEndurance,
+            ora::SPACE_AUDIO => OraFeature::SpaceAudio,
+            ora::MAGNET => OraFeature::Magnet,
+            ora::VIBRATION => OraFeature::Vibration,
+            ora::VOICE_PROMPT => OraFeature::VoicePrompt,
+            ora::FM => OraFeature::Fm,
+            ora::VOLUME_ADAPTIVE => OraFeature::VolumeAdaptive,
+            ora::LDAC => OraFeature::Ldac,
+            ora::IN_EAR_DETECTION => OraFeature::InEarDetection,
+            ora::VOICE_CONTROL => OraFeature::VoiceControl,
+            _ => return None,
+        })
+    }
+}
+
+/// Encode a boolean toggle payload (`2` = on, `1` = off).
+pub fn toggle_payload(command_id: u8, enabled: bool) -> Vec<u8> {
+    vec![command_id, if enabled { 2 } else { 1 }]
+}
+
+/// Encode a state query payload (`{command_id, 0}`).
+pub fn query_payload(command_id: u8) -> Vec<u8> {
+    vec![command_id, 0]
 }
 
 /// A parsed or to-be-sent RCSP packet.

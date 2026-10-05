@@ -132,6 +132,18 @@ impl SpacePodsClient {
         Ok(())
     }
 
+    /// Send a raw Oraimo/JieLi RCSP custom command.
+    /// Returns the response parameter bytes, if the device replied with any.
+    pub async fn jieli_custom(&mut self, payload: Vec<u8>) -> Result<Option<Vec<u8>>> {
+        match self
+            .send_command_raw(ServiceCommand::JieliCustom { payload })
+            .await?
+        {
+            IpcResult::Success { data, .. } => Ok(data.and_then(|v| serde_json::from_value(v).ok())),
+            _ => Ok(None),
+        }
+    }
+
     /// Subscribe to real-time status updates.
     /// Returns a broadcast receiver that yields `DeviceStatus` values.
     pub async fn subscribe(&mut self) -> Result<broadcast::Receiver<DeviceStatus>> {
