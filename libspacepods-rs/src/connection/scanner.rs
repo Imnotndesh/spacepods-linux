@@ -22,8 +22,24 @@ impl DeviceScanner {
     /// Steps 2 and 3 exist because some firmware (e.g. `oraimo BoomPop Pro`)
     /// only exposes the proprietary beacon in manufacturer data without the
     /// standard service UUIDs.
+    /// Check if a peripheral is a viable connection target.
+    ///
+    /// Unlike the scan-listing predicate, this deliberately does **not** match
+    /// on local name alone: a name-only device (e.g. a classic/BR-EDR entry)
+    /// has no control characteristic and would fail with
+    /// "write characteristic not found". Require the `ff17`/`fe2c`/`ae00`
+    /// service UUID or a recognised Oraimo beacon.
     fn is_spacebuds(props: &btleplug::api::PeripheralProperties) -> bool {
-        crate::beacon::is_oraimo_peripheral(props)
+        if props.services.iter().any(|uuid| {
+            let s = uuid.to_string().to_lowercase();
+            s.contains("ff17") || s.contains("fe2c") || s.contains("ae00")
+        }) {
+            return true;
+        }
+        props
+            .manufacturer_data
+            .iter()
+            .any(|(id, data)| crate::beacon::is_oraimo_manufacturer_data(*id, data))
     }
 
     /// Get the first BLE adapter.

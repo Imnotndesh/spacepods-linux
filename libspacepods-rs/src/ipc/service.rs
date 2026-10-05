@@ -238,7 +238,7 @@ impl SpacePodsService {
                                             data: None,
                                         }
                                     } else {
-                                        Self::execute_command(cmd, &buds, &status).await
+                                        Self::execute_command(cmd, &buds, &status, &status_tx).await
                                     }
                                 }
                                 Err(e) => IpcResult::Error {
@@ -285,6 +285,7 @@ impl SpacePodsService {
         cmd: ServiceCommand,
         buds: &SpaceBuds,
         status: &Arc<RwLock<DeviceStatus>>,
+        status_tx: &broadcast::Sender<DeviceStatus>,
     ) -> IpcResult {
         match cmd {
             ServiceCommand::Ping => IpcResult::Success {
@@ -293,6 +294,9 @@ impl SpacePodsService {
             },
 
             ServiceCommand::GetStatus => {
+                // Refresh before answering so query-based state (e.g. the
+                // JieLi feature toggles) is current.
+                Self::refresh_full_status(buds, status, status_tx).await;
                 let status = status.read().await.clone();
                 let data = serde_json::to_value(status).unwrap_or(serde_json::Value::Null);
                 IpcResult::Success {
