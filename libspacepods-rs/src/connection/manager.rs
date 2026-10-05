@@ -1,5 +1,6 @@
 use crate::commands::BleCommand;
 use crate::connection::ble::BleConnection;
+use crate::connection::jieli::JieliConnection;
 use crate::connection::scanner::DeviceScanner;
 use crate::protocol::{ConnectionState, Packet, TlvParser, CMD_HANDSHAKE,
     ID_ANC_MODE, ID_ANC_GAIN, ID_ANC_MAX, ID_TRANS_GAIN, ID_TRANS_MAX,
@@ -31,7 +32,66 @@ impl Default for ConnectionConfig {
 
 struct Inner {
     state: ConnectionState,
-    connection: Option<BleConnection>,
+    connection: Option<ChipConnection>,
+}
+
+/// A connected device speaking one of the supported chip protocols.
+///
+/// This keeps the two wire protocols side by side so a JieLi device (RCSP) and
+/// a Bluetrum device (`ff17`/`ff18`) can share the same connection lifecycle.
+pub enum ChipConnection {
+    /// Bluetrum protocol (most SpaceBuds).
+    Bluetrum(BleConnection),
+    /// JieLi RCSP protocol (e.g. BoomPop Pro).
+    Jieli(JieliConnection),
+}
+
+impl ChipConnection {
+    pub fn is_jieli(&self) -> bool {
+        matches!(self, ChipConnection::Jieli(_))
+    }
+
+    fn as_bluetrum(&self) -> Option<&BleConnection> {
+        match self {
+            ChipConnection::Bluetrum(c) => Some(c),
+            ChipConnection::Jieli(_) => None,
+        }
+    }
+
+    async fn is_connected(&self) -> bool {
+        match self {
+            ChipConnection::Bluetrum(c) => c.is_connected().await,
+            ChipConnection::Jieli(c) => c.is_connected().await,
+        }
+    }
+
+    async fn disconnect(&self) -> Result<()> {
+        match self {
+            ChipConnection::Bluetrum(c) => c.disconnect().await,
+            ChipConnection::Jieli(c) => c.disconnect().await,
+        }
+    }
+
+    async fn reconnect_with_rediscovery(&self) -> Result<()> {
+        match self {
+            ChipConnection::Bluetrum(c) => c.reconnect_with_rediscovery().await,
+            ChipConnection::Jieli(c) => c.reconnect_with_rediscovery().await,
+        }
+    }
+
+    fn address(&self) -> String {
+        match self {
+            ChipConnection::Bluetrum(c) => c.address(),
+            ChipConnection::Jieli(c) => c.address(),
+        }
+    }
+
+    async fn detect_product_id(&self) -> Option<u16> {
+        match self {
+            ChipConnection::Bluetrum(c) => c.detect_product_id().await,
+            ChipConnection::Jieli(c) => c.detect_product_id().await,
+        }
+    }
 }
 
 /// Manages the BLE connection lifecycle with a state machine.
@@ -123,7 +183,7 @@ impl ConnectionManager {
 
         self.set_state(ConnectionState::Connecting).await;
 
-        let conn = BleConnection::new(peripheral).await?;
+        let conn = Self::open_connection(peripheral).await?;
 
         let mut inner = self.inner.write().await;
         inner.connection = Some(conn);
@@ -141,6 +201,26 @@ impl ConnectionManager {
         inner.state = ConnectionState::Disconnected;
         let _ = self.state_tx.send(ConnectionState::Disconnected);
         Ok(())
+    }
+
+    /// Connect and pick the chip protocol from the discovered GATT services.
+    async fn open_connection(
+        peripheral: btleplug::platform::Peripheral,
+    ) -> Result<ChipConnection> {
+        use btleplug::api::Peripheral as _;
+
+        peripheral.connect().await?;
+        peripheral.discover_services().await?;
+        let is_jieli = peripheral
+            .characteristics()
+            .iter()
+            .any(|c| c.uuid == crate::protocol::UUID_JIELI_WRITE);
+        if is_jieli {
+            crate::log::info("BLE", "detected JieLi RCSP device");
+            Ok(ChipConnection::Jieli(JieliConnection::new(peripheral).await?))
+        } else {
+            Ok(ChipConnection::Bluetrum(BleConnection::new(peripheral).await?))
+        }
     }
 
     pub async fn reconnect(&self) -> Result<()> {
@@ -188,7 +268,11 @@ impl ConnectionManager {
         self.ensure_connected().await?;
 
         let inner = self.inner.read().await;
-        let conn = inner.connection.as_ref().ok_or(Error::NotConnected)?;
+        let chip = inner.connection.as_ref().ok_or(Error::NotConnected)?;
+        if chip.is_jieli() {
+            return Err(Error::UnsupportedChip("JieLi RCSP (Bluetrum command)"));
+        }
+        let conn = chip.as_bluetrum().ok_or(Error::NotConnected)?;
 
         let seq = conn.next_seq().await;
         let packet = Packet::new_request(seq, cmd.cmd_id(), cmd.encode());
@@ -250,7 +334,11 @@ impl ConnectionManager {
 
         self.ensure_connected().await?;
         let inner = self.inner.read().await;
-        let conn = inner.connection.as_ref().ok_or(Error::NotConnected)?;
+        let chip = inner.connection.as_ref().ok_or(Error::NotConnected)?;
+        if chip.is_jieli() {
+            return Err(Error::UnsupportedChip("JieLi RCSP (Bluetrum query)"));
+        }
+        let conn = chip.as_bluetrum().ok_or(Error::NotConnected)?;
 
         let seq = conn.next_seq().await;
         let packet = Packet::new_request(seq, CMD_HANDSHAKE, payload);
@@ -265,6 +353,50 @@ impl ConnectionManager {
                 Err(Error::Timeout(Duration::from_secs(5)))
             }
         }
+    }
+
+    // ── JieLi RCSP ──
+
+    /// Whether the connected device uses the JieLi RCSP protocol.
+    pub async fn is_jieli(&self) -> bool {
+        let inner = self.inner.read().await;
+        inner
+            .connection
+            .as_ref()
+            .map(|c| c.is_jieli())
+            .unwrap_or(false)
+    }
+
+    async fn jieli_conn(&self) -> Result<JieliConnection> {
+        let inner = self.inner.read().await;
+        match inner.connection.as_ref() {
+            Some(ChipConnection::Jieli(c)) => Ok(c.clone()),
+            Some(_) => Err(Error::UnsupportedChip("not a JieLi device")),
+            None => Err(Error::NotConnected),
+        }
+    }
+
+    pub async fn jieli_set_anc_mode(&self, mode: u8) -> Result<()> {
+        self.jieli_conn().await?.set_anc_mode(mode).await
+    }
+
+    pub async fn jieli_get_anc_mode(&self) -> Result<u8> {
+        self.jieli_conn().await?.get_anc_mode().await
+    }
+
+    pub async fn jieli_set_anc_level(&self, mode: u8, level: u8) -> Result<()> {
+        self.jieli_conn().await?.set_anc_level(mode, level).await
+    }
+
+    pub async fn jieli_set_dual_device(&self, enable: bool) -> Result<()> {
+        self.jieli_conn().await?.set_dual_device(enable).await
+    }
+
+    pub async fn jieli_send_custom(
+        &self,
+        payload: Vec<u8>,
+    ) -> Result<Option<crate::protocol::RcspPacket>> {
+        self.jieli_conn().await?.send_custom(payload, true).await
     }
 }
 

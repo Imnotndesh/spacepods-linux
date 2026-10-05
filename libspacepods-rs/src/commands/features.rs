@@ -109,6 +109,10 @@ impl FeatureController<'_> {
     }
 
     pub async fn set_dual_device(&self, enable: bool) -> Result<()> {
+        if self.buds.manager.is_jieli().await {
+            self.buds.manager.jieli_set_dual_device(enable).await?;
+            return Ok(());
+        }
         self.buds.manager.send(&FeatureCommand::SetDualDevice(enable)).await?;
         tokio::time::sleep(Duration::from_millis(300)).await;
         Ok(())

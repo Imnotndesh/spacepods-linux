@@ -98,6 +98,10 @@ pub struct AncController<'a> {
 
 impl AncController<'_> {
     pub async fn get_mode(&self) -> Result<AncMode> {
+        if self.buds.manager.is_jieli().await {
+            let raw = self.buds.manager.jieli_get_anc_mode().await?;
+            return AncMode::from_u8(raw).ok_or(Error::UnknownAncMode(raw));
+        }
         let resp = self.buds.manager.send(&AncCommand::GetMode).await?;
         match resp {
             AncResponse::Mode(m) => Ok(m),
@@ -106,6 +110,10 @@ impl AncController<'_> {
     }
 
     pub async fn set_mode(&self, mode: AncMode) -> Result<()> {
+        if self.buds.manager.is_jieli().await {
+            self.buds.manager.jieli_set_anc_mode(mode.into()).await?;
+            return Ok(());
+        }
         self.buds.manager.send(&AncCommand::SetMode(mode)).await?;
         tokio::time::sleep(Duration::from_millis(300)).await;
         Ok(())
@@ -124,6 +132,10 @@ impl AncController<'_> {
     }
 
     pub async fn get_level(&self) -> Result<(u8, u8)> {
+        if self.buds.manager.is_jieli().await {
+            // Level control is not mapped for JieLi yet.
+            return Ok((0, 0));
+        }
         let resp = self.buds.manager.send(&AncCommand::GetLevel).await?;
         match resp {
             AncResponse::Level { current, max } => Ok((current, max)),
@@ -132,6 +144,11 @@ impl AncController<'_> {
     }
 
     pub async fn set_level(&self, level: u8) -> Result<bool> {
+        if self.buds.manager.is_jieli().await {
+            let mode = self.buds.manager.jieli_get_anc_mode().await.unwrap_or(1);
+            self.buds.manager.jieli_set_anc_level(mode, level).await?;
+            return Ok(true);
+        }
         let (_, max_level) = self.get_level().await?;
         if max_level == 0 {
             return Ok(false);
@@ -151,6 +168,10 @@ impl AncController<'_> {
     }
 
     pub async fn set_level_direct(&self, level: u8, mode: AncMode) -> Result<()> {
+        if self.buds.manager.is_jieli().await {
+            self.buds.manager.jieli_set_anc_level(mode.into(), level).await?;
+            return Ok(());
+        }
         match mode {
             AncMode::Active => {
                 self.buds.manager.send(&AncCommand::SetAncLevel(level)).await?;

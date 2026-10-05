@@ -1,0 +1,313 @@
+//! JieLi **RCSP** protocol framing and Oraimo custom commands.
+//!
+//! RCSP is carried over the JieLi GATT service (`0000ae00`) with a write
+//! characteristic (`0000ae01`) and a notify characteristic (`0000ae02`).
+//!
+//! Wire format (ported from `com.jieli.bluetooth.tool.ParseHelper`):
+//!
+//! ```text
+//! FE DC BA | flags | opcode | len_hi len_lo | payload | EF
+//! ```
+//!
+//! * `flags` bit 7 = type (1 = command, 0 = response), bit 6 = needs response.
+//! * `len` is the payload length, big-endian.
+//! * command payload  = `[op_code_sn][xm_opcode?][param…]`
+//! * response payload = `[status][op_code_sn][xm_opcode?][param…]`
+//!
+//! Oraimo's device features are carried as `CMD_CUSTOM` (0xFF) commands whose
+//! `param` starts with an Oraimo command ID (`DeviceModelJlImpl`).
+
+use crate::protocol::e1;
+
+pub const RCSP_HEAD: [u8; 3] = [0xFE, 0xDC, 0xBA];
+pub const RCSP_TAIL: u8 = 0xEF;
+pub const FLAG_COMMAND: u8 = 0x80;
+pub const FLAG_HAS_RESPONSE: u8 = 0x40;
+
+/// RCSP opcodes we use.
+pub const CMD_DATA: u8 = 0x01;
+pub const CMD_GET_TARGET_INFO: u8 = 0x03;
+pub const CMD_RESET_AUTH_FLAG: u8 = 0x06;
+pub const CMD_GET_SYS_INFO: u8 = 0x07;
+pub const CMD_SET_SYS_INFO: u8 = 0x08;
+pub const CMD_CUSTOM: u8 = 0xFF;
+
+/// JieLi's fixed authentication pass response.
+pub const AUTH_PASS: [u8; 5] = [0x02, b'p', b'a', b's', b's'];
+
+/// Oraimo custom command IDs (from `DeviceModelJlImpl` / activities).
+pub mod ora {
+    /// Noise control. Param: `[mode]` or `[mode, level_hi, level_lo]`.
+    pub const ANC: u8 = 3;
+    /// Ear auto (in-ear wear auto play/pause).
+    pub const EAR_AUTO: u8 = 5;
+    /// Dual device / multipoint. `0` = query, `1` = disconnect, `2` = connect,
+    /// `3` = unpair, optionally followed by a 6-byte MAC.
+    pub const DUAL_DEVICE: u8 = 25;
+    /// LDAC toggle.
+    pub const LDAC: u8 = 28;
+    /// In-ear detection toggle.
+    pub const EAR_DETECTION: u8 = 29;
+}
+
+/// A parsed or to-be-sent RCSP packet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RcspPacket {
+    pub is_command: bool,
+    pub has_response: bool,
+    pub op_code: u8,
+    pub op_code_sn: u8,
+    pub status: u8,
+    pub xm_op_code: u8,
+    pub param: Vec<u8>,
+}
+
+impl RcspPacket {
+    /// Build a command packet. `param` excludes the sequence byte.
+    pub fn command(op_code: u8, sn: u8, param: Vec<u8>) -> Self {
+        Self {
+            is_command: true,
+            has_response: true,
+            op_code,
+            op_code_sn: sn,
+            status: 0,
+            xm_op_code: 0,
+            param,
+        }
+    }
+
+    /// Build an Oraimo custom command (`CMD_CUSTOM`).
+    pub fn custom(sn: u8, payload: Vec<u8>) -> Self {
+        Self::command(CMD_CUSTOM, sn, payload)
+    }
+
+    /// Serialize to the on-wire frame.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut payload = Vec::new();
+        if !self.is_command {
+            payload.push(self.status);
+        }
+        payload.push(self.op_code_sn);
+        if self.op_code == CMD_DATA {
+            payload.push(self.xm_op_code);
+        }
+        payload.extend_from_slice(&self.param);
+
+        let mut flags = 0u8;
+        if self.is_command {
+            flags |= FLAG_COMMAND;
+        }
+        if self.has_response {
+            flags |= FLAG_HAS_RESPONSE;
+        }
+
+        let mut out = Vec::with_capacity(payload.len() + 8);
+        out.extend_from_slice(&RCSP_HEAD);
+        out.push(flags);
+        out.push(self.op_code);
+        out.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+        out.extend_from_slice(&payload);
+        out.push(RCSP_TAIL);
+        out
+    }
+
+    /// Parse a complete frame (including the `FE DC BA` magic and `EF` tail).
+    pub fn parse(frame: &[u8]) -> Option<Self> {
+        if frame.len() < 8 || frame[..3] != RCSP_HEAD {
+            return None;
+        }
+        let flags = frame[3];
+        let op_code = frame[4];
+        let param_len = u16::from_be_bytes([frame[5], frame[6]]) as usize;
+        if frame.len() < 7 + param_len + 1 || frame[7 + param_len] != RCSP_TAIL {
+            return None;
+        }
+        let body = &frame[7..7 + param_len];
+        let is_command = flags & FLAG_COMMAND != 0;
+        let mut packet = RcspPacket {
+            is_command,
+            has_response: flags & FLAG_HAS_RESPONSE != 0,
+            op_code,
+            op_code_sn: 0,
+            status: 0,
+            xm_op_code: 0,
+            param: Vec::new(),
+        };
+        if !body.is_empty() {
+            let mut i = 0;
+            if !is_command {
+                packet.status = body[0];
+                i = 1;
+            }
+            if i >= body.len() {
+                return None;
+            }
+            packet.op_code_sn = body[i];
+            i += 1;
+            if op_code == CMD_DATA {
+                if i >= body.len() {
+                    return None;
+                }
+                packet.xm_op_code = body[i];
+                i += 1;
+            }
+            packet.param = body[i..].to_vec();
+        }
+        Some(packet)
+    }
+}
+
+/// Events produced by the reassembler.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RcspEvent {
+    /// A complete RCSP frame.
+    Packet(RcspPacket),
+    /// Bytes that are not RCSP framing (e.g. raw authentication data).
+    Raw(Vec<u8>),
+}
+
+/// Stream reassembler for BLE notifications, which may fragment or concatenate
+/// RCSP frames.
+#[derive(Default)]
+pub struct RcspStream {
+    buf: Vec<u8>,
+}
+
+const MAX_BUF: usize = 8192;
+
+impl RcspStream {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn push(&mut self, data: &[u8]) -> Vec<RcspEvent> {
+        self.buf.extend_from_slice(data);
+        let mut events = Vec::new();
+        loop {
+            if self.buf.is_empty() {
+                break;
+            }
+            match self.buf.windows(3).position(|w| w == RCSP_HEAD) {
+                Some(0) => {
+                    if self.buf.len() < 7 {
+                        break;
+                    }
+                    let param_len = u16::from_be_bytes([self.buf[5], self.buf[6]]) as usize;
+                    let total = 7 + param_len + 1;
+                    if self.buf.len() < total {
+                        break;
+                    }
+                    if self.buf[7 + param_len] != RCSP_TAIL {
+                        // Corrupt tail: drop one byte and resync.
+                        self.buf.remove(0);
+                        continue;
+                    }
+                    let frame: Vec<u8> = self.buf.drain(..total).collect();
+                    if let Some(packet) = RcspPacket::parse(&frame) {
+                        events.push(RcspEvent::Packet(packet));
+                    }
+                }
+                Some(pos) => {
+                    let raw: Vec<u8> = self.buf.drain(..pos).collect();
+                    events.push(RcspEvent::Raw(raw));
+                }
+                None => {
+                    // Hold raw bytes for the caller (e.g. auth), bounded.
+                    if self.buf.len() > MAX_BUF {
+                        let drop = self.buf.len() - MAX_BUF;
+                        self.buf.drain(..drop);
+                    }
+                    break;
+                }
+            }
+        }
+        events
+    }
+
+    /// Drain any held non-RCSP bytes (used after the auth handshake).
+    pub fn take_raw(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.buf)
+    }
+}
+
+/// The RCSP "reset auth flag" frame, sent before authentication.
+pub fn auth_reset_frame() -> Vec<u8> {
+    RcspPacket::command(CMD_RESET_AUTH_FLAG, 0, vec![0x01]).to_bytes()
+}
+
+/// Compute the response to a device challenge.
+pub fn auth_response(challenge: &[u8]) -> [u8; 16] {
+    e1::jieli_encrypt(challenge)
+}
+
+/// Generate a 16-byte random challenge (non-cryptographic; the auth scheme is
+/// a fixed-key challenge/response, not a security boundary here).
+pub fn random16() -> [u8; 16] {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let mut seed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0x9E37_79B9_7F4A_7C15)
+        ^ (std::process::id() as u64) << 32;
+    let mut out = [0u8; 16];
+    for chunk in out.chunks_mut(8) {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        let bytes = seed.to_le_bytes();
+        chunk.copy_from_slice(&bytes[..chunk.len()]);
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_reset_auth_frame_bytes() {
+        // Quarkslab observed FEDCBAC00600020001EF.
+        assert_eq!(
+            auth_reset_frame(),
+            vec![0xFE, 0xDC, 0xBA, 0xC0, 0x06, 0x00, 0x02, 0x00, 0x01, 0xEF]
+        );
+    }
+
+    #[test]
+    fn test_custom_roundtrip() {
+        let packet = RcspPacket::custom(5, vec![ora::ANC, 1]);
+        let bytes = packet.to_bytes();
+        // FE DC BA C0 FF 00 03 05 03 01 EF
+        assert_eq!(
+            bytes,
+            vec![0xFE, 0xDC, 0xBA, 0xC0, 0xFF, 0x00, 0x03, 0x05, 0x03, 0x01, 0xEF]
+        );
+        let parsed = RcspPacket::parse(&bytes).unwrap();
+        assert_eq!(parsed, packet);
+    }
+
+    #[test]
+    fn test_response_parse() {
+        // status=0, sn=5, param=[0x03, 0x02]
+        let frame = vec![
+            0xFE, 0xDC, 0xBA, 0x00, 0xFF, 0x00, 0x04, 0x00, 0x05, 0x03, 0x02, 0xEF,
+        ];
+        let parsed = RcspPacket::parse(&frame).unwrap();
+        assert!(!parsed.is_command);
+        assert_eq!(parsed.status, 0);
+        assert_eq!(parsed.op_code_sn, 5);
+        assert_eq!(parsed.param, vec![0x03, 0x02]);
+    }
+
+    #[test]
+    fn test_stream_reassembly() {
+        let packet = RcspPacket::custom(1, vec![0x03, 0x01]);
+        let bytes = packet.to_bytes();
+        let mut stream = RcspStream::new();
+        // Split in the middle of the frame.
+        let mut events = stream.push(&bytes[..5]);
+        assert!(events.is_empty());
+        events.extend(stream.push(&bytes[5..]));
+        assert_eq!(events, vec![RcspEvent::Packet(packet)]);
+    }
+}
