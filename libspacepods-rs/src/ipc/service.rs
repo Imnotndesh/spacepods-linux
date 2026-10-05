@@ -641,6 +641,25 @@ impl SpacePodsService {
                 }
             }
 
+            // ── Rename ──
+            ServiceCommand::Rename { name } => {
+                let _ = buds.manager.ensure_connected().await;
+                let result = if buds.is_jieli().await {
+                    buds.manager.jieli_rename(&name).await
+                } else {
+                    buds.send_raw(0x2D, name.bytes().collect()).await
+                };
+                match result {
+                    Ok(_) => IpcResult::Success {
+                        message: Some("Renamed".to_string()),
+                        data: None,
+                    },
+                    Err(e) => IpcResult::Error {
+                        message: format!("Rename failed: {}", e),
+                    },
+                }
+            }
+
             _ => IpcResult::Error {
                 message: "Command not handled".to_string(),
             },

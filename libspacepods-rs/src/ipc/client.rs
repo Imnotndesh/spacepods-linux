@@ -167,6 +167,15 @@ impl SpacePodsClient {
         }
     }
 
+    /// Rename the connected device (chip-agnostic).
+    pub async fn rename(&mut self, name: &str) -> Result<()> {
+        self.send_command_raw(ServiceCommand::Rename {
+            name: name.to_string(),
+        })
+        .await?;
+        Ok(())
+    }
+
     /// Subscribe to real-time status updates.
     /// Returns a broadcast receiver that yields `DeviceStatus` values.
     pub async fn subscribe(&mut self) -> Result<broadcast::Receiver<DeviceStatus>> {

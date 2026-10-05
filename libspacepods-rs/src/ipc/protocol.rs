@@ -89,6 +89,10 @@ pub enum ServiceCommand {
     /// Query a boolean feature by stable, chip-agnostic name.
     #[serde(rename = "get_feature")]
     GetFeature { feature: String },
+
+    /// Rename the device (chip-agnostic).
+    #[serde(rename = "rename")]
+    Rename { name: String },
 }
 
 // ── IPC Response ──

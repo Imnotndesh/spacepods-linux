@@ -398,6 +398,14 @@ impl ConnectionManager {
         self.jieli_conn().await?.get_anc_level().await
     }
 
+    pub async fn jieli_rename(&self, name: &str) -> Result<()> {
+        self.jieli_conn().await?.rename(name).await
+    }
+
+    pub async fn jieli_set_adv_setting(&self, ltv_type: u8, data: &[u8]) -> Result<()> {
+        self.jieli_conn().await?.set_adv_setting(ltv_type, data).await
+    }
+
     pub async fn jieli_set_dual_device(&self, enable: bool) -> Result<()> {
         self.jieli_conn().await?.set_dual_device(enable).await
     }

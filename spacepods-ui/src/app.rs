@@ -135,6 +135,9 @@ pub fn run_app() -> glib::ExitCode {
                 // Sync the tray's ANC radio-group to the shared cell.
                 tray::ANC_MODE_ATOMIC.store(ctx.anc_mode.get(), std::sync::atomic::Ordering::Relaxed);
 
+                // Keep the UI reactive to daemon status pushes.
+                crate::context::spawn_status_subscription(ctx.clone());
+
                 // Expose the context so the tray command loop can open the popup.
                 *slot.borrow_mut() = Some(std::rc::Rc::downgrade(&ctx));
 

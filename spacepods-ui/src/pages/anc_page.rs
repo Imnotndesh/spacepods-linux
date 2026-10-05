@@ -158,7 +158,6 @@ impl AncPage {
         offline_status.set_vexpand(true);
 
         container.append(&header_row);
-        container.append(&refresh_btn);
         container.append(&mode_row);
         container.append(&mode_spinner);
         container.append(&anc_group);
@@ -187,40 +186,13 @@ impl AncPage {
                             Log::info("ANC", &format!("Status received: mode={:?} level={} max={} adaptive={:?} dual={:?}",
                                 s.anc.mode, s.anc.level, s.anc.max_level,
                                 s.features.adaptive_anc, s.features.dual_device));
-
-                            for b in [&off_btn, &anc_btn, &trans_btn] { b.set_sensitive(true); }
-
-                            let mode = s.anc.mode as u8;
-                            current_mode.set(mode);
-                            ctx.anc_mode.set(mode);
-                            crate::tray::ANC_MODE_ATOMIC.store(mode, std::sync::atomic::Ordering::Relaxed);
-                            applying.set(true);
-                            match mode {
-                                0 => off_btn.set_active(true),
-                                1 => anc_btn.set_active(true),
-                                2 => trans_btn.set_active(true),
-                                _ => {}
-                            }
-                            applying.set(false);
-                            Self::apply_mode_ui(mode, &low_btn, &med_btn, &high_btn, &adaptive_switch, &adaptive_row);
-
-                            match s.anc.level as u8 {
-                                1..=2 => low_btn.set_active(true),
-                                3 => med_btn.set_active(true),
-                                4..=5 => high_btn.set_active(true),
-                                _ => {}
-                            }
-
-                            if let Some(v) = s.features.adaptive_anc {
-                                adaptive_switch.set_active(v);
-                            }
-                            if let Some(v) = s.features.dual_device {
-                                dual_switch.set_active(v);
-                            }
-                            adaptive_switch.set_sensitive(mode == 1);
-                            adaptive_row.set_sensitive(mode == 1);
-                            dual_switch.set_sensitive(true);
-                            dual_row.set_sensitive(true);
+                            Self::apply_status(
+                                &s, &off_btn, &anc_btn, &trans_btn,
+                                &low_btn, &med_btn, &high_btn,
+                                &adaptive_switch, &adaptive_row,
+                                &dual_switch, &dual_row,
+                                &applying, &current_mode, &ctx,
+                            );
                         }
                         Err(e) => {
                             mode_row.set_visible(false);
@@ -306,6 +278,31 @@ impl AncPage {
         Self::connect_mode(&trans_btn, 2, "transparency", &low_btn, &med_btn, &high_btn,
                            &adaptive_switch, &adaptive_row, &mode_spinner,
                            &applying, &current_mode, ctx.clone());
+
+        // React to pushed status updates (from the daemon, CLI, or earbuds).
+        {
+            let off = off_btn.clone();
+            let anc = anc_btn.clone();
+            let trans = trans_btn.clone();
+            let low = low_btn.clone();
+            let med = med_btn.clone();
+            let high = high_btn.clone();
+            let asw = adaptive_switch.clone();
+            let ar = adaptive_row.clone();
+            let dsw = dual_switch.clone();
+            let dr = dual_row.clone();
+            let applying = applying.clone();
+            let current_mode = current_mode.clone();
+            let ctx_weak = Rc::downgrade(&ctx);
+            ctx.on_status(move |s| {
+                if let Some(ctx) = ctx_weak.upgrade() {
+                    Self::apply_status(
+                        s, &off, &anc, &trans, &low, &med, &high,
+                        &asw, &ar, &dsw, &dr, &applying, &current_mode, &ctx,
+                    );
+                }
+            });
+        }
 
         {
             let ctx = ctx.clone();
@@ -504,6 +501,59 @@ impl AncPage {
         adaptive_row.set_sensitive(mode == 1);
     }
 
+    /// Apply a daemon status snapshot to the ANC widgets. Used both for the
+    /// initial load and for pushed status updates, so the page stays reactive.
+    #[allow(clippy::too_many_arguments)]
+    fn apply_status(
+        s: &libspacepods::ipc::protocol::DeviceStatus,
+        off_btn: &ToggleButton,
+        anc_btn: &ToggleButton,
+        trans_btn: &ToggleButton,
+        low_btn: &ToggleButton,
+        med_btn: &ToggleButton,
+        high_btn: &ToggleButton,
+        adaptive_switch: &Switch,
+        adaptive_row: &ActionRow,
+        dual_switch: &Switch,
+        dual_row: &ActionRow,
+        applying: &Rc<Cell<bool>>,
+        current_mode: &Rc<Cell<u8>>,
+        ctx: &Rc<AppContext>,
+    ) {
+        for b in [off_btn, anc_btn, trans_btn] {
+            b.set_sensitive(true);
+        }
+        let mode = s.anc.mode as u8;
+        current_mode.set(mode);
+        ctx.anc_mode.set(mode);
+        crate::tray::ANC_MODE_ATOMIC.store(mode, std::sync::atomic::Ordering::Relaxed);
+        applying.set(true);
+        match mode {
+            0 => off_btn.set_active(true),
+            1 => anc_btn.set_active(true),
+            2 => trans_btn.set_active(true),
+            _ => {}
+        }
+        applying.set(false);
+        Self::apply_mode_ui(mode, low_btn, med_btn, high_btn, adaptive_switch, adaptive_row);
+        match s.anc.level as u8 {
+            1..=2 => low_btn.set_active(true),
+            3 => med_btn.set_active(true),
+            4..=5 => high_btn.set_active(true),
+            _ => {}
+        }
+        if let Some(v) = s.features.adaptive_anc {
+            adaptive_switch.set_active(v);
+        }
+        if let Some(v) = s.features.dual_device {
+            dual_switch.set_active(v);
+        }
+        adaptive_switch.set_sensitive(mode == 1);
+        adaptive_row.set_sensitive(mode == 1);
+        dual_switch.set_sensitive(true);
+        dual_row.set_sensitive(true);
+    }
+
     fn connect_mode(
         btn: &ToggleButton, mode_id: u8, mode_name: &'static str,
         low_btn: &ToggleButton, med_btn: &ToggleButton, high_btn: &ToggleButton,
@@ -530,6 +580,7 @@ impl AncPage {
                 return;
             }
             b.add_css_class("suggested-action");
+            Log::info("ANC", &format!("mode button {} toggled active (applying={})", mode_id, applying.get()));
             if applying.get() {
                 Self::apply_mode_ui(mode_id, &low, &med, &high, &asw, &ar);
                 return;
@@ -565,6 +616,7 @@ impl AncPage {
                 btn_ref.set_sensitive(true);
 
                 if let Err(e) = result {
+                    Log::warn("ANC", &format!("set_anc_mode '{}' failed: {}", mc, e));
                     ctx.error(format!("Couldn't switch ANC mode: {}", e));
                     current_mode_ref.set(previous_mode);
                     ctx.anc_mode.set(previous_mode);

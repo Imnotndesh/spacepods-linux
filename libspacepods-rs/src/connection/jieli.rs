@@ -300,6 +300,21 @@ impl JieliConnection {
 
     // ── High-level feature helpers ──
 
+    /// `CMD_ADV_SETTINGS` with an LTV payload (`modifyDeviceSettingsInfo`).
+    pub async fn set_adv_setting(&self, ltv_type: u8, data: &[u8]) -> Result<()> {
+        let param = jieli::ltv_packet(ltv_type, data);
+        let sn = self.next_seq().await;
+        let packet = RcspPacket::command(jieli::CMD_ADV_SETTINGS, sn, param);
+        self.send_rcsp(packet).await?;
+        Ok(())
+    }
+
+    /// Rename the device (`ADV_TYPE_RENAME`).
+    pub async fn rename(&self, name: &str) -> Result<()> {
+        self.set_adv_setting(jieli::ADV_TYPE_RENAME, name.as_bytes())
+            .await
+    }
+
     /// Set the noise-control mode (`0` = off, `1` = ANC, `2` = transparency).
     ///
     /// This is the JieLi `SET_SYS_INFO` command with attribute type 13

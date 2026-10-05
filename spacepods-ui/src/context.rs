@@ -3,7 +3,8 @@
 use gtk4::prelude::*;
 use libadwaita::{Toast, ToastOverlay};
 use libspacepods::device_profile::{DeviceProfile, profile_for_product};
-use std::cell::Cell;
+use libspacepods::ipc::protocol::DeviceStatus;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use crate::log::Log;
@@ -92,6 +93,10 @@ pub struct AppContext {
     /// Current ANC mode: 0=off, 1=ANC, 2=transparency.
     /// Shared between the ANC page and the tray popup so they stay in sync.
     pub anc_mode: Rc<Cell<u8>>,
+    /// Latest status pushed by the daemon (kept live by a subscription).
+    pub status: Rc<RefCell<Option<DeviceStatus>>>,
+    /// Callbacks invoked whenever a new status arrives, on the GTK main loop.
+    status_listeners: Rc<RefCell<Vec<Box<dyn Fn(&DeviceStatus)>>>>,
 }
 
 impl AppContext {
@@ -106,7 +111,23 @@ impl AppContext {
             tray,
             window,
             anc_mode: Rc::new(Cell::new(0)),
+            status: Rc::new(RefCell::new(None)),
+            status_listeners: Rc::new(RefCell::new(Vec::new())),
         })
+    }
+
+    /// Register a callback for status updates (called on the main loop).
+    pub fn on_status(&self, f: impl Fn(&DeviceStatus) + 'static) {
+        self.status_listeners.borrow_mut().push(Box::new(f));
+    }
+
+    /// Store a new status and notify listeners.
+    pub fn publish_status(&self, s: &DeviceStatus) {
+        *self.status.borrow_mut() = Some(s.clone());
+        let listeners = self.status_listeners.borrow();
+        for f in listeners.iter() {
+            f(s);
+        }
     }
 
     /// Get the device profile for the currently connected device, or None.
@@ -149,6 +170,32 @@ impl AppContext {
     pub fn daemon_unreachable(&self, err: impl std::fmt::Display) {
         self.error(format!("Can't reach SpacePods service: {}", err));
     }
+}
+
+/// Start a background subscription to the daemon's pushed status updates.
+///
+/// Reconnects automatically if the socket drops. This is what makes the UI
+/// react to changes (from the CLI, the earbuds, or another client) without a
+/// manual refresh.
+pub fn spawn_status_subscription(ctx: Rc<AppContext>) {
+    glib::spawn_future_local(async move {
+        loop {
+            {
+                use libspacepods::client::SpacePodsClient;
+                if let Ok(mut client) = SpacePodsClient::connect(None).await {
+                    if let Ok(mut rx) = client.subscribe().await {
+                        // Keep the socket (and its writer half) alive while the
+                        // reader task feeds the broadcast channel.
+                        let _keep = client;
+                        while let Ok(status) = rx.recv().await {
+                            ctx.publish_status(&status);
+                        }
+                    }
+                }
+            }
+            glib::timeout_future(std::time::Duration::from_secs(3)).await;
+        }
+    });
 }
 
 /// Marks a set of widgets sensitive/insensitive together, so a slow

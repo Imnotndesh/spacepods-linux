@@ -30,7 +30,23 @@ pub const CMD_GET_TARGET_INFO: u8 = 0x03;
 pub const CMD_RESET_AUTH_FLAG: u8 = 0x06;
 pub const CMD_GET_SYS_INFO: u8 = 0x07;
 pub const CMD_SET_SYS_INFO: u8 = 0x08;
+pub const CMD_ADV_SETTINGS: u8 = 0xC0;
 pub const CMD_CUSTOM: u8 = 0xFF;
+
+/// `modifyDeviceSettingsInfo` sub-types (LTV packets under `CMD_ADV_SETTINGS`).
+pub const ADV_TYPE_RENAME: u8 = 1;
+pub const ADV_TYPE_KEY_SETTINGS: u8 = 2;
+pub const ADV_TYPE_LED_SETTINGS: u8 = 3;
+pub const ADV_TYPE_EAR_MODE: u8 = 5;
+
+/// Build an LTV packet: `[len+1][type][data…]` (`ParseDataUtil.packLTVPacket`).
+pub fn ltv_packet(ltv_type: u8, data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(data.len() + 2);
+    out.push((data.len() + 1) as u8);
+    out.push(ltv_type);
+    out.extend_from_slice(data);
+    out
+}
 
 /// JieLi's fixed authentication pass response.
 pub const AUTH_PASS: [u8; 5] = [0x02, b'p', b'a', b's', b's'];

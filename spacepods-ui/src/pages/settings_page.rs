@@ -205,14 +205,10 @@ impl SettingsPage {
                     if name.is_empty() {
                         return;
                     }
-                    let payload: Vec<u8> = name.bytes().collect();
-                    let cc = libspacepods::ipc::ServiceCommand::Custom {
-                        command_id: 0x2D, payload,
-                    };
                     glib::spawn_future_local(async move {
                         use libspacepods::client::SpacePodsClient;
                         if let Ok(mut client) = SpacePodsClient::connect(None).await {
-                            let _ = client.send_command_raw(cc).await;
+                            let _ = client.rename(&name).await;
                         }
                     });
                 });
