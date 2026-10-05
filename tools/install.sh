@@ -294,7 +294,7 @@ Wants=bluetooth.target
 
 [Service]
 Type=simple
-ExecStart=@PREFIX@/bin/libspacepods service --log-level @LOG_LEVEL@
+ExecStart=@PREFIX@/bin/libspacepods --log-level @LOG_LEVEL@ service
 Restart=on-failure
 RestartSec=3
 StandardOutput=journal
