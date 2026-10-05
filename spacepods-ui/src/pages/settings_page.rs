@@ -128,6 +128,20 @@ impl SettingsPage {
         version_row.add_suffix(&version_label);
         about_group.add(&version_row);
 
+        let about_row = ActionRow::new();
+        about_row.set_title("About SpacePods");
+        about_row.set_subtitle("Version, license and credits");
+        about_row.set_activatable(true);
+        let about_chevron = gtk4::Image::from_icon_name("go-next-symbolic");
+        about_chevron.add_css_class("dim-label");
+        about_row.add_suffix(&about_chevron);
+        about_row.connect_activated(move |row| {
+            if let Some(win) = row.root().and_then(|r| r.downcast::<gtk4::Window>().ok()) {
+                crate::app::show_about(&win);
+            }
+        });
+        about_group.add(&about_row);
+
         let source_row = ActionRow::new();
         source_row.set_title("Source code");
         source_row.set_subtitle("github.com/Imnotndesh/spacepods-linux");
@@ -167,59 +181,83 @@ impl SettingsPage {
             }
         });
 
-        rename_row.connect_activated(move |_| {
-            let dialog = gtk4::Dialog::new();
-            dialog.set_title(Some("Rename Device"));
-            dialog.set_modal(true);
-            let entry = gtk4::Entry::new();
-            entry.set_placeholder_text(Some("Enter new Bluetooth name…"));
-            entry.set_margin_top(12);
-            entry.set_margin_bottom(12);
-            entry.set_margin_start(12);
-            entry.set_margin_end(12);
-            dialog.content_area().append(&entry);
-            dialog.add_button("Cancel", gtk4::ResponseType::Cancel);
-            dialog.add_button("Rename", gtk4::ResponseType::Accept);
-            dialog.connect_response(move |d, resp| {
-                if resp == gtk4::ResponseType::Accept {
-                    let name = entry.text().to_string();
-                    if !name.is_empty() {
-                        let payload: Vec<u8> = name.bytes().collect();
-                        let cc = libspacepods::ipc::ServiceCommand::Custom {
-                            command_id: 0x2D, payload,
-                        };
-                        glib::spawn_future_local(async move {
-                            use libspacepods::client::SpacePodsClient;
-                            if let Ok(mut client) = SpacePodsClient::connect(None).await {
-                                let _ = client.send_command_raw(cc).await;
-                            }
-                        });
+        rename_row.connect_activated(move |row| {
+            let parent = row.root().and_then(|r| r.downcast::<gtk4::Window>().ok());
+            let dialog = libadwaita::AlertDialog::new(
+                Some("Rename Device"),
+                Some("Choose the name other devices will see when pairing."),
+            );
+            let entry = libadwaita::EntryRow::new();
+            entry.set_title("Bluetooth name");
+            dialog.set_extra_child(Some(&entry));
+            dialog.add_response("cancel", "Cancel");
+            dialog.add_response("rename", "Rename");
+            dialog.set_response_appearance("rename", libadwaita::ResponseAppearance::Suggested);
+            dialog.set_default_response(Some("rename"));
+            dialog.set_close_response("cancel");
+            {
+                let entry = entry.clone();
+                dialog.connect_response(None, move |_, response| {
+                    if response != "rename" {
+                        return;
                     }
-                }
-                d.close();
-            });
-            dialog.present();
+                    let name = entry.text().to_string();
+                    if name.is_empty() {
+                        return;
+                    }
+                    let payload: Vec<u8> = name.bytes().collect();
+                    let cc = libspacepods::ipc::ServiceCommand::Custom {
+                        command_id: 0x2D, payload,
+                    };
+                    glib::spawn_future_local(async move {
+                        use libspacepods::client::SpacePodsClient;
+                        if let Ok(mut client) = SpacePodsClient::connect(None).await {
+                            let _ = client.send_command_raw(cc).await;
+                        }
+                    });
+                });
+            }
+            entry.grab_focus();
+            dialog.present(parent.as_ref());
         });
 
         {
             let clear_status = clear_status.clone();
-            clear_pair_row.connect_activated(move |_| {
-                let cs = clear_status.clone();
-                cs.set_text("Clearing pairing records…");
-                cs.set_visible(true);
-                glib::spawn_future_local(async move {
-                    use libspacepods::client::SpacePodsClient;
-                    let cc = libspacepods::ipc::ServiceCommand::Custom {
-                        command_id: 0x2F, payload: vec![],
-                    };
-                    match SpacePodsClient::connect(None).await {
-                        Ok(mut client) => match client.send_command_raw(cc).await {
-                            Ok(_) => cs.set_text("Pairing records cleared. Device will restart."),
-                            Err(e) => cs.set_text(&format!("Failed: {}", e)),
-                        },
-                        Err(e) => cs.set_text(&format!("Service unreachable: {}", e)),
-                    }
-                });
+            clear_pair_row.connect_activated(move |row| {
+                let parent = row.root().and_then(|r| r.downcast::<gtk4::Window>().ok());
+                let dialog = libadwaita::AlertDialog::new(
+                    Some("Clear pairing records?"),
+                    Some("This removes all paired devices from the earbuds and restarts them."),
+                );
+                dialog.add_response("cancel", "Cancel");
+                dialog.add_response("clear", "Clear");
+                dialog.set_response_appearance("clear", libadwaita::ResponseAppearance::Destructive);
+                dialog.set_close_response("cancel");
+                {
+                    let cs = clear_status.clone();
+                    dialog.connect_response(None, move |_, response| {
+                        if response != "clear" {
+                            return;
+                        }
+                        let cs = cs.clone();
+                        cs.set_text("Clearing pairing records…");
+                        cs.set_visible(true);
+                        glib::spawn_future_local(async move {
+                            use libspacepods::client::SpacePodsClient;
+                            let cc = libspacepods::ipc::ServiceCommand::Custom {
+                                command_id: 0x2F, payload: vec![],
+                            };
+                            match SpacePodsClient::connect(None).await {
+                                Ok(mut client) => match client.send_command_raw(cc).await {
+                                    Ok(_) => cs.set_text("Pairing records cleared. Device will restart."),
+                                    Err(e) => cs.set_text(&format!("Failed: {}", e)),
+                                },
+                                Err(e) => cs.set_text(&format!("Service unreachable: {}", e)),
+                            }
+                        });
+                    });
+                }
+                dialog.present(parent.as_ref());
             });
         }
 

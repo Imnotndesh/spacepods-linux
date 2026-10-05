@@ -100,6 +100,7 @@ impl SetupPage {
         // ── Header ──
         let header = HeaderBar::new();
         header.set_title_widget(Some(&WindowTitle::new("SpacePods Linux", "Connect your earbuds")));
+        header.pack_end(&crate::app::primary_menu_button());
 
         // ── Disclaimer banner ──
         let settings = load_settings();

@@ -411,12 +411,14 @@ install_spacepods_ui() {
 [Desktop Entry]
 Type=Application
 Name=SpacePods Linux
-Comment=Control your SpaceBuds earbuds
+Comment=Control your oraimo SpaceBuds earbuds
 Exec=spacepods-ui
 Icon=com.spacepods.ui
-Categories=Audio;Settings;HardwareSettings;
 Terminal=false
+Categories=Audio;Settings;HardwareSettings;
+Keywords=earbuds;bluetooth;audio;oraimo;spacebuds;anc;equalizer;
 StartupNotify=true
+StartupWMClass=com.spacepods.ui
 EOF
   cat > "$TMP_DIR/com.spacepods.ui.svg" <<'EOF'
 <svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256"><rect width="256" height="256" rx="48" fill="#1f57c4"/><text x="128" y="150" font-family="sans-serif" font-size="120" font-weight="bold" text-anchor="middle" fill="#fff">S</text></svg>

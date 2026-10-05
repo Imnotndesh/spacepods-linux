@@ -92,9 +92,13 @@ fn build_panel(ctx: &Rc<AppContext>) -> Box {
     let minus_btn = Button::from_icon_name("list-remove-symbolic");
     minus_btn.add_css_class("flat");
     minus_btn.add_css_class("circular");
+    minus_btn.set_tooltip_text(Some("Decrease ambient level"));
+    minus_btn.update_property(&[gtk4::accessible::Property::Label("Decrease ambient level")]);
     let plus_btn = Button::from_icon_name("list-add-symbolic");
     plus_btn.add_css_class("flat");
     plus_btn.add_css_class("circular");
+    plus_btn.set_tooltip_text(Some("Increase ambient level"));
+    plus_btn.update_property(&[gtk4::accessible::Property::Label("Increase ambient level")]);
 
     let level_row = Box::new(Orientation::Horizontal, 6);
     level_row.append(&minus_btn);

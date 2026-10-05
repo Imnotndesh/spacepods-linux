@@ -1,9 +1,10 @@
 use gtk4::prelude::*;
+use gtk4::gio;
+use gtk4::gio::prelude::ActionMapExt;
 use gtk4::{Box, Label, Orientation, Image, ListBox, ListBoxRow, SelectionMode};
-use glib::clone;
 use std::rc::Rc;
 use libadwaita::{
-    HeaderBar, ToolbarView, ToastOverlay, OverlaySplitView,
+    HeaderBar, ToolbarView, ToastOverlay, NavigationPage, NavigationSplitView,
     Breakpoint, BreakpointCondition, ApplicationWindow,
 };
 use libadwaita::prelude::*;
@@ -185,7 +186,9 @@ impl HomeView {
         sidebar_list.set_vexpand(true);
 
         let mut current_section: Option<Section> = None;
-        let mut row_to_id: Vec<(ListBoxRow, &'static str)> = Vec::new();
+        // (row, page id, page title) so the selection handler can update the
+        // content header and the window's `show-settings` action can find a row.
+        let mut row_to_id: Vec<(ListBoxRow, &'static str, &'static str)> = Vec::new();
 
         for page in &pages {
             if ctx.product_id.get().is_some() {
@@ -238,35 +241,76 @@ impl HomeView {
             let row = ListBoxRow::new();
             row.set_child(Some(&row_box));
             sidebar_list.append(&row);
-            row_to_id.push((row, page.id));
+            row_to_id.push((row, page.id, page.title));
         }
 
-        if let Some((first_row, first_id)) = row_to_id.first() {
+        if let Some((first_row, first_id, _)) = row_to_id.first() {
             sidebar_list.select_row(Some(first_row));
             content_stack.set_visible_child_name(first_id);
         }
 
-        // ── Wire selection -> content stack ──
-        let split_view = OverlaySplitView::builder()
-            .min_sidebar_width(220.0)
-            .max_sidebar_width(280.0)
-            .sidebar_width_fraction(0.28)
+        // ── Sidebar pane ──
+        let sidebar_header = HeaderBar::builder()
+            .show_title(false)
             .build();
+        let sidebar_title = libadwaita::WindowTitle::new("SpacePods Linux", "Earbud Manager");
+        sidebar_header.set_title_widget(Some(&sidebar_title));
+        sidebar_header.pack_end(&crate::app::primary_menu_button());
 
-        // Create content_scroll early so we can reference it in the selection handler
+        let sidebar_scroll = gtk4::ScrolledWindow::new();
+        sidebar_scroll.set_hscrollbar_policy(gtk4::PolicyType::Never);
+        sidebar_scroll.set_vexpand(true);
+        sidebar_scroll.set_child(Some(&sidebar_list));
+
+        let sidebar_toolbar = ToolbarView::new();
+        sidebar_toolbar.add_top_bar(&sidebar_header);
+        sidebar_toolbar.set_content(Some(&sidebar_scroll));
+        let sidebar_page = NavigationPage::with_tag(&sidebar_toolbar, "SpacePods Linux", "sidebar");
+
+        // ── Content pane ──
         let content_scroll = gtk4::ScrolledWindow::new();
         content_scroll.set_hscrollbar_policy(gtk4::PolicyType::Never);
         content_scroll.set_vexpand(true);
+        content_scroll.set_child(Some(&content_stack));
 
+        let content_header = HeaderBar::new();
+        let content_title = libadwaita::WindowTitle::new("", "");
+        content_header.set_title_widget(Some(&content_title));
+        content_header.pack_end(&crate::app::primary_menu_button());
+
+        let content_toolbar = ToolbarView::new();
+        content_toolbar.add_top_bar(&content_header);
+        content_toolbar.set_content(Some(&content_scroll));
+        let content_page = NavigationPage::with_tag(&content_toolbar, "", "content");
+
+        // ── Adaptive split view (collapses into an AdwNavigationView) ──
+        let split_view = NavigationSplitView::new();
+        split_view.set_min_sidebar_width(220.0);
+        split_view.set_max_sidebar_width(280.0);
+        split_view.set_sidebar_width_fraction(0.28);
+        split_view.set_sidebar(Some(&sidebar_page));
+        split_view.set_content(Some(&content_page));
+
+        // Seed the header/page title for the initially selected page.
+        if let Some((_, _, first_title)) = row_to_id.first() {
+            content_title.set_title(first_title);
+            content_page.set_title(first_title);
+        }
+
+        // ── Wire selection → content stack + title ──
         {
             let stack = content_stack.clone();
             let row_to_id = row_to_id.clone();
-            let split_view_weak = split_view.downgrade();
             let content_scroll = content_scroll.clone();
+            let content_page = content_page.clone();
+            let content_title = content_title.clone();
+            let split_view_weak = split_view.downgrade();
             sidebar_list.connect_row_selected(move |_, row| {
                 let Some(row) = row else { return };
-                if let Some((_, id)) = row_to_id.iter().find(|(r, _)| r == row) {
+                if let Some((_, id, title)) = row_to_id.iter().find(|(r, _, _)| r == row) {
                     stack.set_visible_child_name(id);
+                    content_title.set_title(title);
+                    content_page.set_title(title);
                     // Reset the outer content scroll AND all inner scrolls
                     content_scroll.vadjustment().set_value(0.0);
                     let id_owned = id.to_string();
@@ -280,65 +324,38 @@ impl HomeView {
                     });
                     if let Some(sv) = split_view_weak.upgrade() {
                         if sv.is_collapsed() {
-                            sv.set_show_sidebar(false);
+                            sv.set_show_content(true);
                         }
                     }
                 }
             });
         }
-        
-        // Now set the stack as child of content_scroll
-        content_scroll.set_child(Some(&content_stack));
-        
-        let sidebar_header = HeaderBar::builder()
-            .show_title(false)
-            .build();
-        let sidebar_title = libadwaita::WindowTitle::new("SpacePods Linux", "Earbud Manager");
-        sidebar_header.set_title_widget(Some(&sidebar_title));
 
-        let sidebar_scroll = gtk4::ScrolledWindow::new();
-        sidebar_scroll.set_hscrollbar_policy(gtk4::PolicyType::Never);
-        sidebar_scroll.set_vexpand(true);
-        sidebar_scroll.set_child(Some(&sidebar_list));
-
-        let sidebar_content = Box::new(Orientation::Vertical, 0);
-        sidebar_content.append(&sidebar_scroll);
-
-        let sidebar_toolbar = ToolbarView::new();
-        sidebar_toolbar.add_top_bar(&sidebar_header);
-        sidebar_toolbar.set_content(Some(&sidebar_content));
-        
-        let content_header = HeaderBar::new();
-        let back_btn = gtk4::Button::from_icon_name("go-previous-symbolic");
-        back_btn.add_css_class("flat");
-        back_btn.set_visible(false);
-        content_header.pack_start(&back_btn);
-        content_header.set_title_widget(Some(&libadwaita::WindowTitle::new("", "")));
+        // ── Window actions (accelerators declared in `app::install_app_actions`) ──
         {
-            let split_view_weak = split_view.downgrade();
-            back_btn.connect_clicked(move |_| {
-                if let Some(sv) = split_view_weak.upgrade() {
-                    sv.set_show_sidebar(true);
+            let split_view = split_view.clone();
+            let action = gio::SimpleAction::new("toggle-sidebar", None);
+            action.connect_activate(move |_, _| {
+                if split_view.is_collapsed() {
+                    split_view.set_show_content(!split_view.shows_content());
                 }
             });
+            window.add_action(&action);
         }
-        split_view.connect_collapsed_notify(glib::clone!(
-            #[weak] back_btn,
-            move |sv| {
-                back_btn.set_visible(sv.is_collapsed());
-            }
-        ));
-        back_btn.set_visible(split_view.is_collapsed());
-
-        let content_toolbar = ToolbarView::new();
-        content_toolbar.add_top_bar(&content_header);
-        content_toolbar.set_content(Some(&content_scroll));
-
-        split_view.set_sidebar(Some(&sidebar_toolbar));
-        split_view.set_content(Some(&content_toolbar));
+        {
+            let sidebar_list = sidebar_list.clone();
+            let row_to_id = row_to_id.clone();
+            let action = gio::SimpleAction::new("show-settings", None);
+            action.connect_activate(move |_, _| {
+                if let Some((row, _, _)) = row_to_id.iter().find(|(_, id, _)| *id == "settings") {
+                    sidebar_list.select_row(Some(row));
+                }
+            });
+            window.add_action(&action);
+        }
 
         ctx.toast_overlay.set_child(Some(&split_view));
-        
+
         let condition = BreakpointCondition::new_length(
             libadwaita::BreakpointConditionLengthType::MaxWidth,
             680.0,

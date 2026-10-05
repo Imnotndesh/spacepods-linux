@@ -1,6 +1,8 @@
 use gtk4::prelude::*;
+use gtk4::gio;
 use libadwaita::{Application, ApplicationWindow, ToastOverlay};
 use libadwaita::prelude::AdwApplicationWindowExt;
+use libadwaita::prelude::AdwDialogExt;
 
 use std::rc::Rc;
 use std::cell::RefCell;
@@ -62,6 +64,7 @@ pub fn run_app() -> glib::ExitCode {
     write_autostart_entry(settings.autostart);
 
     let app = Application::new(Some("com.spacepods.ui"), Default::default());
+    install_app_actions(&app);
     let window_controller = WindowController::new();
 
     // Start the tray icon once. It runs on its own background thread (via the
@@ -145,4 +148,126 @@ pub fn run_app() -> glib::ExitCode {
     });
 
     app.run()
+}
+
+/// A `GtkMenuButton` with the standard primary (hamburger) menu.
+///
+/// Shared by the sidebar and content header bars so both expose the same
+/// app-wide actions. See the GNOME HIG "primary menu" pattern.
+pub fn primary_menu_button() -> gtk4::MenuButton {
+    let menu = gio::Menu::new();
+    let app_section = gio::Menu::new();
+    app_section.append(Some("Keyboard _Shortcuts"), Some("app.shortcuts"));
+    app_section.append(Some("A_bout SpacePods"), Some("app.about"));
+    app_section.append(Some("_Quit"), Some("app.quit"));
+    menu.append_section(None, &app_section);
+
+    let button = gtk4::MenuButton::new();
+    button.set_icon_name("open-menu-symbolic");
+    button.set_menu_model(Some(&menu));
+    button.set_primary(true);
+    button.set_tooltip_text(Some("Main Menu"));
+    button.update_property(&[gtk4::accessible::Property::Label("Main Menu")]);
+    button
+}
+
+/// Register the app-wide `Gio.Action`s and their standard accelerators.
+fn install_app_actions(app: &Application) {
+    let quit = gio::SimpleAction::new("quit", None);
+    {
+        let app = app.clone();
+        quit.connect_activate(move |_, _| app.quit());
+    }
+    app.add_action(&quit);
+    app.set_accels_for_action("app.quit", &["<primary>q"]);
+
+    let close = gio::SimpleAction::new("close", None);
+    {
+        let app = app.clone();
+        close.connect_activate(move |_, _| {
+            if let Some(win) = app.active_window() {
+                win.close();
+            }
+        });
+    }
+    app.add_action(&close);
+    app.set_accels_for_action("app.close", &["<primary>w"]);
+
+    let about = gio::SimpleAction::new("about", None);
+    {
+        let app = app.clone();
+        about.connect_activate(move |_, _| {
+            if let Some(win) = app.active_window() {
+                show_about(&win);
+            }
+        });
+    }
+    app.add_action(&about);
+
+    let shortcuts = gio::SimpleAction::new("shortcuts", None);
+    {
+        let app = app.clone();
+        shortcuts.connect_activate(move |_, _| {
+            if let Some(win) = app.active_window() {
+                show_shortcuts(&win);
+            }
+        });
+    }
+    app.add_action(&shortcuts);
+    app.set_accels_for_action("app.shortcuts", &["<primary>question"]);
+
+    // Window-scoped actions, registered by `HomeView`. Declaring the
+    // accelerators here means they work without each window re-registering them.
+    app.set_accels_for_action("win.toggle-sidebar", &["F9"]);
+    app.set_accels_for_action("win.show-settings", &["<primary>comma"]);
+}
+
+/// Show the standard GNOME About window.
+pub fn show_about(parent: &gtk4::Window) {
+    let about = libadwaita::AboutDialog::new();
+    about.set_application_name("SpacePods Linux");
+    about.set_application_icon("com.spacepods.ui");
+    about.set_version(libspacepods::VERSION);
+    about.set_developer_name("Imnotndesh");
+    about.set_developers(&["Imnotndesh"]);
+    about.set_website("https://github.com/Imnotndesh/spacepods-linux");
+    about.set_issue_url("https://github.com/Imnotndesh/spacepods-linux/issues");
+    about.set_license_type(gtk4::License::Gpl30Only);
+    about.set_copyright("\u{00A9} 2026 Imnotndesh");
+    about.present(Some(parent));
+}
+
+/// Show the standard keyboard shortcuts window.
+pub fn show_shortcuts(parent: &gtk4::Window) {
+    let window = gtk4::ShortcutsWindow::builder()
+        .title("Keyboard Shortcuts")
+        .transient_for(parent)
+        .modal(true)
+        .build();
+    window.set_section_name(Some("shortcuts"));
+    window.set_view_name(Some("SpacePods"));
+
+    let add = |group: &gtk4::ShortcutsGroup, title: &str, accel: &str| {
+        let shortcut = gtk4::ShortcutsShortcut::builder()
+            .title(title)
+            .accelerator(accel)
+            .build();
+        group.add_shortcut(&shortcut);
+    };
+
+    let general = gtk4::ShortcutsGroup::builder().title("General").build();
+    add(&general, "Quit", "<Primary>q");
+    add(&general, "Close Window", "<Primary>w");
+    add(&general, "Settings", "<Primary>comma");
+    add(&general, "Toggle Sidebar", "F9");
+
+    let section = gtk4::ShortcutsSection::builder()
+        .title("General")
+        .build();
+    section.set_section_name(Some("shortcuts"));
+    section.set_view_name(Some("SpacePods"));
+    section.add_group(&general);
+    window.add_section(&section);
+
+    window.present();
 }
