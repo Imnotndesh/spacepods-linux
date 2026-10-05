@@ -53,8 +53,21 @@ pub const AUTH_PASS: [u8; 5] = [0x02, b'p', b'a', b's', b's'];
 
 /// Sys-info attribute carrying the current voice (noise-control) mode.
 pub const ATTR_VOICE_MODE: u8 = 13;
+/// Sys-info attribute carrying the list of all voice modes.
+pub const ATTR_ALL_VOICE_MODES: u8 = 14;
 /// Bitmask for the current voice-mode attribute (`buildGetCurrentVoiceMode`).
 pub const MASK_VOICE_MODE: u32 = 1 << 13;
+/// Bitmask for the all-voice-modes attribute (`buildGetAllVoiceModes`).
+pub const MASK_ALL_VOICE_MODES: u32 = 1 << 14;
+
+/// Wrap a 9-byte `VoiceMode` in a `SET_SYS_INFO` payload.
+pub fn set_voice_mode_param_bytes(vm: &[u8]) -> Vec<u8> {
+    let mut payload = vec![0xFF]; // function = -1
+    payload.push((vm.len() + 1) as u8);
+    payload.push(ATTR_VOICE_MODE);
+    payload.extend_from_slice(vm);
+    payload
+}
 
 /// Build a `SET_SYS_INFO` payload that sets the current voice mode.
 ///
@@ -75,11 +88,7 @@ pub fn voice_mode_set_param(
     vm.extend_from_slice(&left_cur.to_be_bytes());
     vm.extend_from_slice(&right_cur.to_be_bytes());
 
-    let mut payload = vec![0xFF]; // function = -1
-    payload.push((vm.len() + 1) as u8);
-    payload.push(ATTR_VOICE_MODE);
-    payload.extend_from_slice(&vm);
-    payload
+    set_voice_mode_param_bytes(&vm)
 }
 
 /// Build a `GET_SYS_INFO` payload: `[function][mask:u32 big-endian]`.

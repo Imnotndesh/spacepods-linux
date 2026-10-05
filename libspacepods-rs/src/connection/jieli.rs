@@ -133,7 +133,7 @@ impl JieliConnection {
             seq: Arc::new(Mutex::new(0)),
             rx,
             anc_mode: Arc::new(Mutex::new(None)),
-            anc_level: Arc::new(Mutex::new((0, 0, 0, 0))),
+            anc_level: Arc::new(Mutex::new((0, 0, 1, 1))),
             state,
         })
     }
@@ -321,18 +321,55 @@ impl JieliConnection {
 
     /// Set the noise-control mode (`0` = off, `1` = ANC, `2` = transparency).
     ///
-    /// This is the JieLi `SET_SYS_INFO` command with attribute type 13
-    /// (`VoiceMode`), matching `TwsOpImpl.setCurrentVoiceMode`. The Oraimo
-    /// `{3, mode}` custom command is only used for the level/UI sync and does
-    /// not change the mode.
+    /// The reference app sends the device-reported `VoiceMode` for the target
+    /// mode (with its max/current gain fields), not a zeroed one; query the
+    /// full list first and reuse the matching entry.
     pub async fn set_anc_mode(&self, mode: u8) -> Result<()> {
-        let (lm, rm, lc, rc) = *self.anc_level.lock().await;
-        let param = jieli::voice_mode_set_param(mode, lm, rm, lc, rc);
+        // Only ever send a VoiceMode the device itself reported. This avoids
+        // writing bogus gain fields, which can leave the firmware in a bad
+        // ANC state.
+        let vm = self
+            .get_all_voice_modes()
+            .await?
+            .into_iter()
+            .find(|v| !v.is_empty() && v[0] == mode)
+            .ok_or_else(|| Error::Parse("requested voice mode not offered by device"))?;
+        let param = jieli::set_voice_mode_param_bytes(&vm);
         let sn = self.next_seq().await;
         let packet = RcspPacket::command(jieli::CMD_SET_SYS_INFO, sn, param);
         self.send_rcsp(packet).await?;
         *self.anc_mode.lock().await = Some(mode);
+        *self.anc_level.lock().await = (
+            u16::from_be_bytes([vm[1], vm[2]]),
+            u16::from_be_bytes([vm[3], vm[4]]),
+            u16::from_be_bytes([vm[5], vm[6]]),
+            u16::from_be_bytes([vm[7], vm[8]]),
+        );
         Ok(())
+    }
+
+    /// Read the device's list of voice modes (`mask 0x4000`, attr 14).
+    pub async fn get_all_voice_modes(&self) -> Result<Vec<Vec<u8>>> {
+        let sn = self.next_seq().await;
+        let param = jieli::get_sys_info_param(0xFF, jieli::MASK_ALL_VOICE_MODES);
+        let packet = RcspPacket::command(jieli::CMD_GET_SYS_INFO, sn, param);
+        let resp = self.send_rcsp(packet).await?;
+        let data = jieli::find_attr(&resp.param, jieli::ATTR_ALL_VOICE_MODES)
+            .ok_or_else(|| Error::Parse("voice mode list attr missing"))?;
+        if data.is_empty() {
+            return Ok(Vec::new());
+        }
+        let count = data[0] as usize;
+        let mut out = Vec::new();
+        let mut i = 1;
+        for _ in 0..count {
+            if i + 9 > data.len() {
+                break;
+            }
+            out.push(data[i..i + 9].to_vec());
+            i += 9;
+        }
+        Ok(out)
     }
 
     /// Query the current noise-control mode via `GET_SYS_INFO` attr 13.
