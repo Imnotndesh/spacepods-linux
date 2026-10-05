@@ -124,6 +124,7 @@ impl JieliConnection {
                     }
                 }
             }
+            crate::log::warn("JIELI", "notification pump ended");
         });
 
         Ok(Self {
@@ -272,7 +273,10 @@ impl JieliConnection {
                         Err(_) => return Err(Error::ConnectionLost),
                     }
                 }
-                _ = &mut deadline => return Err(Error::Timeout(CMD_TIMEOUT)),
+                _ = &mut deadline => {
+                    crate::log::warn("JIELI", &format!("send_rcsp TIMEOUT op={:#x} sn={}", op, sn));
+                    return Err(Error::Timeout(CMD_TIMEOUT));
+                }
             }
         }
     }
