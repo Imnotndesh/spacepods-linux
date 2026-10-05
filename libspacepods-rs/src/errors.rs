@@ -22,6 +22,9 @@ pub enum Error {
     #[error("Notify characteristic not found")]
     NotifyCharNotFound,
 
+    #[error("{0} control protocol is not supported yet")]
+    UnsupportedChip(&'static str),
+
     // ── Protocol ──
     #[error("Invalid message type: {0:#x}")]
     InvalidMessageType(u8),

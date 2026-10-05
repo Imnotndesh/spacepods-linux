@@ -173,11 +173,11 @@ fn build_profiles() -> Vec<DeviceProfile> {
     // Add every other known product ID with the generic feature set. This keeps
     // the displayed device name accurate across the whole Oraimo lineup while
     // avoiding over-claiming feature support we have not verified.
-    for &id in crate::beacon::KNOWN_PRODUCT_IDS {
+    for &id in crate::beacon::KNOWN_DEVICE_TYPES {
         if profiles.iter().any(|p| p.product_id == id) {
             continue;
         }
-        if let Some(name) = crate::beacon::product_name_for_id(id) {
+        if let Some(name) = crate::beacon::device_type_name(id) {
             profiles.push(DeviceProfile {
                 product_id: id,
                 name,
@@ -259,21 +259,23 @@ pub fn profile_for_name(name: &str) -> Option<&'static DeviceProfile> {
     })
 }
 
-/// Detect the product ID encoded in a BLE advertisement's manufacturer data.
+/// Detect the Oraimo device type encoded in a BLE advertisement's
+/// manufacturer data.
 ///
 /// Delegates to [`crate::beacon::DeviceBeacon`] so the 8-byte layout (where the
 /// product ID starts at offset 0) and the XOR-obfuscated variants are handled
-/// correctly. Unknown IDs are returned as-is so the caller can still surface a
-/// device name from the beacon name table.
+/// correctly, then maps the beacon product ID to an Oraimo device type via
+/// [`crate::beacon::device_type_from_pid`] so [`profile_for_product`] can find
+/// a matching profile. Unknown IDs are returned as-is.
 pub fn detect_product_id(manufacturer_data: &[u8]) -> Option<u16> {
-    crate::beacon::DeviceBeacon::from_manufacturer_data(manufacturer_data)
-        .map(|b| b.product_id)
-        .or_else(|| {
-            // Last-resort legacy fallback for payloads the strict parser rejects.
-            if manufacturer_data.len() >= 3 {
-                Some(u16::from_le_bytes([manufacturer_data[1], manufacturer_data[2]]))
-            } else {
-                None
-            }
-        })
+    let to_device_type = |pid: u16| crate::beacon::device_type_from_pid(pid).unwrap_or(pid);
+    if let Some(beacon) = crate::beacon::DeviceBeacon::from_manufacturer_data(manufacturer_data) {
+        return Some(to_device_type(beacon.product_id));
+    }
+    // Last-resort legacy fallback for payloads the strict parser rejects.
+    if manufacturer_data.len() >= 3 {
+        let pid = u16::from_le_bytes([manufacturer_data[1], manufacturer_data[2]]);
+        return Some(to_device_type(pid));
+    }
+    None
 }

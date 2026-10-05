@@ -102,10 +102,10 @@ impl ConnectionManager {
                 .ok_or(Error::DeviceNotFound { retries: 0 })?;
             let bdaddr = btleplug::api::BDAddr::from_str(addr)
                 .map_err(|_| Error::Ipc(format!("Invalid address: {}", addr)))?;
-            // Scan briefly with service filter to discover the peripheral
-            adapter.start_scan(ScanFilter {
-                services: vec![crate::protocol::UUID_FF17, crate::protocol::UUID_FE2C],
-            }).await?;
+            // Scan briefly to discover the peripheral. Use an empty filter:
+            // some Oraimo devices (e.g. BoomPop Pro) do not advertise the
+            // ff17/fe2c service UUIDs.
+            adapter.start_scan(ScanFilter::default()).await?;
             tokio::time::sleep(Duration::from_secs(3)).await;
             let peripherals = adapter.peripherals().await?;
             let _ = adapter.stop_scan().await;

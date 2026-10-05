@@ -1,4 +1,4 @@
-use crate::protocol::{Packet, UUID_NOTIFY, UUID_WRITE, CMD_HANDSHAKE};
+use crate::protocol::{Packet, UUID_NOTIFY, UUID_WRITE, CMD_HANDSHAKE, UUID_JIELI_WRITE, UUID_JIELI_NOTIFY};
 use crate::{Error, Result};
 use btleplug::api::{Peripheral as _, WriteType};
 use btleplug::platform::Peripheral;
@@ -29,17 +29,27 @@ impl BleConnection {
 
         let chars = peripheral.characteristics();
 
-        let write_char = chars
-            .iter()
-            .find(|c| c.uuid == UUID_WRITE)
-            .cloned()
-            .ok_or(Error::WriteCharNotFound)?;
+        let write_char = match chars.iter().find(|c| c.uuid == UUID_WRITE).cloned() {
+            Some(c) => c,
+            None => {
+                if chars.iter().any(|c| c.uuid == UUID_JIELI_WRITE)
+                    || chars.iter().any(|c| c.uuid == UUID_JIELI_NOTIFY)
+                {
+                    return Err(Error::UnsupportedChip("JieLi RCSP"));
+                }
+                return Err(Error::WriteCharNotFound);
+            }
+        };
 
-        let notify_char = chars
-            .iter()
-            .find(|c| c.uuid == UUID_NOTIFY)
-            .cloned()
-            .ok_or(Error::NotifyCharNotFound)?;
+        let notify_char = match chars.iter().find(|c| c.uuid == UUID_NOTIFY).cloned() {
+            Some(c) => c,
+            None => {
+                if chars.iter().any(|c| c.uuid == UUID_JIELI_NOTIFY) {
+                    return Err(Error::UnsupportedChip("JieLi RCSP"));
+                }
+                return Err(Error::NotifyCharNotFound);
+            }
+        };
 
         peripheral.subscribe(&notify_char).await?;
 
@@ -126,11 +136,13 @@ impl BleConnection {
                     mfg_id
                 );
                 if let Some(beacon) = crate::beacon::DeviceBeacon::from_manufacturer_data(data) {
+                    let device_type = crate::beacon::device_type_from_pid(beacon.product_id)
+                        .unwrap_or(beacon.product_id);
                     eprintln!(
-                        "[SPACEPODS][BLE] beacon product_id={} version={}",
-                        beacon.product_id, beacon.version
+                        "[SPACEPODS][BLE] beacon product_id={} device_type={} version={}",
+                        beacon.product_id, device_type, beacon.version
                     );
-                    return Some(beacon.product_id);
+                    return Some(device_type);
                 }
             }
         } else {

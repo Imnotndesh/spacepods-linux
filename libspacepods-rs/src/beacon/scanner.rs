@@ -15,7 +15,7 @@
 //! which silently dropped every device whose beacon arrived under a different
 //! company ID or which only advertised service data.
 
-use crate::beacon::{looks_like_oraimo_name, DeviceBeacon, ORAIMO_MANUFACTURER_IDS};
+use crate::beacon::{looks_like_oraimo_name, DeviceBeacon};
 use crate::{Error, Result};
 use btleplug::api::{Central, CentralEvent, Manager as _, Peripheral as _, ScanFilter};
 use btleplug::platform::{Manager, PeripheralId};
@@ -80,18 +80,13 @@ pub async fn scan_for_devices(duration: Duration) -> Result<Vec<DiscoveredDevice
                 match event {
                     Some(CentralEvent::ManufacturerDataAdvertisement { id, manufacturer_data }) => {
                         for (mfg_id, data) in &manufacturer_data {
-                            let known_company = ORAIMO_MANUFACTURER_IDS.contains(mfg_id);
-                            if let Some(beacon) = DeviceBeacon::from_manufacturer_data(data) {
-                                let entry = found
-                                    .entry(id.clone())
-                                    .or_insert_with(|| DiscoveredDevice::anonymous(id.clone()));
-                                entry.beacon = Some(beacon);
-                            } else if known_company {
-                                // Oraimo company ID with an unrecognised payload:
-                                // still surface it so it can be named/selected.
-                                found
-                                    .entry(id.clone())
-                                    .or_insert_with(|| DiscoveredDevice::anonymous(id.clone()));
+                            if crate::beacon::is_oraimo_manufacturer_data(*mfg_id, data) {
+                                if let Some(beacon) = DeviceBeacon::from_manufacturer_data(data) {
+                                    let entry = found
+                                        .entry(id.clone())
+                                        .or_insert_with(|| DiscoveredDevice::anonymous(id.clone()));
+                                    entry.beacon = Some(beacon);
+                                }
                             }
                         }
                     }
@@ -128,10 +123,13 @@ pub async fn scan_for_devices(duration: Duration) -> Result<Vec<DiscoveredDevice
             continue;
         };
 
-        let beacon = props
-            .manufacturer_data
-            .values()
-            .find_map(|data| DeviceBeacon::from_manufacturer_data(data));
+        let beacon = props.manufacturer_data.iter().find_map(|(id, data)| {
+            if crate::beacon::is_oraimo_manufacturer_data(*id, data) {
+                DeviceBeacon::from_manufacturer_data(data)
+            } else {
+                None
+            }
+        });
 
         let name_match = props
             .local_name
@@ -140,12 +138,8 @@ pub async fn scan_for_devices(duration: Duration) -> Result<Vec<DiscoveredDevice
             .unwrap_or(false);
         let service_match = props.services.iter().any(is_oraimo_service)
             || props.service_data.keys().any(is_oraimo_service);
-        let mfg_match = props
-            .manufacturer_data
-            .keys()
-            .any(|id| ORAIMO_MANUFACTURER_IDS.contains(id));
 
-        if beacon.is_none() && !name_match && !service_match && !mfg_match {
+        if beacon.is_none() && !name_match && !service_match {
             continue;
         }
 
@@ -162,7 +156,45 @@ pub async fn scan_for_devices(duration: Duration) -> Result<Vec<DiscoveredDevice
         entry.rssi = props.rssi;
     }
 
-    Ok(found.into_values().collect())
+    // Merge duplicate advertisements for the same physical device. BlueZ can
+    // expose the identity (public) address and a resolvable private address as
+    // separate peripherals; the beacon de-obfuscates to the public MAC, so use
+    // it as the canonical key and prefer the entry that carries a beacon.
+    let mut merged: Vec<DiscoveredDevice> = Vec::new();
+    for device in found.into_values() {
+        if let Some(key) = canonical_mac(&device) {
+            if let Some(existing) = merged
+                .iter_mut()
+                .find(|e| canonical_mac(e).as_deref() == Some(key.as_str()))
+            {
+                if existing.beacon.is_none() && device.beacon.is_some() {
+                    existing.beacon = device.beacon.clone();
+                    existing.ble_address = device.ble_address.clone();
+                }
+                if existing.local_name.is_none() {
+                    existing.local_name = device.local_name.clone();
+                }
+                if existing.rssi.is_none() {
+                    existing.rssi = device.rssi;
+                }
+                continue;
+            }
+        }
+        merged.push(device);
+    }
+
+    Ok(merged)
+}
+
+/// Stable identity used to de-duplicate advertisements: the beacon's
+/// de-obfuscated public MAC when available, otherwise the BLE address.
+fn canonical_mac(device: &DiscoveredDevice) -> Option<String> {
+    device
+        .beacon
+        .as_ref()
+        .and_then(|b| b.bt_address_string())
+        .or_else(|| device.ble_address.clone())
+        .map(|s| s.to_ascii_uppercase())
 }
 
 /// Find the first SpaceBuds device.

@@ -6,6 +6,13 @@ pub const UUID_FAST_PAIR: uuid::Uuid = uuid::Uuid::from_u128(0x0000fe2c_0000_100
 pub const UUID_BATTERY_SERVICE: uuid::Uuid = uuid::Uuid::from_u128(0x0000180f_0000_1000_8000_00805f9b34fb);
 pub const UUID_BATTERY_LEVEL: uuid::Uuid = uuid::Uuid::from_u128(0x00002a19_0000_1000_8000_00805f9b34fb);
 
+// JieLi RCSP control channel (observed on `oraimo BoomPop Pro`). Not yet
+// implemented — these exist so the connection layer can report a clear
+// "unsupported" error instead of a missing-characteristic one.
+pub const UUID_JIELI_SERVICE: uuid::Uuid = uuid::Uuid::from_u128(0x0000ae00_0000_1000_8000_00805f9b34fb);
+pub const UUID_JIELI_WRITE: uuid::Uuid = uuid::Uuid::from_u128(0x0000ae01_0000_1000_8000_00805f9b34fb);
+pub const UUID_JIELI_NOTIFY: uuid::Uuid = uuid::Uuid::from_u128(0x0000ae02_0000_1000_8000_00805f9b34fb);
+
 // Aliases used by beacon/scanner for scan filtering
 pub const UUID_FF17: uuid::Uuid = UUID_WRITE;
 pub const UUID_FE2C: uuid::Uuid = UUID_FAST_PAIR;
