@@ -83,6 +83,9 @@ impl JieliConnection {
             }
         }
         if let Some(e) = last_err {
+            // Don't leave the link open on failure: the next attempt must start
+            // fresh or the device will skip the auth handshake.
+            let _ = peripheral.disconnect().await;
             return Err(e);
         }
 

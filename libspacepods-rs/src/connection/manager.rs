@@ -209,6 +209,12 @@ impl ConnectionManager {
     ) -> Result<ChipConnection> {
         use btleplug::api::Peripheral as _;
 
+        // Start from a clean link: a previous failed attempt can leave the ACL
+        // connection open, which makes the device skip the auth handshake.
+        if peripheral.is_connected().await.unwrap_or(false) {
+            let _ = peripheral.disconnect().await;
+            tokio::time::sleep(Duration::from_millis(400)).await;
+        }
         peripheral.connect().await?;
         peripheral.discover_services().await?;
         let is_jieli = peripheral
