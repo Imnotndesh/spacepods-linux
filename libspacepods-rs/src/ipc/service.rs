@@ -8,6 +8,7 @@ use crate::protocol::{AncMode, ConnectionState,
 use crate::{Error, Result, SpaceBuds};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use btleplug::api::Peripheral;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -28,6 +29,9 @@ pub struct SpacePodsService {
     status_tx: broadcast::Sender<DeviceStatus>,
     socket_path: PathBuf,
     running: Arc<Mutex<bool>>,
+    /// Set when the user takes manual control (Connect/Disconnect) so the
+    /// background loop stops auto-connecting to a random device.
+    manual: Arc<AtomicBool>,
 }
 
 impl SpacePodsService {
@@ -42,6 +46,7 @@ impl SpacePodsService {
             status_tx,
             socket_path,
             running: Arc::new(Mutex::new(false)),
+            manual: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -53,9 +58,10 @@ impl SpacePodsService {
         let status = self.status.clone();
         let status_tx = self.status_tx.clone();
         let running = self.running.clone();
+        let manual = self.manual.clone();
 
         tokio::spawn(async move {
-            Self::status_updater_loop(buds, status, status_tx, running).await;
+            Self::status_updater_loop(buds, status, status_tx, running, manual).await;
         });
 
         // Set up Unix socket listener
@@ -85,9 +91,10 @@ impl SpacePodsService {
                     let buds = self.buds.clone();
                     let status = self.status.clone();
                     let status_tx = self.status_tx.clone();
+                    let manual = self.manual.clone();
 
                     tokio::spawn(async move {
-                        Self::handle_client(stream, buds, status, status_tx).await;
+                        Self::handle_client(stream, buds, status, status_tx, manual).await;
                     });
                 }
                 Err(e) => {
@@ -111,12 +118,13 @@ impl SpacePodsService {
         status: Arc<RwLock<DeviceStatus>>,
         status_tx: broadcast::Sender<DeviceStatus>,
         running: Arc<Mutex<bool>>,
+        manual: Arc<AtomicBool>,
     ) {
         let mut reconnect_delay = Duration::from_secs(1);
 
         // Try to connect on startup after a short delay (let BlueZ settle)
         tokio::time::sleep(Duration::from_secs(2)).await;
-        if !buds.is_connected().await {
+        if !buds.is_connected().await && !manual.load(Ordering::Relaxed) {
             crate::log::info("IPC", "Not connected — attempting initial auto-connect");
             match buds.connect().await {
                 Ok(_) => crate::log::info("IPC", "Initial auto-connect succeeded"),
@@ -152,8 +160,10 @@ impl SpacePodsService {
                 let current_status = status.read().await.clone();
                 let _ = status_tx.send(current_status);
 
-                // Try to reconnect
-                let _ = buds.reconnect().await;
+                // Try to reconnect, unless the user manually disconnected.
+                if !manual.load(Ordering::Relaxed) {
+                    let _ = buds.reconnect().await;
+                }
                 time::sleep(reconnect_delay).await;
                 reconnect_delay = (reconnect_delay * 2).min(Duration::from_secs(30));
             }
@@ -209,6 +219,7 @@ impl SpacePodsService {
         buds: SpaceBuds,
         status: Arc<RwLock<DeviceStatus>>,
         status_tx: broadcast::Sender<DeviceStatus>,
+        manual: Arc<AtomicBool>,
     ) {
         let (reader, mut writer) = stream.split();
         let mut reader = BufReader::new(reader);
@@ -238,7 +249,7 @@ impl SpacePodsService {
                                             data: None,
                                         }
                                     } else {
-                                        Self::execute_command(cmd, &buds, &status, &status_tx).await
+                                        Self::execute_command(cmd, &buds, &status, &status_tx, &manual).await
                                     }
                                 }
                                 Err(e) => IpcResult::Error {
@@ -286,6 +297,7 @@ impl SpacePodsService {
         buds: &SpaceBuds,
         status: &Arc<RwLock<DeviceStatus>>,
         status_tx: &broadcast::Sender<DeviceStatus>,
+        manual: &Arc<AtomicBool>,
     ) -> IpcResult {
         match cmd {
             ServiceCommand::Ping => IpcResult::Success {
@@ -353,17 +365,38 @@ impl SpacePodsService {
 
 
             ServiceCommand::Connect { address } => {
-                if buds.is_connected().await {
+                // The user is taking control; stop the auto-connect loop.
+                manual.store(false, Ordering::Relaxed);
+                // Allow switching devices: only short-circuit when we are
+                // already connected to the requested address.
+                if buds.is_connected().await && buds.address().await.as_deref() == Some(address.as_str()) {
                     return IpcResult::Success {
                         message: Some("Already connected".to_string()),
                         data: None,
                     };
                 }
+                if buds.is_connected().await {
+                    crate::log::warn("IPC", &format!("switching device: disconnecting to connect {}", address));
+                    let _ = buds.disconnect().await;
+                    time::sleep(Duration::from_millis(400)).await;
+                }
                 match buds.connect_to(&address).await {
-                    Ok(_) => IpcResult::Success {
-                        message: Some("Connected".to_string()),
-                        data: None,
-                    },
+                    Ok(_) => {
+                        // Reset cached device info so the new device is
+                        // re-detected (product id, features, battery).
+                        {
+                            let mut s = status.write().await;
+                            s.product_id = None;
+                            s.key_settings = None;
+                        }
+                        Self::refresh_full_status(buds, status, status_tx).await;
+                        let pid = status.read().await.product_id;
+                        crate::log::warn("IPC", &format!("Connected to {} (pid {:?})", address, pid));
+                        IpcResult::Success {
+                            message: Some("Connected".to_string()),
+                            data: None,
+                        }
+                    }
                     Err(e) => IpcResult::Error {
                         message: format!("Connection failed: {}", e),
                     },
@@ -518,6 +551,8 @@ impl SpacePodsService {
 
             // ── Disconnect ──
             ServiceCommand::Disconnect => {
+                // Manual disconnect: suppress the auto-reconnect loop.
+                manual.store(true, Ordering::Relaxed);
                 match buds.disconnect().await {
                     Ok(_) => {
                         let mut s = status.write().await;

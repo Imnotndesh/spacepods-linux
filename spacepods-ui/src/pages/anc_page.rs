@@ -611,6 +611,7 @@ impl AncPage {
                     Ok(mut client) => client.set_anc_mode(&mc).await,
                     Err(e) => Err(e),
                 };
+                Log::info("ANC", &format!("set_anc_mode '{}' -> {}", mc, if result.is_ok() { "ok" } else { "failed" }));
                 spinner_ref.stop();
                 spinner_ref.set_visible(false);
                 btn_ref.set_sensitive(true);
