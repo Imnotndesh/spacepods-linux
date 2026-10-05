@@ -1,11 +1,22 @@
 //! Event-driven BLE scanner with DeviceBeacon manufacturer data filtering.
 //!
-//! On Linux/BlueZ, `ScanFilter` service UUIDs are merged across D-Bus clients,
-//! so we post-filter using `DeviceBeacon`. Only genuine Oraimo/SpaceBuds devices
-//! produce the proprietary beacon format in their manufacturer data.
+//! On Linux/BlueZ, `ScanFilter` service UUIDs are merged across D-Bus clients
+//! and can hide devices that only advertise manufacturer data. We therefore
+//! scan with an empty filter and post-filter, accepting a device when **any**
+//! of the following holds:
+//!
+//!   1. its manufacturer data parses as an Oraimo `DeviceBeacon`,
+//!   2. it advertises the Oraimo company ID (`0x4301`) or the `ff17`/`fe2c`
+//!      service UUIDs,
+//!   3. its local name looks like an Oraimo product.
+//!
+//! The previous implementation only listened for
+//! `CentralEvent::ManufacturerDataAdvertisement` under a service-UUID filter,
+//! which silently dropped every device whose beacon arrived under a different
+//! company ID or which only advertised service data.
 
+use crate::beacon::{looks_like_oraimo_name, DeviceBeacon, ORAIMO_MANUFACTURER_IDS};
 use crate::{Error, Result};
-use crate::beacon::DeviceBeacon;
 use btleplug::api::{Central, CentralEvent, Manager as _, Peripheral as _, ScanFilter};
 use btleplug::platform::{Manager, PeripheralId};
 use futures::stream::StreamExt;
@@ -14,18 +25,39 @@ use std::time::Duration;
 use tokio::time;
 
 /// A discovered SpaceBuds device.
+///
+/// `beacon` is `None` for devices that matched by service UUID or local name but
+/// did not expose a parseable proprietary beacon; `product_name()` callers
+/// should fall back to `local_name` in that case.
 #[derive(Debug, Clone)]
 pub struct DiscoveredDevice {
-    pub beacon: DeviceBeacon,
+    pub beacon: Option<DeviceBeacon>,
     pub local_name: Option<String>,
     pub ble_address: Option<String>,
     pub rssi: Option<i16>,
     pub peripheral_id: PeripheralId,
 }
 
+impl DiscoveredDevice {
+    fn anonymous(id: PeripheralId) -> Self {
+        Self {
+            beacon: None,
+            local_name: None,
+            ble_address: None,
+            rssi: None,
+            peripheral_id: id,
+        }
+    }
+}
+
+/// True when a service UUID is the SpacePods GATT service (`ff17`) or Fast Pair
+/// (`fe2c`).
+fn is_oraimo_service(uuid: &uuid::Uuid) -> bool {
+    let s = uuid.to_string().to_lowercase();
+    s.contains("ff17") || s.contains("fe2c")
+}
+
 /// Scan for SpaceBuds using event-driven discovery + DeviceBeacon post-filtering.
-///
-/// Returns all devices whose manufacturer data parses as a valid DeviceBeacon.
 pub async fn scan_for_devices(duration: Duration) -> Result<Vec<DiscoveredDevice>> {
     let manager = Manager::new().await?;
     let adapters = manager.adapters().await?;
@@ -34,14 +66,9 @@ pub async fn scan_for_devices(duration: Duration) -> Result<Vec<DiscoveredDevice
         .next()
         .ok_or(Error::DeviceNotFound { retries: 0 })?;
 
-    let filter = ScanFilter {
-        services: vec![
-            crate::protocol::UUID_FF17,
-            crate::protocol::UUID_FE2C,
-        ],
-    };
-
-    adapter.start_scan(filter).await?;
+    // Empty filter: some firmware only advertises manufacturer data, which a
+    // service-UUID discovery filter can hide entirely.
+    adapter.start_scan(ScanFilter::default()).await?;
     let mut events = adapter.events().await?;
     let mut found: HashMap<PeripheralId, DiscoveredDevice> = HashMap::new();
     let deadline = time::sleep(duration);
@@ -52,20 +79,34 @@ pub async fn scan_for_devices(duration: Duration) -> Result<Vec<DiscoveredDevice
             event = events.next() => {
                 match event {
                     Some(CentralEvent::ManufacturerDataAdvertisement { id, manufacturer_data }) => {
-                        if !found.contains_key(&id) {
-                            for (_mfg_id, data) in &manufacturer_data {
-                                if let Some(beacon) = DeviceBeacon::from_manufacturer_data(data) {
-                                    let device = DiscoveredDevice {
-                                        beacon,
-                                        local_name: None,
-                                        ble_address: None,
-                                        rssi: None,
-                                        peripheral_id: id.clone(),
-                                    };
-                                    found.insert(id, device);
-                                    break;
-                                }
+                        for (mfg_id, data) in &manufacturer_data {
+                            let known_company = ORAIMO_MANUFACTURER_IDS.contains(mfg_id);
+                            if let Some(beacon) = DeviceBeacon::from_manufacturer_data(data) {
+                                let entry = found
+                                    .entry(id.clone())
+                                    .or_insert_with(|| DiscoveredDevice::anonymous(id.clone()));
+                                entry.beacon = Some(beacon);
+                            } else if known_company {
+                                // Oraimo company ID with an unrecognised payload:
+                                // still surface it so it can be named/selected.
+                                found
+                                    .entry(id.clone())
+                                    .or_insert_with(|| DiscoveredDevice::anonymous(id.clone()));
                             }
+                        }
+                    }
+                    Some(CentralEvent::ServiceDataAdvertisement { id, service_data }) => {
+                        if service_data.keys().any(is_oraimo_service) {
+                            found
+                                .entry(id.clone())
+                                .or_insert_with(|| DiscoveredDevice::anonymous(id.clone()));
+                        }
+                    }
+                    Some(CentralEvent::ServicesAdvertisement { id, services }) => {
+                        if services.iter().any(is_oraimo_service) {
+                            found
+                                .entry(id.clone())
+                                .or_insert_with(|| DiscoveredDevice::anonymous(id.clone()));
                         }
                     }
                     None => break,
@@ -78,43 +119,58 @@ pub async fn scan_for_devices(duration: Duration) -> Result<Vec<DiscoveredDevice
 
     let _ = adapter.stop_scan().await;
 
-    // Enrich with peripheral properties
+    // Enrich candidates with advertised properties and pick up name-only
+    // matches the event stream may have missed.
     let peripherals = adapter.peripherals().await?;
-    for p in &peripherals {
-        if let Ok(Some(props)) = p.properties().await {
-            // Check if this peripheral matches a device we found via beacon
-            let mut matched = false;
-            let mfg_map = &props.manufacturer_data;
-            if !mfg_map.is_empty() {
-                for (_mfg_id, data) in mfg_map {
-                    if DeviceBeacon::from_manufacturer_data(data).is_some() {
-                        matched = true;
-                        break;
-                    }
-                }
-            }
-            if matched {
-                let addr = p.address().to_string();
-                for (_mfg_id, data) in &props.manufacturer_data {
-                    if let Some(beacon) = DeviceBeacon::from_manufacturer_data(data) {
-                        let real_addr = beacon.bt_address_string().unwrap_or_default();
-                        for device in found.values_mut() {
-                            if device.beacon.bt_address_string().as_deref() == Some(&real_addr) {
-                                device.local_name = props.local_name.clone();
-                                device.ble_address = Some(addr.clone());
-                                device.rssi = props.rssi;
-                            }
-                        }
-                    }
-                }
-            }
+    for p in peripherals {
+        let id = p.id();
+        let Ok(Some(props)) = p.properties().await else {
+            continue;
+        };
+
+        let beacon = props
+            .manufacturer_data
+            .values()
+            .find_map(|data| DeviceBeacon::from_manufacturer_data(data));
+
+        let name_match = props
+            .local_name
+            .as_deref()
+            .map(looks_like_oraimo_name)
+            .unwrap_or(false);
+        let service_match = props.services.iter().any(is_oraimo_service)
+            || props.service_data.keys().any(is_oraimo_service);
+        let mfg_match = props
+            .manufacturer_data
+            .keys()
+            .any(|id| ORAIMO_MANUFACTURER_IDS.contains(id));
+
+        if beacon.is_none() && !name_match && !service_match && !mfg_match {
+            continue;
         }
+
+        let entry = found
+            .entry(id.clone())
+            .or_insert_with(|| DiscoveredDevice::anonymous(id));
+        if beacon.is_some() {
+            entry.beacon = beacon;
+        }
+        if entry.local_name.is_none() {
+            entry.local_name = props.local_name.clone();
+        }
+        entry.ble_address = Some(p.address().to_string());
+        entry.rssi = props.rssi;
     }
+
     Ok(found.into_values().collect())
 }
 
 /// Find the first SpaceBuds device.
 pub async fn find_first_device(duration: Duration) -> Result<Option<DiscoveredDevice>> {
     let mut devices = scan_for_devices(duration).await?;
-    Ok(if devices.is_empty() { None } else { Some(devices.remove(0)) })
+    Ok(if devices.is_empty() {
+        None
+    } else {
+        Some(devices.remove(0))
+    })
 }

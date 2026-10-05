@@ -304,23 +304,41 @@ impl SpacePodsService {
             ServiceCommand::Scan { timeout_secs } => {
                 match crate::beacon::scanner::scan_for_devices(Duration::from_secs(timeout_secs)).await {
                     Ok(discovered) => {
-                        let devices: Vec<ScannedDevice> = discovered.into_iter().map(|d| {
-                            let name = d.local_name.unwrap_or_else(|| d.beacon.product_name().to_string());
-                            let address = d.ble_address.unwrap_or_else(|| "unknown".to_string());
-                            ScannedDevice {
-                                name,
-                                address,
-                                product_name: Some(d.beacon.product_name().to_string()),
-                                product_id: Some(d.beacon.product_id),
-                                real_mac: d.beacon.bt_address_string(),
-                                beacon_version: Some(d.beacon.version),
-                                battery_left: d.beacon.left_battery,
-                                battery_right: d.beacon.right_battery,
-                                battery_case: d.beacon.case_battery,
-                                already_connected: d.beacon.connected,
-                                rssi: d.rssi,
-                            }
-                        }).collect();
+                        let devices: Vec<ScannedDevice> = discovered
+                            .into_iter()
+                            .map(|d| {
+                                let product_name = d
+                                    .beacon
+                                    .as_ref()
+                                    .map(|b| b.product_name().to_string());
+                                let name = d
+                                    .local_name
+                                    .clone()
+                                    .or_else(|| product_name.clone())
+                                    .unwrap_or_else(|| "Oraimo device".to_string());
+                                let address = d
+                                    .ble_address
+                                    .clone()
+                                    .unwrap_or_else(|| "unknown".to_string());
+                                ScannedDevice {
+                                    name,
+                                    address,
+                                    product_name,
+                                    product_id: d.beacon.as_ref().map(|b| b.product_id),
+                                    real_mac: d.beacon.as_ref().and_then(|b| b.bt_address_string()),
+                                    beacon_version: d.beacon.as_ref().map(|b| b.version),
+                                    battery_left: d.beacon.as_ref().and_then(|b| b.left_battery),
+                                    battery_right: d.beacon.as_ref().and_then(|b| b.right_battery),
+                                    battery_case: d.beacon.as_ref().and_then(|b| b.case_battery),
+                                    already_connected: d
+                                        .beacon
+                                        .as_ref()
+                                        .map(|b| b.connected)
+                                        .unwrap_or(false),
+                                    rssi: d.rssi,
+                                }
+                            })
+                            .collect();
                         IpcResult::ScanResults { devices }
                     }
                     Err(e) => IpcResult::Error {

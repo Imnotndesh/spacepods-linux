@@ -113,16 +113,24 @@ impl BleConnection {
     }
 
     /// Try to detect product ID from manufacturer data in the BLE advertisement.
+    ///
+    /// Uses the full [`crate::beacon::DeviceBeacon`] parser so 8-byte V3
+    /// payloads (product ID at offset 0) and 13-byte V4/V2 payloads (product ID
+    /// at offset 1) are both handled correctly.
     pub async fn detect_product_id(&self) -> Option<u16> {
         if let Ok(Some(props)) = self.peripheral.properties().await {
-            for (_, data) in &props.manufacturer_data {
-                eprintln!("[SPACEPODS][BLE] manufacturer_data len={}", data.len());
-                if data.len() >= 3 {
-                    let product_id = u16::from_le_bytes([data[1], data[2]]);
-                    eprintln!("[SPACEPODS][BLE] product_id from mfg data: {}", product_id);
-                    return Some(product_id);
-                } else {
-                    eprintln!("[SPACEPODS][BLE] mfg data too short: {:?}", data);
+            for (mfg_id, data) in &props.manufacturer_data {
+                eprintln!(
+                    "[SPACEPODS][BLE] manufacturer_data len={} mfg=0x{:04X}",
+                    data.len(),
+                    mfg_id
+                );
+                if let Some(beacon) = crate::beacon::DeviceBeacon::from_manufacturer_data(data) {
+                    eprintln!(
+                        "[SPACEPODS][BLE] beacon product_id={} version={}",
+                        beacon.product_id, beacon.version
+                    );
+                    return Some(beacon.product_id);
                 }
             }
         } else {

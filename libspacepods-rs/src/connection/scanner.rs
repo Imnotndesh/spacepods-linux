@@ -12,12 +12,18 @@ impl DeviceScanner {
     const GAP_DEVICE_NAME_UUID: uuid::Uuid =
         uuid::Uuid::from_u128(0x00002a00_0000_1000_8000_00805f9b34fb);
 
-    /// Check if a peripheral advertises a SpaceBuds-compatible service UUID.
+    /// Check if a peripheral looks like a SpaceBuds-compatible device.
+    ///
+    /// Priority order:
+    ///   1. the `ff17`/`fe2c` service UUIDs (fast path),
+    ///   2. an Oraimo manufacturer beacon / company ID,
+    ///   3. a recognisable Oraimo product name.
+    ///
+    /// Steps 2 and 3 exist because some firmware (e.g. `oraimo BoomPop Pro`)
+    /// only exposes the proprietary beacon in manufacturer data without the
+    /// standard service UUIDs.
     fn is_spacebuds(props: &btleplug::api::PeripheralProperties) -> bool {
-        props.services.iter().any(|uuid| {
-            let s = uuid.to_string().to_lowercase();
-            s.contains("ff17") || s.contains("fe2c")
-        })
+        crate::beacon::is_oraimo_peripheral(props)
     }
 
     /// Get the first BLE adapter.
