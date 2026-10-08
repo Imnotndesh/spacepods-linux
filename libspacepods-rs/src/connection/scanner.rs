@@ -101,6 +101,9 @@ impl DeviceScanner {
         time::sleep(timeout).await;
 
         let peripherals = adapter.peripherals().await?;
+        // Stop discovery before the caller connects: an active scan makes the
+        // GATT connect fail or time out on some controllers.
+        let _ = adapter.stop_scan().await;
 
         for peripheral in peripherals {
             if let Ok(Some(props)) = peripheral.properties().await {
@@ -121,6 +124,7 @@ impl DeviceScanner {
         time::sleep(timeout).await;
 
         let peripherals = adapter.peripherals().await?;
+        let _ = adapter.stop_scan().await;
 
         // Collect compatible peripherals
         let mut found: Vec<Peripheral> = Vec::new();

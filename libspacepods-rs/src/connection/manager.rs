@@ -101,6 +101,10 @@ pub struct ConnectionManager {
     inner: Arc<RwLock<Inner>>,
     config: ConnectionConfig,
     state_tx: broadcast::Sender<ConnectionState>,
+    /// Serializes connection lifecycle operations so a manual `Connect` cannot
+    /// race the background auto-connect loop (BlueZ answers the loser with
+    /// `In Progress`).
+    lifecycle: Arc<Mutex<()>>,
 }
 
 impl ConnectionManager {
@@ -113,6 +117,7 @@ impl ConnectionManager {
             })),
             config,
             state_tx,
+            lifecycle: Arc::new(Mutex::new(())),
         }
     }
 
@@ -135,6 +140,11 @@ impl ConnectionManager {
     // ── Connection lifecycle ──
 
     pub async fn connect(&self, address: Option<&str>) -> Result<()> {
+        let _guard = self.lifecycle.lock().await;
+        self.connect_inner(address).await
+    }
+
+    async fn connect_inner(&self, address: Option<&str>) -> Result<()> {
         let already_connected = {
             let inner = self.inner.read().await;
             if let Some(ref conn) = inner.connection {
@@ -146,7 +156,7 @@ impl ConnectionManager {
         };
 
         if already_connected {
-            self.disconnect().await?;
+            self.disconnect_inner().await?;
         }
 
         self.set_state(ConnectionState::Scanning).await;
@@ -194,6 +204,11 @@ impl ConnectionManager {
     }
 
     pub async fn disconnect(&self) -> Result<()> {
+        let _guard = self.lifecycle.lock().await;
+        self.disconnect_inner().await
+    }
+
+    async fn disconnect_inner(&self) -> Result<()> {
         let mut inner = self.inner.write().await;
         if let Some(conn) = inner.connection.take() {
             conn.disconnect().await?;
@@ -211,11 +226,33 @@ impl ConnectionManager {
 
         // Start from a clean link: a previous failed attempt can leave the ACL
         // connection open, which makes the device skip the auth handshake.
-        if peripheral.is_connected().await.unwrap_or(false) {
-            let _ = peripheral.disconnect().await;
-            tokio::time::sleep(Duration::from_millis(400)).await;
+        // Retry once — the first GATT connect can fail while BlueZ is still
+        // settling after a scan.
+        let mut last_err = None;
+        for attempt in 1..=2 {
+            if peripheral.is_connected().await.unwrap_or(false) {
+                let _ = peripheral.disconnect().await;
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            match peripheral.connect().await {
+                Ok(()) => {
+                    last_err = None;
+                    break;
+                }
+                Err(e) => {
+                    crate::log::warn(
+                        "BLE",
+                        &format!("GATT connect attempt {} failed: {}", attempt, e),
+                    );
+                    let _ = peripheral.disconnect().await;
+                    last_err = Some(e);
+                    tokio::time::sleep(Duration::from_millis(800)).await;
+                }
+            }
         }
-        peripheral.connect().await?;
+        if let Some(e) = last_err {
+            return Err(e.into());
+        }
         peripheral.discover_services().await?;
         let is_jieli = peripheral
             .characteristics()
@@ -230,10 +267,15 @@ impl ConnectionManager {
     }
 
     pub async fn reconnect(&self) -> Result<()> {
+        let _guard = self.lifecycle.lock().await;
+        self.reconnect_inner().await
+    }
+
+    async fn reconnect_inner(&self) -> Result<()> {
         self.set_state(ConnectionState::Reconnecting).await;
 
         // Try normal reconnect first
-        if let Ok(()) = self.connect(None).await {
+        if let Ok(()) = self.connect_inner(None).await {
             return Ok(());
         }
 
@@ -463,6 +505,7 @@ impl Clone for ConnectionManager {
             inner: self.inner.clone(),
             config: self.config.clone(),
             state_tx: self.state_tx.clone(),
+            lifecycle: self.lifecycle.clone(),
         }
     }
 }

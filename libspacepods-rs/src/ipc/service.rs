@@ -32,6 +32,9 @@ pub struct SpacePodsService {
     /// Set when the user takes manual control (Connect/Disconnect) so the
     /// background loop stops auto-connecting to a random device.
     manual: Arc<AtomicBool>,
+    /// Set while a manual `Connect` is running so the auto-connect loop does not
+    /// race it (BlueZ answers the loser with `In Progress`).
+    connecting: Arc<AtomicBool>,
 }
 
 impl SpacePodsService {
@@ -47,6 +50,7 @@ impl SpacePodsService {
             socket_path,
             running: Arc::new(Mutex::new(false)),
             manual: Arc::new(AtomicBool::new(false)),
+            connecting: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -59,9 +63,10 @@ impl SpacePodsService {
         let status_tx = self.status_tx.clone();
         let running = self.running.clone();
         let manual = self.manual.clone();
+        let connecting = self.connecting.clone();
 
         tokio::spawn(async move {
-            Self::status_updater_loop(buds, status, status_tx, running, manual).await;
+            Self::status_updater_loop(buds, status, status_tx, running, manual, connecting).await;
         });
 
         // Set up Unix socket listener
@@ -92,9 +97,10 @@ impl SpacePodsService {
                     let status = self.status.clone();
                     let status_tx = self.status_tx.clone();
                     let manual = self.manual.clone();
+                    let connecting = self.connecting.clone();
 
                     tokio::spawn(async move {
-                        Self::handle_client(stream, buds, status, status_tx, manual).await;
+                        Self::handle_client(stream, buds, status, status_tx, manual, connecting).await;
                     });
                 }
                 Err(e) => {
@@ -119,6 +125,7 @@ impl SpacePodsService {
         status_tx: broadcast::Sender<DeviceStatus>,
         running: Arc<Mutex<bool>>,
         manual: Arc<AtomicBool>,
+        connecting: Arc<AtomicBool>,
     ) {
         let mut reconnect_delay = Duration::from_secs(1);
 
@@ -160,8 +167,9 @@ impl SpacePodsService {
                 let current_status = status.read().await.clone();
                 let _ = status_tx.send(current_status);
 
-                // Try to reconnect, unless the user manually disconnected.
-                if !manual.load(Ordering::Relaxed) {
+                // Try to reconnect, unless the user manually disconnected or a
+                // manual connect is in flight.
+                if !manual.load(Ordering::Relaxed) && !connecting.load(Ordering::Relaxed) {
                     let _ = buds.reconnect().await;
                 }
                 time::sleep(reconnect_delay).await;
@@ -228,6 +236,7 @@ impl SpacePodsService {
         status: Arc<RwLock<DeviceStatus>>,
         status_tx: broadcast::Sender<DeviceStatus>,
         manual: Arc<AtomicBool>,
+        connecting: Arc<AtomicBool>,
     ) {
         let (reader, mut writer) = stream.split();
         let mut reader = BufReader::new(reader);
@@ -257,7 +266,7 @@ impl SpacePodsService {
                                             data: None,
                                         }
                                     } else {
-                                        Self::execute_command(cmd, &buds, &status, &status_tx, &manual).await
+                                        Self::execute_command(cmd, &buds, &status, &status_tx, &manual, &connecting).await
                                     }
                                 }
                                 Err(e) => IpcResult::Error {
@@ -306,6 +315,7 @@ impl SpacePodsService {
         status: &Arc<RwLock<DeviceStatus>>,
         status_tx: &broadcast::Sender<DeviceStatus>,
         manual: &Arc<AtomicBool>,
+        connecting: &Arc<AtomicBool>,
     ) -> IpcResult {
         match cmd {
             ServiceCommand::Ping => IpcResult::Success {
@@ -388,7 +398,13 @@ impl SpacePodsService {
                     let _ = buds.disconnect().await;
                     time::sleep(Duration::from_millis(400)).await;
                 }
-                match buds.connect_to(&address).await {
+                // Block the background auto-connect loop while we drive the
+                // link ourselves; otherwise BlueZ rejects the loser with
+                // `In Progress`.
+                connecting.store(true, Ordering::Relaxed);
+                let result = buds.connect_to(&address).await;
+                connecting.store(false, Ordering::Relaxed);
+                match result {
                     Ok(_) => {
                         // Reset cached device info so the new device is
                         // re-detected (product id, features, battery).

@@ -168,6 +168,29 @@ fn build_profiles() -> Vec<DeviceProfile> {
             form: FormFactor::HalfInEar,
             features: fs![DetailFeature::EarControl],
         },
+        DeviceProfile {
+            product_id: 917,
+            name: "oraimo BoomPop Pro",
+            model: "917",
+            chip: ChipPlatform::JieLi,
+            form: FormFactor::Headphones,
+            // The BoomPop Pro disables a lot of the generic set. From the APK's
+            // `DeviceNewActivity` 917 branch: noise, space audio, game mode and
+            // dual device are enabled; `layout_care` and
+            // `layout_earphone_control` are hidden; LED, tone volume, area tap,
+            // long endurance, voice prompt, adaptive volume, magnet, vibration
+            // and env-adaptive are `gone` by default and never enabled.
+            features: fs![
+                DetailFeature::Noise,
+                DetailFeature::SpaceAudio,
+                DetailFeature::GameMode,
+                DetailFeature::DualDeviceSwitch,
+                DetailFeature::EqSwitch,
+                DetailFeature::ChatMode,
+                DetailFeature::EarControl,
+                DetailFeature::KeySetting,
+            ],
+        },
     ];
 
     // Add every other known product ID with the generic feature set. This keeps
@@ -367,6 +390,17 @@ mod capability_tests {
     #[test]
     fn empty_bytes_yield_no_features() {
         assert!(features_from_capabilities(&[]).is_empty());
+    }
+
+    #[test]
+    fn boompop_pro_lacks_led() {
+        let p = profile_for_product(917);
+        assert_eq!(p.name, "oraimo BoomPop Pro");
+        assert!(p.features.contains(&DetailFeature::Noise));
+        assert!(p.features.contains(&DetailFeature::GameMode));
+        assert!(!p.features.contains(&DetailFeature::Led));
+        assert!(!p.features.contains(&DetailFeature::ToneVolume));
+        assert!(!p.features.contains(&DetailFeature::HearingCare));
     }
 }
 

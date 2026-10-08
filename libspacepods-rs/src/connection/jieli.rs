@@ -252,6 +252,13 @@ impl JieliConnection {
     }
 
     async fn write_frame(&self, packet: &RcspPacket) -> Result<()> {
+        crate::log::full(
+            "JIELI",
+            &format!(
+                "tx cmd={} op={:#x} sn={} param={:02X?}",
+                packet.is_command, packet.op_code, packet.op_code_sn, packet.param
+            ),
+        );
         Self::write_raw(&self.peripheral, &self.write_char, &packet.to_bytes()).await
     }
 
