@@ -151,14 +151,17 @@ impl HomeView {
                             let tray = tray.clone();
                             let wc = wc.clone();
                             let setup = crate::pages::setup_page::SetupPage::new(
-                                move |product_id| {
+                                move |status: Option<libspacepods::ipc::protocol::DeviceStatus>| {
                                     if let Some(win) = ww2.upgrade() {
                                         let ctx = crate::context::AppContext::new(
                                             libadwaita::ToastOverlay::new(),
                                             tray.clone(),
                                             wc.clone(),
                                         );
-                                        ctx.product_id.set(product_id);
+                                        if let Some(s) = &status {
+                                            ctx.product_id.set(s.product_id);
+                                            ctx.capabilities.replace(s.capabilities.clone());
+                                        }
                                         let home = HomeView::from_ctx(&win, ctx);
                                         win.set_content(Some(&home));
                                     }

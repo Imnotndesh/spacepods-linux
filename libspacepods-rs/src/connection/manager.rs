@@ -414,6 +414,14 @@ impl ConnectionManager {
         self.jieli_conn().await?.set_eq_preset(mode).await
     }
 
+    /// Capability bitfield reported by a JieLi device (custom command 33).
+    pub async fn jieli_get_capabilities(&self) -> Option<Vec<u8>> {
+        match self.jieli_conn().await {
+            Ok(c) => c.get_capabilities().await,
+            Err(_) => None,
+        }
+    }
+
     pub async fn jieli_rename(&self, name: &str) -> Result<()> {
         self.jieli_conn().await?.rename(name).await
     }

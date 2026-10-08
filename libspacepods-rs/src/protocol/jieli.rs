@@ -48,6 +48,12 @@ pub fn ltv_packet(ltv_type: u8, data: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Oraimo custom command that reports the device's capability bitfield.
+///
+/// The payload is `[33, capability bytes…]`; bit `n` is
+/// `(capability[n/8] >> (n%8)) & 1` (`DeviceCapability.isSupported`).
+pub const CMD_DEVICE_CAPABILITY: u8 = 33;
+
 /// JieLi's fixed authentication pass response.
 pub const AUTH_PASS: [u8; 5] = [0x02, b'p', b'a', b's', b's'];
 

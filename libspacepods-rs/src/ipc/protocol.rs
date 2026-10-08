@@ -1,4 +1,5 @@
 use crate::protocol::{AncMode, BatteryLevel, ConnectionState};
+use crate::device_profile::DetailFeature;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -168,6 +169,10 @@ pub struct DeviceStatus {
     pub features: FeatureInfo,
     #[serde(default)]
     pub product_id: Option<u16>,
+    /// Features the device itself reported (capability bitfield). When present
+    /// this is authoritative over the static product profile.
+    #[serde(default)]
+    pub capabilities: Option<Vec<DetailFeature>>,
     /// Current key/gesture mappings: key_type -> function
     #[serde(default)]
     pub key_settings: Option<std::collections::HashMap<u8, u8>>,
@@ -197,6 +202,7 @@ impl DeviceStatus {
                 dual_device: None,
             },
             product_id: None,
+            capabilities: None,
             key_settings: None,
         }
     }

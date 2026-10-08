@@ -259,6 +259,117 @@ pub fn profile_for_name(name: &str) -> Option<&'static DeviceProfile> {
     })
 }
 
+/// Decode the Oraimo capability bitfield (custom command 33) into the set of
+/// features the firmware itself reports.
+///
+/// Bit `n` is little-endian within each byte
+/// (`DeviceCapability.isSupported`). This is authoritative for devices that
+/// broadcast it — e.g. the BoomPop Pro reports no `Led` bit — and should be
+/// preferred over the static product profile when present.
+pub fn features_from_capabilities(bytes: &[u8]) -> BTreeSet<DetailFeature> {
+    let has = |bit: usize| -> bool {
+        bytes
+            .get(bit / 8)
+            .map(|b| b & (1u8 << (bit % 8)) != 0)
+            .unwrap_or(false)
+    };
+    let mut f = BTreeSet::new();
+    if has(0) {
+        f.insert(DetailFeature::Noise);
+    }
+    if has(1) {
+        f.insert(DetailFeature::EqSwitch);
+    }
+    if has(2) {
+        f.insert(DetailFeature::SpaceAudio);
+    }
+    if has(3) {
+        f.insert(DetailFeature::VoicePrompt);
+    }
+    if has(4) {
+        f.insert(DetailFeature::Led);
+    }
+    if has(5) {
+        f.insert(DetailFeature::EarControl);
+    }
+    if has(6) {
+        f.insert(DetailFeature::GameMode);
+    }
+    if has(7) {
+        f.insert(DetailFeature::DualDeviceSwitch);
+    }
+    if has(8) {
+        f.insert(DetailFeature::ModifyName);
+    }
+    if has(9) {
+        f.insert(DetailFeature::FirmwareUpgrade);
+    }
+    if has(10) {
+        f.insert(DetailFeature::FindDevice);
+    }
+    if has(11) {
+        f.insert(DetailFeature::HearingCare);
+    }
+    if has(15) {
+        f.insert(DetailFeature::InEarDetection);
+    }
+    if has(16) {
+        f.insert(DetailFeature::Ldac);
+    }
+    if has(17) {
+        f.insert(DetailFeature::ToneVolume);
+    }
+    if has(20) {
+        f.insert(DetailFeature::SoundEffect3D);
+    }
+    if has(21) {
+        f.insert(DetailFeature::LongEndurance);
+    }
+    if has(24) {
+        f.insert(DetailFeature::CustomTone);
+    }
+    if has(26) {
+        f.insert(DetailFeature::AreaTap);
+    }
+    if has(31) {
+        f.insert(DetailFeature::KeySetting);
+    }
+    if has(33) {
+        f.insert(DetailFeature::Location);
+    }
+    if has(35) {
+        f.insert(DetailFeature::Karaoke);
+    }
+    if has(36) {
+        f.insert(DetailFeature::VoicePrompt);
+    }
+    f
+}
+
+#[cfg(test)]
+mod capability_tests {
+    use super::*;
+
+    #[test]
+    fn decodes_little_endian_bits() {
+        // bit 0 (Noise) + bit 4 (Led) + bit 10 (FindDevice)
+        let mut bytes = vec![0u8; 2];
+        bytes[0] |= 1 << 0;
+        bytes[0] |= 1 << 4;
+        bytes[1] |= 1 << 2; // bit 10 = byte 1, bit 2
+        let f = features_from_capabilities(&bytes);
+        assert!(f.contains(&DetailFeature::Noise));
+        assert!(f.contains(&DetailFeature::Led));
+        assert!(f.contains(&DetailFeature::FindDevice));
+        assert!(!f.contains(&DetailFeature::GameMode));
+    }
+
+    #[test]
+    fn empty_bytes_yield_no_features() {
+        assert!(features_from_capabilities(&[]).is_empty());
+    }
+}
+
 /// Detect the Oraimo device type encoded in a BLE advertisement's
 /// manufacturer data.
 ///

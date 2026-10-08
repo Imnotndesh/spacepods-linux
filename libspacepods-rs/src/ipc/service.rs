@@ -203,6 +203,14 @@ impl SpacePodsService {
                 status_lock.product_id = Some(pid);
             }
         }
+        if let Some(caps) = buds.manager.jieli_get_capabilities().await {
+            let features = crate::device_profile::features_from_capabilities(&caps);
+            crate::log::info(
+                "IPC",
+                &format!("device capabilities → {} features", features.len()),
+            );
+            status_lock.capabilities = Some(features.into_iter().collect());
+        }
         match buds.features().get_key_settings().await {
             Ok(map) => { if !map.is_empty() { status_lock.key_settings = Some(map); } }
             Err(_) => {}

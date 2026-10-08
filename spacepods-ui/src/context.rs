@@ -86,6 +86,9 @@ pub struct AppContext {
     pub toast_overlay: ToastOverlay,
     /// Product ID of the connected device (None until detected).
     pub product_id: Rc<Cell<Option<u16>>>,
+    /// Features the device itself reported (capability bitfield, custom command
+    /// 33). When present this is authoritative over the static product profile.
+    pub capabilities: Rc<RefCell<Option<Vec<libspacepods::device_profile::DetailFeature>>>>,
     /// Handle to the tray icon (None if it could not be started).
     pub tray: Option<TrayHandle>,
     /// Controls the main window (show/hide/quit).
@@ -108,6 +111,7 @@ impl AppContext {
         Rc::new(Self {
             toast_overlay,
             product_id: Rc::new(Cell::new(None)),
+            capabilities: Rc::new(RefCell::new(None)),
             tray,
             window,
             anc_mode: Rc::new(Cell::new(0)),
@@ -123,6 +127,12 @@ impl AppContext {
 
     /// Store a new status and notify listeners.
     pub fn publish_status(&self, s: &DeviceStatus) {
+        if let Some(pid) = s.product_id {
+            self.product_id.set(Some(pid));
+        }
+        if let Some(caps) = &s.capabilities {
+            *self.capabilities.borrow_mut() = Some(caps.clone());
+        }
         *self.status.borrow_mut() = Some(s.clone());
         let listeners = self.status_listeners.borrow();
         for f in listeners.iter() {
@@ -136,10 +146,18 @@ impl AppContext {
     }
 
     /// Check if the connected device supports a particular feature.
+    ///
+    /// Prefers the capability bitfield the device broadcast (which is accurate
+    /// for models like the BoomPop Pro that disable features); falls back to the
+    /// static product profile when the device has not reported capabilities.
     pub fn has_feature(&self, feature: libspacepods::device_profile::DetailFeature) -> bool {
-        let result = self.profile()
-            .map(|p| p.features.contains(&feature))
-            .unwrap_or(false);
+        let result = if let Some(caps) = self.capabilities.borrow().as_ref() {
+            caps.contains(&feature)
+        } else {
+            self.profile()
+                .map(|p| p.features.contains(&feature))
+                .unwrap_or(false)
+        };
         Log::full("CTX", &format!("has_feature({:?}) → {}", feature, result));
         result
     }

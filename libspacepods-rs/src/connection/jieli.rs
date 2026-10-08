@@ -40,6 +40,8 @@ pub struct JieliConnection {
     /// Last reported parameter per Oraimo command id, from device
     /// notifications.
     state: Arc<Mutex<HashMap<u8, Vec<u8>>>>,
+    /// Capability bitfield reported via custom command 33.
+    capabilities: Arc<Mutex<Option<Vec<u8>>>>,
 }
 
 impl JieliConnection {
@@ -95,6 +97,8 @@ impl JieliConnection {
         let rx_clone = rx.clone();
         let state = Arc::new(Mutex::new(HashMap::new()));
         let state_clone = state.clone();
+        let capabilities = Arc::new(Mutex::new(None));
+        let capabilities_clone = capabilities.clone();
         tokio::spawn(async move {
             let mut stream = RcspStream::new();
             while let Some(notification) = notifications.next().await {
@@ -112,7 +116,13 @@ impl JieliConnection {
                             // `{command_id, 0|2, …}`.
                             if p.is_command && p.param.len() >= 2 {
                                 let cmd = p.param[0];
-                                if OraFeature::from_command_id(cmd).is_some()
+                                if cmd == jieli::CMD_DEVICE_CAPABILITY {
+                                    crate::log::info(
+                                        "JIELI",
+                                        &format!("device capabilities: {:02X?}", p.param),
+                                    );
+                                    *capabilities_clone.lock().await = Some(p.param[1..].to_vec());
+                                } else if OraFeature::from_command_id(cmd).is_some()
                                     || cmd == jieli::ora::ANC
                                     || cmd == jieli::ora::DUAL_DEVICE_INFO
                                 {
@@ -135,6 +145,7 @@ impl JieliConnection {
             anc_mode: Arc::new(Mutex::new(None)),
             anc_level: Arc::new(Mutex::new((0, 0, 1, 1))),
             state,
+            capabilities,
         })
     }
 
@@ -519,6 +530,11 @@ impl JieliConnection {
     /// Read the last reported parameter bytes for an Oraimo command id.
     pub async fn cached_param(&self, command_id: u8) -> Option<Vec<u8>> {
         self.state.lock().await.get(&command_id).cloned()
+    }
+
+    /// Capability bitfield the device reported (custom command 33).
+    pub async fn get_capabilities(&self) -> Option<Vec<u8>> {
+        self.capabilities.lock().await.clone()
     }
 
     pub async fn is_connected(&self) -> bool {

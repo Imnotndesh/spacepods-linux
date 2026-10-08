@@ -11,7 +11,7 @@ use libadwaita::{
     ToolbarView, WindowTitle, Toast, ToastOverlay,
 };
 use libspacepods::client::SpacePodsClient;
-use libspacepods::ipc::protocol::ScannedDevice;
+use libspacepods::ipc::protocol::{ScannedDevice, DeviceStatus};
 use crate::storage::{add_known_device, load_known_devices, load_settings, remove_known_device, update_settings};
 use std::cell::RefCell;
 
@@ -80,7 +80,7 @@ fn format_last_used(timestamp: u64) -> String {
 pub struct SetupPage;
 
 impl SetupPage {
-    pub fn new<F: Fn(Option<u16>) + 'static + Clone>(on_connected: F) -> gtk4::Widget {
+    pub fn new<F: Fn(Option<DeviceStatus>) + 'static + Clone>(on_connected: F) -> gtk4::Widget {
         let toast_overlay = ToastOverlay::new();
 
         let show_toast = {
@@ -458,8 +458,8 @@ impl SetupPage {
                                 Ok(_) => {
                                     add_known_device(name, address);
                                     tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
-                                    let pid = client.get_status().await.ok().and_then(|s| s.product_id);
-                                    (*on_connected)(pid);
+                                    let status = client.get_status().await.ok();
+                                    (*on_connected)(status);
                                 }
                                 Err(e) => { (*show_error)(&e.to_string()); check_daemon(); }
                             },
@@ -476,7 +476,7 @@ impl SetupPage {
     // ── Device row (scanned) ──
     fn device_row(
         device: &ScannedDevice,
-        on_connected: Rc<impl Fn(Option<u16>) + 'static>,
+        on_connected: Rc<impl Fn(Option<DeviceStatus>) + 'static>,
         show_error: Rc<impl Fn(&str) + 'static>,
     ) -> ListBoxRow {
         let row = ListBoxRow::new();
@@ -562,8 +562,8 @@ impl SetupPage {
                             Ok(_) => {
                                 add_known_device(name, address);
                                 tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
-                                let pid = client.get_status().await.ok().and_then(|s| s.product_id);
-                                (*on_connected)(pid);
+                                let status = client.get_status().await.ok();
+                                (*on_connected)(status);
                             }
                             Err(e) => {
                                 (*show_error)(&e.to_string());
@@ -610,7 +610,7 @@ impl SetupPage {
     // ── Saved device row ──
     fn saved_row(
         dev: &crate::storage::KnownDevice,
-        on_connected: Rc<impl Fn(Option<u16>) + 'static>,
+        on_connected: Rc<impl Fn(Option<DeviceStatus>) + 'static>,
         show_error: Rc<impl Fn(&str) + 'static>,
     ) -> ListBoxRow {
         let row = ListBoxRow::new();
@@ -704,8 +704,8 @@ impl SetupPage {
                         Ok(_) => {
                             add_known_device(name, address);
                             tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
-                            let pid = client.get_status().await.ok().and_then(|s| s.product_id);
-                            (*on_connected)(pid);
+                            let status = client.get_status().await.ok();
+                            (*on_connected)(status);
                         }
                         Err(e) => {
                             (*show_error)(&e.to_string());

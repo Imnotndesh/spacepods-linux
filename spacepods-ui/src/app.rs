@@ -123,14 +123,17 @@ pub fn run_app() -> glib::ExitCode {
         let tray = (*tray_handle).clone();
         let wc = window_controller.clone();
         let slot = ctx_slot2.clone();
-        let setup_page = SetupPage::new(move |product_id| {
+        let setup_page = SetupPage::new(move |status: Option<libspacepods::ipc::protocol::DeviceStatus>| {
             if let Some(win) = window_weak.upgrade() {
                 let ctx = crate::context::AppContext::new(
                     ToastOverlay::new(),
                     Some(tray.clone()),
                     wc.clone(),
                 );
-                ctx.product_id.set(product_id);
+                if let Some(s) = &status {
+                    ctx.product_id.set(s.product_id);
+                    ctx.capabilities.replace(s.capabilities.clone());
+                }
 
                 // Sync the tray's ANC radio-group to the shared cell.
                 tray::ANC_MODE_ATOMIC.store(ctx.anc_mode.get(), std::sync::atomic::Ordering::Relaxed);
