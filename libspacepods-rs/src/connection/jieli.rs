@@ -420,6 +420,54 @@ impl JieliConnection {
         self.set_feature(OraFeature::DualDevice, enable).await
     }
 
+    // ── Equalizer ──
+
+    /// Read the current EQ value (`GET_SYS_INFO` attr 4): `(mode, gains)`.
+    pub async fn get_eq_value(&self) -> Result<Option<(u8, Vec<i8>)>> {
+        let sn = self.next_seq().await;
+        let param = jieli::get_sys_info_param(0xFF, jieli::MASK_EQ_VALUE);
+        let packet = RcspPacket::command(jieli::CMD_GET_SYS_INFO, sn, param);
+        let resp = self.send_rcsp(packet).await?;
+        Ok(jieli::find_attr(&resp.param, jieli::ATTR_EQ_VALUE).and_then(jieli::parse_eq_value))
+    }
+
+    /// Read the device's EQ preset list (`GET_SYS_INFO` attr 12).
+    ///
+    /// Returns the band centre frequencies and the 7 preset slots as
+    /// `(mode, gains)`.
+    pub async fn get_eq_presets(&self) -> Result<(Vec<u16>, Vec<(u8, Vec<i8>)>)> {
+        let sn = self.next_seq().await;
+        let param = jieli::get_sys_info_param(0xFF, jieli::MASK_EQ_PRESETS);
+        let packet = RcspPacket::command(jieli::CMD_GET_SYS_INFO, sn, param);
+        let resp = self.send_rcsp(packet).await?;
+        let data = jieli::find_attr(&resp.param, jieli::ATTR_EQ_PRESETS)
+            .ok_or_else(|| Error::Parse("EQ preset attr missing"))?;
+        jieli::parse_eq_presets(data).ok_or_else(|| Error::Parse("malformed EQ preset attr"))
+    }
+
+    /// Set the EQ value (`SET_SYS_INFO` attr 4).
+    pub async fn set_eq_value(&self, mode: u8, gains: &[i8]) -> Result<()> {
+        let param = jieli::set_eq_value_param(mode, gains);
+        let sn = self.next_seq().await;
+        let packet = RcspPacket::command(jieli::CMD_SET_SYS_INFO, sn, param);
+        self.send_rcsp(packet).await?;
+        crate::log::info(
+            "JIELI",
+            &format!("EQ set mode={} ({}), {} bands", mode, jieli::eq_mode_name(mode), gains.len()),
+        );
+        Ok(())
+    }
+
+    /// Select one of the device's own EQ presets by mode.
+    pub async fn set_eq_preset(&self, mode: u8) -> Result<()> {
+        let (_, presets) = self.get_eq_presets().await?;
+        let (m, gains) = presets
+            .into_iter()
+            .find(|(m, _)| *m == mode)
+            .ok_or_else(|| Error::Parse("requested EQ mode not offered by device"))?;
+        self.set_eq_value(m, &gains).await
+    }
+
     /// Set a boolean Oraimo feature (`{cmd, 2}` on / `{cmd, 1}` off).
     pub async fn set_feature(&self, feature: OraFeature, enabled: bool) -> Result<()> {
         let cmd = feature.command_id();

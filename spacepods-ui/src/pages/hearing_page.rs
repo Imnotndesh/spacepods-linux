@@ -63,16 +63,12 @@ impl HearingPage {
             let scale_for_release = tone_vol_scale.clone();
             gc.connect_released(move |_, _, _, _| {
                 let level = scale_for_release.value() as u8;
-                let cc = libspacepods::ipc::ServiceCommand::Custom {
-                    command_id: 0x46,
-                    payload: vec![level],
-                };
                 set_busy(&[&tone_vol_row], true);
                 let ctx = ctx.clone();
                 let tone_vol_row = tone_vol_row.clone();
                 glib::spawn_future_local(async move {
                     let result = match libspacepods::client::SpacePodsClient::connect(None).await {
-                        Ok(mut client) => client.send_command_raw(cc).await,
+                        Ok(mut client) => client.set_tone_volume(level).await,
                         Err(e) => Err(e),
                     };
                     set_busy(&[&tone_vol_row], false);
@@ -146,16 +142,11 @@ impl HearingPage {
         {
             let ctx = ctx.clone();
             voice_switch.connect_state_set(move |sw, active| {
-                let payload = vec![if active { 0x01 } else { 0x00 }];
-                let cc = libspacepods::ipc::ServiceCommand::Custom {
-                    command_id: 0x48, // CMD_VOICE_PROMPTS
-                    payload,
-                };
                 let sw = sw.clone();
                 let ctx = ctx.clone();
                 glib::spawn_future_local(async move {
                     let result = match libspacepods::client::SpacePodsClient::connect(None).await {
-                        Ok(mut client) => client.send_command_raw(cc).await,
+                        Ok(mut client) => client.set_feature("voice_prompt", active).await,
                         Err(e) => Err(e),
                     };
                     if let Err(e) = result {

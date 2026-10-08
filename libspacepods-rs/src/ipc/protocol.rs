@@ -93,6 +93,14 @@ pub enum ServiceCommand {
     /// Rename the device (chip-agnostic).
     #[serde(rename = "rename")]
     Rename { name: String },
+
+    /// Set the button/voice-prompt tone volume (0-10, chip-agnostic).
+    #[serde(rename = "set_tone_volume")]
+    SetToneVolume { level: u8 },
+
+    /// Remap a gesture key to a function (chip-agnostic).
+    #[serde(rename = "set_key_setting")]
+    SetKeySetting { key_type: u8, function: u8 },
 }
 
 // ── IPC Response ──

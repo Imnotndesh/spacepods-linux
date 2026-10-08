@@ -51,6 +51,10 @@ pub fn ltv_packet(ltv_type: u8, data: &[u8]) -> Vec<u8> {
 /// JieLi's fixed authentication pass response.
 pub const AUTH_PASS: [u8; 5] = [0x02, b'p', b'a', b's', b's'];
 
+/// Sys-info attribute carrying the current EQ value (`[mode, gains…]`).
+pub const ATTR_EQ_VALUE: u8 = 4;
+/// Sys-info attribute carrying the EQ preset list (`EqPresetInfo`).
+pub const ATTR_EQ_PRESETS: u8 = 12;
 /// Sys-info attribute carrying the current voice (noise-control) mode.
 pub const ATTR_VOICE_MODE: u8 = 13;
 /// Sys-info attribute carrying the list of all voice modes.
@@ -59,6 +63,97 @@ pub const ATTR_ALL_VOICE_MODES: u8 = 14;
 pub const MASK_VOICE_MODE: u32 = 1 << 13;
 /// Bitmask for the all-voice-modes attribute (`buildGetAllVoiceModes`).
 pub const MASK_ALL_VOICE_MODES: u32 = 1 << 14;
+/// Bitmask for the current EQ value (`buildGetEqValueCmd`).
+pub const MASK_EQ_VALUE: u32 = 1 << ATTR_EQ_VALUE;
+/// Bitmask for the EQ preset list (`buildGetEqPresetValueCmd`).
+pub const MASK_EQ_PRESETS: u32 = 1 << ATTR_EQ_PRESETS;
+/// Both EQ attributes at once (`buildGetEqPresetAndEqValueCmd`).
+pub const MASK_EQ_ALL: u32 = MASK_EQ_VALUE | MASK_EQ_PRESETS;
+
+/// JieLi EQ preset modes (`EqInfo.MODE_*`).
+pub mod eq_mode {
+    pub const STANDARD: u8 = 0;
+    pub const ROCK: u8 = 1;
+    pub const POPULAR: u8 = 2;
+    pub const CLASSICAL: u8 = 3;
+    pub const JAZZ: u8 = 4;
+    pub const COUNTRY: u8 = 5;
+    pub const CUSTOM: u8 = 6;
+}
+
+/// Human-readable name for a JieLi EQ mode.
+pub fn eq_mode_name(mode: u8) -> &'static str {
+    match mode {
+        eq_mode::STANDARD => "Standard",
+        eq_mode::ROCK => "Rock",
+        eq_mode::POPULAR => "Popular",
+        eq_mode::CLASSICAL => "Classical",
+        eq_mode::JAZZ => "Jazz",
+        eq_mode::COUNTRY => "Country",
+        eq_mode::CUSTOM => "Custom",
+        _ => "Unknown",
+    }
+}
+
+/// Wrap an `EqInfo` (`[mode, gains…]`) in a `SET_SYS_INFO` payload.
+///
+/// Mirrors `CommandBuilder.buildSetEqValueCmd(false, mode, value)`: the
+/// attribute is type 4 and its data is the mode byte followed by one signed
+/// gain per band (10 bands on Oraimo JieLi hardware).
+pub fn set_eq_value_param(mode: u8, gains: &[i8]) -> Vec<u8> {
+    let mut data = Vec::with_capacity(gains.len() + 1);
+    data.push(mode & 0x7F); // bit 7 = dynamic EQ; we always send static
+    data.extend(gains.iter().map(|g| *g as u8));
+
+    let mut payload = vec![0xFF]; // function = -1 (public)
+    payload.push((data.len() + 1) as u8);
+    payload.push(ATTR_EQ_VALUE);
+    payload.extend_from_slice(&data);
+    payload
+}
+
+/// Parse an `EqInfo` attribute (`[mode, gains…]`).
+pub fn parse_eq_value(attr_data: &[u8]) -> Option<(u8, Vec<i8>)> {
+    if attr_data.is_empty() {
+        return None;
+    }
+    let mode = attr_data[0] & 0x07;
+    let gains = attr_data[1..].iter().map(|b| *b as i8).collect();
+    Some((mode, gains))
+}
+
+/// Parse an `EqPresetInfo` attribute (`[count][freqs…][preset…]`).
+///
+/// Returns the band centre frequencies and, for each of the 7 preset slots,
+/// the mode byte and its gains (`EqPresetInfo` / `RcspEventHandler.parseEq`).
+pub fn parse_eq_presets(attr_data: &[u8]) -> Option<(Vec<u16>, Vec<(u8, Vec<i8>)>)> {
+    if attr_data.is_empty() {
+        return None;
+    }
+    let bands = attr_data[0] as usize;
+    let mut i = 1;
+    if bands == 0 || i + bands * 2 > attr_data.len() {
+        return None;
+    }
+    let mut freqs = Vec::with_capacity(bands);
+    for _ in 0..bands {
+        freqs.push(u16::from_be_bytes([attr_data[i], attr_data[i + 1]]));
+        i += 2;
+    }
+    let mut presets = Vec::new();
+    for _ in 0..7 {
+        if i + 1 + bands > attr_data.len() {
+            break;
+        }
+        let flags = attr_data[i];
+        i += 1;
+        let mode = flags & 0x07;
+        let gains: Vec<i8> = attr_data[i..i + bands].iter().map(|b| *b as i8).collect();
+        i += bands;
+        presets.push((mode, gains));
+    }
+    Some((freqs, presets))
+}
 
 /// Wrap a 9-byte `VoiceMode` in a `SET_SYS_INFO` payload.
 pub fn set_voice_mode_param_bytes(vm: &[u8]) -> Vec<u8> {
@@ -567,6 +662,58 @@ mod tests {
         assert_eq!(parsed.status, 0);
         assert_eq!(parsed.op_code_sn, 5);
         assert_eq!(parsed.param, vec![0x03, 0x02]);
+    }
+
+    #[test]
+    fn test_set_eq_value_param() {
+        let gains = [1i8, -1, 2, -2, 3, -3, 4, -4, 5, -5];
+        let param = set_eq_value_param(eq_mode::ROCK, &gains);
+        // [function=0xFF, len=12, attr=4, mode=1, gains…]
+        assert_eq!(param.len(), 3 + 11);
+        assert_eq!(param[0], 0xFF);
+        assert_eq!(param[1], 12);
+        assert_eq!(param[2], ATTR_EQ_VALUE);
+        assert_eq!(param[3], eq_mode::ROCK);
+        assert_eq!(param[4], 1);
+        assert_eq!(param[5], 0xFF); // -1 as u8
+    }
+
+    #[test]
+    fn test_parse_eq_value() {
+        let attr = [0x85u8, 1, 2, 0xFF]; // dynamic + mode 5, three gains
+        let (mode, gains) = parse_eq_value(&attr).unwrap();
+        assert_eq!(mode, 5);
+        assert_eq!(gains, vec![1, 2, -1]);
+        assert!(parse_eq_value(&[]).is_none());
+    }
+
+    #[test]
+    fn test_parse_eq_presets() {
+        let bands = 3usize;
+        let freqs: Vec<u16> = vec![100, 1000, 10000];
+        let mut attr = vec![bands as u8];
+        for f in &freqs {
+            attr.extend_from_slice(&f.to_be_bytes());
+        }
+        // 7 presets: mode i, gains [-i, 0, i]
+        for mode in 0u8..7 {
+            attr.push(mode);
+            attr.push((-1 * mode as i8) as u8);
+            attr.push(0);
+            attr.push(mode);
+        }
+        let (parsed_freqs, presets) = parse_eq_presets(&attr).unwrap();
+        assert_eq!(parsed_freqs, freqs);
+        assert_eq!(presets.len(), 7);
+        assert_eq!(presets[0], (0, vec![0, 0, 0]));
+        assert_eq!(presets[2], (2, vec![-2, 0, 2]));
+    }
+
+    #[test]
+    fn test_parse_eq_presets_truncated() {
+        // Band count says 10 but no data follows: must not panic.
+        assert!(parse_eq_presets(&[10, 0]).is_none());
+        assert!(parse_eq_presets(&[]).is_none());
     }
 
     #[test]

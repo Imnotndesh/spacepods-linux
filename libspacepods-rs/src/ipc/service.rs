@@ -695,6 +695,51 @@ impl SpacePodsService {
                 }
             }
 
+            // ── Tone / voice-prompt volume ──
+            ServiceCommand::SetToneVolume { level } => {
+                let _ = buds.manager.ensure_connected().await;
+                let result = if buds.is_jieli().await {
+                    buds.jieli_send_custom(vec![crate::protocol::jieli::ora::TONE_VOLUME, level])
+                        .await
+                        .map(|_| ())
+                } else {
+                    buds.send_raw(0x46, vec![level]).await
+                };
+                match result {
+                    Ok(_) => IpcResult::Success {
+                        message: Some(format!("Tone volume set to {}", level)),
+                        data: None,
+                    },
+                    Err(e) => IpcResult::Error {
+                        message: format!("Failed to set tone volume: {}", e),
+                    },
+                }
+            }
+
+            // ── Gesture key remap ──
+            ServiceCommand::SetKeySetting { key_type, function } => {
+                let _ = buds.manager.ensure_connected().await;
+                let result = if buds.is_jieli().await {
+                    buds.manager
+                        .jieli_set_adv_setting(
+                            crate::protocol::jieli::ADV_TYPE_KEY_SETTINGS,
+                            &[key_type, 0x01, function],
+                        )
+                        .await
+                } else {
+                    buds.send_raw(0x22, vec![key_type, 0x01, function]).await
+                };
+                match result {
+                    Ok(_) => IpcResult::Success {
+                        message: Some("Gesture updated".to_string()),
+                        data: None,
+                    },
+                    Err(e) => IpcResult::Error {
+                        message: format!("Failed to update gesture: {}", e),
+                    },
+                }
+            }
+
             _ => IpcResult::Error {
                 message: "Command not handled".to_string(),
             },

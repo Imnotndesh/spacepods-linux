@@ -176,6 +176,19 @@ impl SpacePodsClient {
         Ok(())
     }
 
+    /// Set the tone / voice-prompt volume (0-10, chip-agnostic).
+    pub async fn set_tone_volume(&mut self, level: u8) -> Result<()> {
+        self.send_command_raw(ServiceCommand::SetToneVolume { level }).await?;
+        Ok(())
+    }
+
+    /// Remap a gesture key to a function (chip-agnostic).
+    pub async fn set_key_setting(&mut self, key_type: u8, function: u8) -> Result<()> {
+        self.send_command_raw(ServiceCommand::SetKeySetting { key_type, function })
+            .await?;
+        Ok(())
+    }
+
     /// Subscribe to real-time status updates.
     /// Returns a broadcast receiver that yields `DeviceStatus` values.
     pub async fn subscribe(&mut self) -> Result<broadcast::Receiver<DeviceStatus>> {

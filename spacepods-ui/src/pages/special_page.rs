@@ -9,8 +9,6 @@ use glib::clone;
 use crate::context::AppContext;
 use crate::log::Log;
 
-const CMD_KEY: u8 = 0x22;
-
 const KEY_LEFT_SINGLE: u8 = 1;
 const KEY_RIGHT_SINGLE: u8 = 2;
 const KEY_LEFT_DOUBLE: u8 = 3;
@@ -186,19 +184,19 @@ impl SpecialPage {
                     let i = dd.selected() as usize;
                     if i >= actions.len() { return; }
                     let action = &actions[i];
-                    let payload = vec![key_type, 0x01, action.func];
                     Log::info("GESTURE", &format!("Setting {:?} to {}", key_type, action.label));
 
-                    let cc = libspacepods::ipc::ServiceCommand::Custom { command_id: CMD_KEY, payload };
                     let ctx = ctx.clone();
                     let label = action.label;
+                    let func = action.func;
                     glib::spawn_future_local(async move {
-                        match libspacepods::client::SpacePodsClient::connect(None).await {
-                            Ok(mut client) => match client.send_command_raw(cc).await {
-                                Ok(_) => ctx.success(&format!("{} set", label)),
-                                Err(e) => ctx.error(format!("Gesture: {}", e)),
-                            },
-                            Err(e) => ctx.daemon_unreachable(e),
+                        let result = match libspacepods::client::SpacePodsClient::connect(None).await {
+                            Ok(mut client) => client.set_key_setting(key_type, func).await,
+                            Err(e) => Err(e),
+                        };
+                        match result {
+                            Ok(_) => ctx.success(&format!("{} set", label)),
+                            Err(e) => ctx.error(format!("Gesture: {}", e)),
                         }
                     });
                 });

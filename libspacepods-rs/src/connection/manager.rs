@@ -398,6 +398,22 @@ impl ConnectionManager {
         self.jieli_conn().await?.get_anc_level().await
     }
 
+    pub async fn jieli_get_eq_value(&self) -> Result<Option<(u8, Vec<i8>)>> {
+        self.jieli_conn().await?.get_eq_value().await
+    }
+
+    pub async fn jieli_get_eq_presets(&self) -> Result<(Vec<u16>, Vec<(u8, Vec<i8>)>)> {
+        self.jieli_conn().await?.get_eq_presets().await
+    }
+
+    pub async fn jieli_set_eq_value(&self, mode: u8, gains: &[i8]) -> Result<()> {
+        self.jieli_conn().await?.set_eq_value(mode, gains).await
+    }
+
+    pub async fn jieli_set_eq_preset(&self, mode: u8) -> Result<()> {
+        self.jieli_conn().await?.set_eq_preset(mode).await
+    }
+
     pub async fn jieli_rename(&self, name: &str) -> Result<()> {
         self.jieli_conn().await?.rename(name).await
     }
