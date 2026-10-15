@@ -12,29 +12,11 @@ use libadwaita::{
 };
 use libspacepods::client::SpacePodsClient;
 use libspacepods::ipc::protocol::{ScannedDevice, DeviceStatus};
-use crate::storage::{add_known_device, load_known_devices, load_settings, remove_known_device, update_settings};
+use crate::prefs;
+use crate::storage::{add_known_device, load_known_devices, remove_known_device};
 use std::cell::RefCell;
 
 // ── Helpers ──
-
-fn friendly_error(err: &str) -> String {
-    let lower = err.to_lowercase();
-    if lower.contains("connection refused") || lower.contains("no such file") {
-        "SpacePods service isn't running.\nStart it with: spacepods service".into()
-    } else if lower.contains("timeout") || lower.contains("timed out") {
-        "The operation took too long.\nMake sure your earbuds are nearby and in pairing mode.".into()
-    } else if lower.contains("not found") || lower.contains("device not found") {
-        "No SpaceBuds found.\nMake sure they're in pairing mode (LED flashing) and nearby.".into()
-    } else if lower.contains("permission") || lower.contains("denied") {
-        "Bluetooth permission issue.\nCheck that Bluetooth is enabled and accessible.".into()
-    } else if lower.contains("bluetooth") || lower.contains("adapter") {
-        "A Bluetooth error occurred.\nTry toggling Bluetooth off and on again.".into()
-    } else if lower.contains("not connected") {
-        "Not connected to earbuds.\nSelect a device and tap Connect.".into()
-    } else {
-        format!("Something went wrong.\n\nDetails: {}", err)
-    }
-}
 
 fn rssi_label(rssi: Option<i16>) -> &'static str {
     match rssi {
@@ -94,7 +76,10 @@ impl SetupPage {
         };
         let show_error = {
             let st = show_toast.clone();
-            move |err: &str| st(&format!("{}: {}", friendly_error(err).lines().next().unwrap_or(""), err))
+            move |err: &libspacepods::Error| {
+                crate::log::Log::warn("SETUP", &format!("{:?}", err));
+                st(crate::errors::user_text(err))
+            }
         };
 
         // ── Header ──
@@ -102,29 +87,23 @@ impl SetupPage {
         header.set_title_widget(Some(&WindowTitle::new("SpacePods Linux", "Connect your earbuds")));
         header.pack_end(&crate::app::primary_menu_button());
 
-        // ── Disclaimer banner ──
-        let settings = load_settings();
-        let disclaimer_revealer = gtk4::Revealer::new();
-        disclaimer_revealer.set_transition_type(gtk4::RevealerTransitionType::SlideDown);
-        disclaimer_revealer.set_transition_duration(300);
-        disclaimer_revealer.set_reveal_child(!settings.disclaimer_dismissed);
-
-        let banner = libadwaita::Banner::new("Requires libspacepods daemon");
-        banner.set_title("Background Service Required");
+        // ── First-run notice ──
+        // AdwBanner has its own `revealed` state (it starts hidden), so drive that.
+        let banner = libadwaita::Banner::new("SpacePods talks to your earbuds through a background service.");
         banner.set_button_label(Some("Got it"));
         banner.set_use_markup(false);
-        banner.connect_button_clicked(glib::clone!(
-            #[weak] disclaimer_revealer,
-            move |_| {
-                disclaimer_revealer.set_reveal_child(false);
-                update_settings(|s| s.disclaimer_dismissed = true);
-            }
-        ));
-        disclaimer_revealer.set_child(Some(&banner));
+        banner.set_revealed(!prefs::get_bool(prefs::DISCLAIMER_DISMISSED));
+        banner.connect_button_clicked(|banner| {
+            banner.set_revealed(false);
+            prefs::set_bool(prefs::DISCLAIMER_DISMISSED, true);
+        });
 
         // ═══ LEFT PANEL ═══
         let status_page = StatusPage::new();
-        status_page.set_icon_name(Some("audio-headset-symbolic"));
+        match crate::widgets::app_icon_paintable() {
+            Some(art) => status_page.set_paintable(Some(&art)),
+            None => status_page.set_icon_name(Some("audio-headset-symbolic")),
+        }
         status_page.set_title("Find Your SpaceBuds");
         status_page.set_description(Some("Make sure your earbuds are in pairing mode and nearby."));
 
@@ -279,7 +258,7 @@ impl SetupPage {
         main_scroll.set_child(Some(&layout_bin));
 
         let toolbar_content = Box::new(Orientation::Vertical, 0);
-        toolbar_content.append(&disclaimer_revealer);
+        toolbar_content.append(&banner);
         toolbar_content.append(&main_scroll);
 
         let toolbar_view = ToolbarView::new();
@@ -288,35 +267,23 @@ impl SetupPage {
         toast_overlay.set_child(Some(&toolbar_view));
 
         // ═══ DAEMON CHECK ═══
+        // Plain status text, no colour: the words carry the meaning.
         let check_daemon = {
             let ds = daemon_status.clone();
-            let st = show_toast.clone();
             move || {
                 let ds = ds.clone();
-                let st = st.clone();
                 glib::spawn_future_local(async move {
-                    match SpacePodsClient::connect(None).await {
+                    let text = match SpacePodsClient::connect(None).await {
                         Ok(mut c) => {
                             if c.ping().await.unwrap_or(false) {
-                                ds.set_text("Service running");
-                                ds.add_css_class("success");
-                                ds.remove_css_class("error");
-                                ds.remove_css_class("warning");
+                                "Ready to connect"
                             } else {
-                                ds.set_text("Service unresponsive");
-                                ds.add_css_class("warning");
-                                ds.remove_css_class("error");
-                                ds.remove_css_class("success");
+                                "The background service isn't responding"
                             }
                         }
-                        Err(_) => {
-                            ds.set_text("Service not running");
-                            ds.add_css_class("error");
-                            ds.remove_css_class("warning");
-                            ds.remove_css_class("success");
-                            st("Start the daemon with: spacepods service");
-                        }
-                    }
+                        Err(_) => "The background service isn't available",
+                    };
+                    ds.set_text(text);
                 });
             }
         };
@@ -396,7 +363,7 @@ impl SetupPage {
                                 scan_spinner.set_visible(false);
                                 scan_spinner.stop();
                                 scan_btn.set_sensitive(true);
-                                se(&e.to_string());
+                                se(&e);
                                 check_daemon();
                                 return;
                             }
@@ -404,7 +371,7 @@ impl SetupPage {
 
                         match client.scan(5).await {
                             Err(e) => {
-                                se(&e.to_string());
+                                se(&e);
                                 scan_status.set_text("");
                             }
                             Ok(devices) if devices.is_empty() => {
@@ -461,9 +428,9 @@ impl SetupPage {
                                     let status = client.get_status().await.ok();
                                     (*on_connected)(status);
                                 }
-                                Err(e) => { (*show_error)(&e.to_string()); check_daemon(); }
+                                Err(e) => { (*show_error)(&e); check_daemon(); }
                             },
-                            Err(e) => { (*show_error)(&e.to_string()); check_daemon(); }
+                            Err(e) => { (*show_error)(&e); check_daemon(); }
                         }
                     });
                 }
@@ -477,7 +444,7 @@ impl SetupPage {
     fn device_row(
         device: &ScannedDevice,
         on_connected: Rc<impl Fn(Option<DeviceStatus>) + 'static>,
-        show_error: Rc<impl Fn(&str) + 'static>,
+        show_error: Rc<impl Fn(&libspacepods::Error) + 'static>,
     ) -> ListBoxRow {
         let row = ListBoxRow::new();
         row.add_css_class("activatable");
@@ -509,7 +476,6 @@ impl SetupPage {
         }
         if device.already_connected {
             let warn = Label::new(Some("In use"));
-            warn.add_css_class("warning");
             warn.add_css_class("caption");
             line1.append(&warn);
         }
@@ -566,14 +532,14 @@ impl SetupPage {
                                 (*on_connected)(status);
                             }
                             Err(e) => {
-                                (*show_error)(&e.to_string());
+                                (*show_error)(&e);
                                 spinner.set_visible(false);
                                 btn.set_sensitive(true);
                                 btn.set_label("Connect");
                             }
                         },
                         Err(e) => {
-                            (*show_error)(&e.to_string());
+                            (*show_error)(&e);
                             spinner.set_visible(false);
                             btn.set_sensitive(true);
                             btn.set_label("Connect");
@@ -611,7 +577,7 @@ impl SetupPage {
     fn saved_row(
         dev: &crate::storage::KnownDevice,
         on_connected: Rc<impl Fn(Option<DeviceStatus>) + 'static>,
-        show_error: Rc<impl Fn(&str) + 'static>,
+        show_error: Rc<impl Fn(&libspacepods::Error) + 'static>,
     ) -> ListBoxRow {
         let row = ListBoxRow::new();
         row.set_activatable(false);
@@ -650,6 +616,7 @@ impl SetupPage {
         del_btn.add_css_class("circular");
         del_btn.set_valign(Align::Center);
         del_btn.set_tooltip_text(Some("Forget this device"));
+        del_btn.update_property(&[gtk4::accessible::Property::Label("Forget this device")]);
         line2.append(&del_btn);
 
         // Connect button + spinner
@@ -664,7 +631,22 @@ impl SetupPage {
         line2.append(&conn_btn);
 
         outer.append(&line2);
-        row.set_child(Some(&outer));
+        // A small picture of the device type, chosen from its name. Kept small so the
+        // list stays a list.
+        let body = Box::new(Orientation::Horizontal, 10);
+        body.set_valign(Align::Center);
+        if let Some(art) = crate::widgets::device_art_for_name(&dev.name) {
+            // An Image at a fixed pixel size; a Picture would grow to the drawing's size.
+            let picture = gtk4::Image::from_paintable(Some(&art));
+            picture.set_pixel_size(32);
+            picture.set_valign(Align::Center);
+            picture.set_tooltip_text(Some("Device"));
+            picture.update_property(&[gtk4::accessible::Property::Label("Device")]);
+            body.append(&picture);
+        }
+        outer.set_hexpand(true);
+        body.append(&outer);
+        row.set_child(Some(&body));
 
         // Wire delete
         let addr = dev.address.clone();
@@ -708,14 +690,14 @@ impl SetupPage {
                             (*on_connected)(status);
                         }
                         Err(e) => {
-                            (*show_error)(&e.to_string());
+                            (*show_error)(&e);
                             spinner.set_visible(false);
                             btn.set_sensitive(true);
                             btn.set_label("Connect");
                         }
                     },
                     Err(e) => {
-                        (*show_error)(&e.to_string());
+                        (*show_error)(&e);
                         spinner.set_visible(false);
                         btn.set_sensitive(true);
                         btn.set_label("Connect");

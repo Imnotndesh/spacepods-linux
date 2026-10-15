@@ -17,6 +17,7 @@ pub const PID_OPENSNAP_HAYATO: u16 = 4100;  // OTW_371_FF
 pub const PID_SPACEBUDS_2: u16 = 65;        // OTW_631_STAR
 pub const PID_627S: u16 = 55;               // PRODUCT_627S
 pub const PID_OPN671: u16 = 4101;           // PRODUCT_OPN671
+pub const PID_SPACEBUDS_PRO: u16 = 930;     // SpaceBuds Pro (Bluetrum)
 
 // ── Detail Features (mapped from DetailFeature.java) ──
 
@@ -87,6 +88,21 @@ pub enum FormFactor {
     HalfInEar,
     OpenEar,
     Headphones,
+    /// Wearable on the neck, joined by a band (sport models).
+    Neckband,
+}
+
+/// The form factor a device's name suggests. Used when the product is not in the
+/// curated table, so its icon is right even before its features are known.
+pub fn form_for_name(name: &str) -> FormFactor {
+    let n = name.to_lowercase();
+    if n.contains("neck") || n.contains("sport") {
+        FormFactor::Neckband
+    } else if n.contains("headphone") || n.contains("headset") || n.contains("boompop") {
+        FormFactor::Headphones
+    } else {
+        FormFactor::InEar
+    }
 }
 
 /// Helper to build a feature set from a list of feature names.
@@ -161,6 +177,25 @@ fn build_profiles() -> Vec<DeviceProfile> {
             ],
         },
         DeviceProfile {
+            product_id: PID_SPACEBUDS_PRO,
+            name: "oraimo SpaceBuds Pro",
+            model: "930",
+            chip: ChipPlatform::Bluetrum,
+            form: FormFactor::InEar,
+            // From the official app's device screen, the branch for device type 930
+            // (DeviceNewActivity): shown are noise control and its adjustment, area tap,
+            // dual device, game mode, env-adaptive and space audio. Chat mode is hidden.
+            // No LED or tone-volume block is shown for this model.
+            features: fs![
+                DetailFeature::Noise,
+                DetailFeature::NoiseAdjust,
+                DetailFeature::AreaTap,
+                DetailFeature::DualDeviceSwitch,
+                DetailFeature::GameMode,
+                DetailFeature::SpaceAudio,
+            ],
+        },
+        DeviceProfile {
             product_id: PID_OPN671,
             name: "oraimo OpenSnap 2",
             model: "671",
@@ -206,8 +241,10 @@ fn build_profiles() -> Vec<DeviceProfile> {
                 name,
                 model: "",
                 chip: ChipPlatform::Bluetrum,
-                form: FormFactor::InEar,
-                features: generic_features(),
+                form: form_for_name(name),
+                // Not verified for this model yet: claim no features rather than all of
+                // them. See docs/audit/05-progress.md.
+                features: BTreeSet::new(),
             });
         }
     }
@@ -257,7 +294,8 @@ fn generic_profile() -> DeviceProfile {
         model: "generic",
         chip: ChipPlatform::Bluetrum,
         form: FormFactor::InEar,
-        features: generic_features(),
+        // Unknown model: claim nothing until the device says what it supports.
+        features: BTreeSet::new(),
     }
 }
 

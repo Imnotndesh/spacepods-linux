@@ -109,6 +109,18 @@ impl BleConnection {
         self.response_tx.subscribe()
     }
 
+    /// Read the standard GATT battery level (`0x2A19`). A read only: nothing is written
+    /// to the device. `None` if the device does not expose the characteristic.
+    pub async fn read_battery_level(&self) -> Option<u8> {
+        let characteristic = self
+            .peripheral
+            .characteristics()
+            .into_iter()
+            .find(|c| c.uuid == crate::protocol::UUID_BATTERY_LEVEL)?;
+        let data = self.peripheral.read(&characteristic).await.ok()?;
+        data.first().copied().filter(|v| *v <= 100)
+    }
+
     pub async fn is_connected(&self) -> bool {
         self.peripheral.is_connected().await.unwrap_or(false)
     }

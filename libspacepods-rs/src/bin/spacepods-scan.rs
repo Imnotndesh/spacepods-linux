@@ -231,7 +231,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                     }
-                    Some(CentralEvent::ManufacturerDataAdvertisement { id, manufacturer_data }) => {
+                    Some(CentralEvent::ManufacturerDataAdvertisement { id: _, manufacturer_data }) => {
                         mfg_events += 1;
                         for (mfg_id, data) in &manufacturer_data {
                             if let Some(beacon) = beacon::DeviceBeacon::from_manufacturer_data(data) {

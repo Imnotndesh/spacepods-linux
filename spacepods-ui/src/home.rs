@@ -1,7 +1,7 @@
 use gtk4::prelude::*;
 use gtk4::gio;
 use gtk4::gio::prelude::ActionMapExt;
-use gtk4::{Box, Label, Orientation, Image, ListBox, ListBoxRow, SelectionMode};
+use gtk4::{Orientation};
 use std::rc::Rc;
 use libadwaita::{
     HeaderBar, ToolbarView, ToastOverlay, NavigationPage, NavigationSplitView,
@@ -106,10 +106,10 @@ impl HomeView {
             PageDef {
                 id: "led",
                 title: "LED Lights",
-                icon: "emoji-symbols-symbolic",
+                icon: "display-brightness-symbolic",
                 section: Section::Controls,
                 feature: Some(libspacepods::device_profile::DetailFeature::Led),
-                widget: LedPage::new().upcast(),
+                widget: LedPage::new(ctx.clone()).upcast(),
             },
             PageDef {
                 id: "gestures",
@@ -141,7 +141,7 @@ impl HomeView {
                 icon: "settings-symbolic",
                 section: Section::Settings,
                 feature: None,
-                widget: SettingsPage::page({
+                widget: SettingsPage::page(ctx.clone(), {
                     let ww = window.downgrade();
                     let tray = ctx.tray.clone();
                     let wc = ctx.window.clone();
@@ -183,15 +183,13 @@ impl HomeView {
         for def in &pages {
             content_stack.add_named(&def.widget, Some(def.id));
         }
-        let sidebar_list = ListBox::new();
-        sidebar_list.set_selection_mode(SelectionMode::Single);
-        sidebar_list.add_css_class("navigation-sidebar");
-        sidebar_list.set_vexpand(true);
-
+        // Sidebar: AdwSidebar (libadwaita 1.9). One section per group; the settings page
+        // sits in its own untitled section at the bottom.
+        let sidebar = libadwaita::Sidebar::new();
+        // (item, page id, page title), so selection can find its page.
+        let mut entries: Vec<(libadwaita::SidebarItem, &'static str, &'static str)> = Vec::new();
+        let mut section: Option<libadwaita::SidebarSection> = None;
         let mut current_section: Option<Section> = None;
-        // (row, page id, page title) so the selection handler can update the
-        // content header and the window's `show-settings` action can find a row.
-        let mut row_to_id: Vec<(ListBoxRow, &'static str, &'static str)> = Vec::new();
 
         for page in &pages {
             if ctx.product_id.get().is_some() {
@@ -204,52 +202,28 @@ impl HomeView {
                     }
                 }
             }
-            let needs_header = match (&current_section, &page.section) {
+            let starts_section = match (&current_section, &page.section) {
                 (None, _) => true,
-                (Some(s), sec) if std::mem::discriminant(s) != std::mem::discriminant(sec) => true,
-                _ => false,
+                (Some(s), sec) => std::mem::discriminant(s) != std::mem::discriminant(sec),
             };
-            if needs_header && !page.section.label().is_empty() {
-                let header_row = ListBoxRow::new();
-                header_row.set_selectable(false);
-                header_row.set_activatable(false);
-                header_row.set_focusable(false);
-                let lbl = Label::new(Some(page.section.label()));
-                lbl.add_css_class("caption-heading");
-                lbl.add_css_class("dim-label");
-                lbl.set_halign(gtk4::Align::Start);
-                lbl.set_margin_top(if current_section.is_some() { 12 } else { 4 });
-                lbl.set_margin_bottom(2);
-                lbl.set_margin_start(8);
-                header_row.set_child(Some(&lbl));
-                sidebar_list.append(&header_row);
+            if starts_section {
+                let sec = libadwaita::SidebarSection::new();
+                let label = page.section.label();
+                if !label.is_empty() {
+                    sec.set_title(Some(label));
+                }
+                sidebar.append(sec.clone());
+                section = Some(sec);
                 current_section = Some(page.section);
             }
-
-            let row_box = Box::new(Orientation::Horizontal, 10);
-            row_box.set_margin_top(6);
-            row_box.set_margin_bottom(6);
-            row_box.set_margin_start(6);
-            row_box.set_margin_end(6);
-
-            let icon = gtk4::Image::from_icon_name(page.icon);
-            icon.set_pixel_size(16);
-            row_box.append(&icon);
-
-            let lbl = Label::new(Some(page.title));
-            lbl.set_halign(gtk4::Align::Start);
-            lbl.set_hexpand(true);
-            row_box.append(&lbl);
-
-            let row = ListBoxRow::new();
-            row.set_child(Some(&row_box));
-            sidebar_list.append(&row);
-            row_to_id.push((row, page.id, page.title));
-        }
-
-        if let Some((first_row, first_id, _)) = row_to_id.first() {
-            sidebar_list.select_row(Some(first_row));
-            content_stack.set_visible_child_name(first_id);
+            let item = libadwaita::SidebarItem::builder()
+                .title(page.title)
+                .icon_name(page.icon)
+                .build();
+            if let Some(sec) = &section {
+                sec.append(item.clone());
+            }
+            entries.push((item, page.id, page.title));
         }
 
         // ── Sidebar pane ──
@@ -260,14 +234,9 @@ impl HomeView {
         sidebar_header.set_title_widget(Some(&sidebar_title));
         sidebar_header.pack_end(&crate::app::primary_menu_button());
 
-        let sidebar_scroll = gtk4::ScrolledWindow::new();
-        sidebar_scroll.set_hscrollbar_policy(gtk4::PolicyType::Never);
-        sidebar_scroll.set_vexpand(true);
-        sidebar_scroll.set_child(Some(&sidebar_list));
-
         let sidebar_toolbar = ToolbarView::new();
         sidebar_toolbar.add_top_bar(&sidebar_header);
-        sidebar_toolbar.set_content(Some(&sidebar_scroll));
+        sidebar_toolbar.set_content(Some(&sidebar));
         let sidebar_page = NavigationPage::with_tag(&sidebar_toolbar, "SpacePods Linux", "sidebar");
 
         // ── Content pane ──
@@ -275,11 +244,31 @@ impl HomeView {
         content_scroll.set_hscrollbar_policy(gtk4::PolicyType::Never);
         content_scroll.set_vexpand(true);
         content_scroll.set_child(Some(&content_stack));
+        // The page scrolls within the window; its content must not push the window taller.
+        content_scroll.set_propagate_natural_height(false);
+        content_scroll.set_min_content_height(0);
 
         let content_header = HeaderBar::new();
         let content_title = libadwaita::WindowTitle::new("", "");
         content_header.set_title_widget(Some(&content_title));
         content_header.pack_end(&crate::app::primary_menu_button());
+
+        // Refresh lives in the header. It triggers the visible page's own refresh button,
+        // and is shown only for pages that have one.
+        let refresh_button = gtk4::Button::from_icon_name("view-refresh-symbolic");
+        refresh_button.set_tooltip_text(Some("Refresh"));
+        refresh_button.update_property(&[gtk4::accessible::Property::Label("Refresh")]);
+        {
+            let stack = content_stack.clone();
+            refresh_button.connect_clicked(move |_| {
+                if let Some(child) = stack.visible_child() {
+                    if let Some(btn) = find_named(&child, PAGE_REFRESH).and_then(|w| w.downcast::<gtk4::Button>().ok()) {
+                        btn.emit_clicked();
+                    }
+                }
+            });
+        }
+        content_header.pack_end(&refresh_button);
 
         let content_toolbar = ToolbarView::new();
         content_toolbar.add_top_bar(&content_header);
@@ -294,42 +283,110 @@ impl HomeView {
         split_view.set_sidebar(Some(&sidebar_page));
         split_view.set_content(Some(&content_page));
 
-        // Seed the header/page title for the initially selected page.
-        if let Some((_, _, first_title)) = row_to_id.first() {
-            content_title.set_title(first_title);
-            content_page.set_title(first_title);
-        }
-
-        // ── Wire selection → content stack + title ──
-        {
+        // Show a page: stack, titles, scroll position, and the collapsed split view.
+        let show_page = {
+            let refresh_button = refresh_button.clone();
             let stack = content_stack.clone();
-            let row_to_id = row_to_id.clone();
             let content_scroll = content_scroll.clone();
             let content_page = content_page.clone();
             let content_title = content_title.clone();
             let split_view_weak = split_view.downgrade();
-            sidebar_list.connect_row_selected(move |_, row| {
-                let Some(row) = row else { return };
-                if let Some((_, id, title)) = row_to_id.iter().find(|(r, _, _)| r == row) {
-                    stack.set_visible_child_name(id);
-                    content_title.set_title(title);
-                    content_page.set_title(title);
-                    // Reset the outer content scroll AND all inner scrolls
-                    content_scroll.vadjustment().set_value(0.0);
-                    let id_owned = id.to_string();
-                    let stack_weak = stack.downgrade();
-                    glib::idle_add_local_once(move || {
-                        if let Some(s) = stack_weak.upgrade() {
-                            if let Some(child) = s.child_by_name(&id_owned) {
-                                reset_scroll(&child);
-                            }
-                        }
-                    });
-                    if let Some(sv) = split_view_weak.upgrade() {
-                        if sv.is_collapsed() {
-                            sv.set_show_content(true);
+            Rc::new(move |id: &str, title: &str| {
+                stack.set_visible_child_name(id);
+                let has_refresh = stack
+                    .child_by_name(id)
+                    .and_then(|child| find_named(&child, PAGE_REFRESH))
+                    .is_some();
+                refresh_button.set_visible(has_refresh);
+                content_title.set_title(title);
+                content_page.set_title(title);
+                content_scroll.vadjustment().set_value(0.0);
+                let id_owned = id.to_string();
+                let stack_weak = stack.downgrade();
+                glib::idle_add_local_once(move || {
+                    if let Some(s) = stack_weak.upgrade() {
+                        if let Some(child) = s.child_by_name(&id_owned) {
+                            reset_scroll(&child);
                         }
                     }
+                });
+                if let Some(sv) = split_view_weak.upgrade() {
+                    if sv.is_collapsed() {
+                        sv.set_show_content(true);
+                    }
+                }
+            })
+        };
+
+        // Select a page by id: moves the sidebar highlight and shows the page.
+        let select_page: Rc<dyn Fn(&str)> = {
+            let sidebar = sidebar.clone();
+            let entries = entries.clone();
+            let show_page = show_page.clone();
+            Rc::new(move |id: &str| {
+                let Some((item, _, title)) = entries.iter().find(|(_, pid, _)| *pid == id) else { return };
+                let model = sidebar.items();
+                if let Some(index) = (0..model.n_items()).find(|&i| model.item(i).as_ref() == Some(item.upcast_ref())) {
+                    sidebar.set_selected(index);
+                }
+                show_page(id, title);
+            })
+        };
+
+        // Development aid: SPACEPODS_DEV_PAGE=<page id> opens another page first.
+        let initial_id = std::env::var("SPACEPODS_DEV_PAGE")
+            .ok()
+            .filter(|id| entries.iter().any(|(_, pid, _)| pid == id))
+            .or_else(|| entries.first().map(|(_, pid, _)| pid.to_string()));
+        if let Some(id) = &initial_id {
+            select_page(id);
+        }
+
+        // Development aid: SPACEPODS_DEV_SHOW_CONTENT=1 shows the page pane in a collapsed
+        // (narrow) window, so narrow layouts can be checked.
+        if std::env::var_os("SPACEPODS_DEV_SHOW_CONTENT").is_some() {
+            let split_view = split_view.clone();
+            glib::timeout_add_local_once(std::time::Duration::from_millis(600), move || {
+                split_view.set_show_content(true);
+            });
+        }
+
+        // Development aid: SPACEPODS_DEV_TOUR=anc,eq,... visits each page in turn (every
+        // SPACEPODS_DEV_TOUR_MS milliseconds, default 1500), so memory can be sampled per page.
+        if let Ok(tour) = std::env::var("SPACEPODS_DEV_TOUR") {
+            let pages: Vec<String> = tour.split(',').map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect();
+            let interval = std::env::var("SPACEPODS_DEV_TOUR_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(1500);
+            let select_page = select_page.clone();
+            let quit_target = window.clone();
+            let mut next = 0usize;
+            glib::timeout_add_local(std::time::Duration::from_millis(interval), move || {
+                let Some(id) = pages.get(next) else {
+                    Log::info("TOUR", "done");
+                    // SPACEPODS_DEV_TOUR_QUIT=1 exits after the tour, so a heap profile is written.
+                    if std::env::var_os("SPACEPODS_DEV_TOUR_QUIT").is_some() {
+                        if let Some(app) = quit_target.application() {
+                            app.quit();
+                        }
+                    }
+                    return glib::ControlFlow::Break;
+                };
+                select_page(id);
+                crate::memstats::log_once(&format!("page {}", id));
+                next += 1;
+                glib::ControlFlow::Continue
+            });
+        }
+
+
+        // Clicking a sidebar item shows its page. Programmatic selection goes through
+        // `select_page`, so it does not loop back here.
+        {
+            let entries = entries.clone();
+            let show_page = show_page.clone();
+            sidebar.connect_activated(move |sb, index| {
+                let Some(item) = sb.item(index) else { return };
+                if let Some((_, id, title)) = entries.iter().find(|(i, _, _)| *i == item) {
+                    show_page(id, title);
                 }
             });
         }
@@ -346,18 +403,49 @@ impl HomeView {
             window.add_action(&action);
         }
         {
-            let sidebar_list = sidebar_list.clone();
-            let row_to_id = row_to_id.clone();
+            let select_page = select_page.clone();
             let action = gio::SimpleAction::new("show-settings", None);
-            action.connect_activate(move |_, _| {
-                if let Some((row, _, _)) = row_to_id.iter().find(|(_, id, _)| *id == "settings") {
-                    sidebar_list.select_row(Some(row));
-                }
-            });
+            action.connect_activate(move |_, _| select_page("settings"));
             window.add_action(&action);
         }
 
-        ctx.toast_overlay.set_child(Some(&split_view));
+        // Persistent state (service down, earbuds disconnected) is a banner above the
+        // content. Toasts stay for one-off feedback.
+        let banner = libadwaita::Banner::new("");
+        {
+            let button_ctx = ctx.clone();
+            banner.connect_button_clicked(move |_| {
+                match button_ctx.banner_message().map(|(_, action)| action) {
+                    Some(crate::context::BannerAction::OpenBluetooth) => open_bluetooth_settings(),
+                    _ => button_ctx.check_daemon(),
+                }
+            });
+        }
+        let refresh_banner = {
+            let banner = banner.clone();
+            let ctx = ctx.clone();
+            move || match ctx.banner_message() {
+                Some((text, action)) => {
+                    use crate::context::BannerAction;
+                    banner.set_title(text);
+                    banner.set_button_label(match action {
+                        BannerAction::Retry => Some("Retry"),
+                        BannerAction::OpenBluetooth => Some("Open Bluetooth"),
+                        BannerAction::None => None,
+                    });
+                    banner.set_revealed(true);
+                }
+                None => banner.set_revealed(false),
+            }
+        };
+        refresh_banner();
+        ctx.on_daemon_change(refresh_banner);
+
+        let column = gtk4::Box::new(Orientation::Vertical, 0);
+        column.append(&banner);
+        split_view.set_vexpand(true);
+        column.append(&split_view);
+        ctx.toast_overlay.set_child(Some(&column));
 
         let condition = BreakpointCondition::new_length(
             libadwaita::BreakpointConditionLengthType::MaxWidth,
@@ -381,5 +469,31 @@ fn reset_scroll(widget: &gtk4::Widget) {
     while let Some(c) = child {
         reset_scroll(&c);
         child = c.next_sibling();
+    }
+}
+
+/// Widget name of a page's own refresh button (set in each page module).
+const PAGE_REFRESH: &str = "page-refresh";
+
+/// Depth-first search for a descendant with the given widget name.
+fn find_named(root: &gtk4::Widget, name: &str) -> Option<gtk4::Widget> {
+    if root.widget_name() == name {
+        return Some(root.clone());
+    }
+    let mut child = root.first_child();
+    while let Some(c) = child {
+        if let Some(found) = find_named(&c, name) {
+            return Some(found);
+        }
+        child = c.next_sibling();
+    }
+    None
+}
+
+/// Open the Bluetooth settings page. Best effort: outside a Flatpak this runs the
+/// settings app directly; if it is missing, the failure is logged.
+fn open_bluetooth_settings() {
+    if let Err(e) = std::process::Command::new("gnome-control-center").arg("bluetooth").spawn() {
+        crate::log::Log::warn("BLUETOOTH", &format!("could not open Bluetooth settings: {}", e));
     }
 }

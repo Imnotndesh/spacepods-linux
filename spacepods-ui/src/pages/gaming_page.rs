@@ -2,11 +2,9 @@ use std::rc::Rc;
 use gtk4::prelude::*;
 use gtk4::{Box, Label, Orientation, Switch};
 use libadwaita::prelude::*;
-use libadwaita::{PreferencesGroup, ActionRow, Clamp, StatusPage};
-use glib::clone;
+use libadwaita::{PreferencesGroup, ActionRow, Clamp};
 
 use crate::context::{AppContext, set_busy};
-use crate::log::Log;
 
 pub struct GamingPage;
 
@@ -20,12 +18,13 @@ impl GamingPage {
         game_switch_row.set_title("Game Mode");
         game_switch_row.set_subtitle("Enable low-latency audio for gaming");
         let game_switch = Switch::new();
+        game_switch.set_sensitive(false); // unknown until read from the earbuds
         game_switch.set_valign(gtk4::Align::Center);
         game_switch_row.add_suffix(&game_switch);
         game_switch_row.set_activatable_widget(Some(&game_switch));
         gaming_group.add(&game_switch_row);
 
-        let status_label = Label::new(Some("Game Mode is OFF"));
+        let status_label = Label::new(Some("Game Mode is unavailable right now"));
         status_label.add_css_class("dim-label");
         status_label.set_halign(gtk4::Align::Center);
 
@@ -58,7 +57,7 @@ impl GamingPage {
                     };
                     set_busy(&[&game_switch_row], false);
                     if let Err(e) = result {
-                        ctx.error(format!("Couldn't change Game Mode: {}", e));
+                        ctx.failed("Couldn't change Game Mode", &e);
                         // Revert — the earbuds never actually got the command.
                         sw.set_state(!active);
                         status_label.set_text(previous_text);
@@ -73,18 +72,18 @@ impl GamingPage {
         header_row.set_margin_top(24);
         header_row.set_margin_bottom(8);
 
-        let title_lbl = Label::new(Some("Gaming Mode"));
-        title_lbl.add_css_class("title-1");
-        title_lbl.set_halign(gtk4::Align::Start);
-        title_lbl.set_hexpand(true);
-        header_row.append(&title_lbl);
 
         let refresh_btn = gtk4::Button::from_icon_name("view-refresh-symbolic");
         refresh_btn.add_css_class("flat");
         refresh_btn.add_css_class("circular");
         refresh_btn.set_valign(gtk4::Align::Center);
         refresh_btn.set_tooltip_text(Some("Refresh status"));
+        refresh_btn.set_hexpand(true);
+        refresh_btn.set_halign(gtk4::Align::End);
         header_row.append(&refresh_btn);
+        // The window header carries the Refresh button and triggers this one.
+        refresh_btn.set_widget_name("page-refresh");
+        header_row.set_visible(false);
 
         let content = Box::new(Orientation::Vertical, 12);
         content.set_margin_top(0);
@@ -100,24 +99,22 @@ impl GamingPage {
             let status_label = status_label.clone();
             let ctx = ctx.clone();
             refresh_btn.connect_clicked(move |_| {
-                let gs = game_switch.clone();
-                let sl = status_label.clone();
-                let ctx = ctx.clone();
-                glib::spawn_future_local(async move {
-                    use libspacepods::client::SpacePodsClient;
-                    match SpacePodsClient::connect(None).await {
-                        Ok(mut client) => match client.get_status().await {
-                            Ok(s) => {
-                                // Game mode isn't in the status struct — use raw value from features/work_mode
-                                ctx.success("Status refreshed");
-                                Log::full("GAMING", &format!("Status: anc={:?} level={}", s.anc.mode, s.anc.level));
-                            }
-                            Err(e) => ctx.error(format!("Status: {}", e)),
-                        },
-                        Err(e) => ctx.daemon_unreachable(e),
+                let game_switch = game_switch.clone();
+                let status_label = status_label.clone();
+                crate::context::read_features(&ctx, &["game_mode"], move |_, on| {
+                    game_switch.set_sensitive(true);
+                    if game_switch.state() != on {
+                        game_switch.set_state(on);
                     }
+                    status_label.set_text(if on {
+                        "Game Mode is ON — Low latency audio"
+                    } else {
+                        "Game Mode is OFF — Normal audio mode"
+                    });
                 });
             });
+            // Read the state once on open, so switches show what the earbuds report.
+            refresh_btn.emit_clicked();
         }
 
         let clamp = Clamp::new();

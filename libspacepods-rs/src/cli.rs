@@ -1,6 +1,5 @@
 use crate::ipc::client::SpacePodsClient;
 use crate::ipc::protocol::DeviceStatus;
-use crate::commands::eq::EqPreset;
 use anyhow::{Context, Result};
 use rustyline::config::{Config, EditMode};
 use rustyline::error::ReadlineError;

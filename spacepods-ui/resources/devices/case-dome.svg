@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="30 40 60 56">
+  <!-- Charging case with a domed lid, flat style. Original drawing. -->
+  <path d="M32 74 C32 54 44 42 60 42 C76 42 88 54 88 74 V84 C88 88 85 90 81 90 H39 C35 90 32 88 32 84 Z"
+        fill="#e8ebf0" stroke="#7d8590" stroke-width="2"/>
+  <path d="M34 78 H86" stroke="#b5bcc6" stroke-width="2"/>
+  <circle cx="60" cy="85" r="2" fill="#3ec46d"/>
+</svg>

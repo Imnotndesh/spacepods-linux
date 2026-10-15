@@ -5,17 +5,27 @@ edition.workspace = true
 license.workspace = true
 description = "Desktop companion GUI for oraimo SpaceBuds earbuds on Linux."
 
+[features]
+# Heap profiling with dhat: writes dhat-heap.json on exit (view with dh_view).
+heap-profile = ["dep:dhat"]
+# The StatusNotifierItem tray. Off by default: GNOME shows no tray icon without the
+# AppIndicator extension, and the tray popup cannot be positioned on Wayland.
+tray = ["dep:ksni"]
+
 [dependencies]
+dhat = { version = "0.3", optional = true }
+libc = "0.2"
 gtk4 = { version = "0.11.3", features = ["v4_14"] }
-libadwaita = { version = "0.9.1", features = ["v1_5"] }
+libadwaita = { version = "0.9.1", features = ["v1_9"] }
 glib = "0.22.7"
-ksni = { version = "0.3", features = ["blocking"] }
+ksni = { version = "0.3", features = ["blocking"], optional = true }
 gio = "0.22.6"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 libspacepods = { path = "../libspacepods-rs" }
-btleplug = "0.11.8"
 tokio = "1.52.3"
+futures = "0.3"
+zbus = { version = "5.15", default-features = false, features = ["tokio"] }
 [build-dependencies]
 glib-build-tools = "0.22.8"
 [package.metadata.deb]
@@ -28,15 +38,17 @@ section = "utils"
 priority = "optional"
 assets = [
     ["target/release/spacepods-ui", "usr/bin/", "755"],
-    ["assets/com.spacepods.ui.desktop", "usr/share/applications/", "644"],
-    ["resources/app-icon.svg", "usr/share/icons/hicolor/scalable/apps/com.spacepods.ui.svg", "644"],
-    ["data/com.spacepods.ui.metainfo.xml", "usr/share/metainfo/", "644"],
+    ["data/com.github.imnotndesh.spacepods-linux.desktop", "usr/share/applications/", "644"],
+    ["resources/app-icon.svg", "usr/share/icons/hicolor/scalable/apps/com.github.imnotndesh.spacepods-linux.svg", "644"],
+    ["data/com.github.imnotndesh.spacepods-linux.metainfo.xml", "usr/share/metainfo/", "644"],
+    ["data/com.github.imnotndesh.spacepods-linux.gschema.xml", "usr/share/glib-2.0/schemas/", "644"],
 ]
 
 [package.metadata.generate-rpm]
 assets = [
     { source = "target/release/spacepods-ui", dest = "/usr/bin/spacepods-ui", mode = "755" },
-    { source = "assets/com.spacepods.ui.desktop", dest = "/usr/share/applications/com.spacepods.ui.desktop", mode = "644" },
-    { source = "resources/app-icon.svg", dest = "/usr/share/icons/hicolor/scalable/apps/com.spacepods.ui.svg", mode = "644" },
-    { source = "data/com.spacepods.ui.metainfo.xml", dest = "/usr/share/metainfo/com.spacepods.ui.metainfo.xml", mode = "644" },
+    { source = "data/com.github.imnotndesh.spacepods-linux.desktop", dest = "/usr/share/applications/com.github.imnotndesh.spacepods-linux.desktop", mode = "644" },
+    { source = "resources/app-icon.svg", dest = "/usr/share/icons/hicolor/scalable/apps/com.github.imnotndesh.spacepods-linux.svg", mode = "644" },
+    { source = "data/com.github.imnotndesh.spacepods-linux.metainfo.xml", dest = "/usr/share/metainfo/com.github.imnotndesh.spacepods-linux.metainfo.xml", mode = "644" },
+    { source = "data/com.github.imnotndesh.spacepods-linux.gschema.xml", dest = "/usr/share/glib-2.0/schemas/com.github.imnotndesh.spacepods-linux.gschema.xml", mode = "644" },
 ]

@@ -3,7 +3,10 @@ Description=SpacePods earbuds control daemon
 After=bluetooth.target
 
 [Service]
-Type=simple
+# Readiness and watchdog are reported with sd_notify(3).
+Type=notify
+NotifyAccess=main
+WatchdogSec=30
 ExecStart=/usr/bin/libspacepods service
 Restart=on-failure
 RestartSec=2

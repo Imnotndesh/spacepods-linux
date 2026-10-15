@@ -1,28 +1,22 @@
 use gtk4::prelude::*;
 use gtk4::{Box, Label, Orientation};
 use libadwaita::prelude::*;
-use libadwaita::{PreferencesGroup, ActionRow, Clamp, StatusPage, SwitchRow};
-use glib::clone;
+use libadwaita::{PreferencesGroup, ActionRow, Clamp, SwitchRow};
+use std::rc::Rc;
 
-use crate::storage::{load_settings, update_settings};
+use crate::context::AppContext;
+use crate::errors::user_text;
+
+use crate::prefs;
+use crate::autostart::{self, Outcome};
 use crate::service;
 
 pub struct SettingsPage;
 
 impl SettingsPage {
-    pub fn page(on_disconnect: impl Fn() + 'static + Clone) -> gtk4::Widget {
-        let saved_settings = load_settings();
+    pub fn page(ctx: Rc<AppContext>, on_disconnect: impl Fn() + 'static + Clone) -> gtk4::Widget {
 
         // Header
-        let header_row = Box::new(Orientation::Horizontal, 0);
-        header_row.set_margin_top(24);
-        header_row.set_margin_bottom(8);
-        let title = Label::new(Some("Settings"));
-        title.add_css_class("title-1");
-        title.set_halign(gtk4::Align::Start);
-        title.set_hexpand(true);
-        header_row.append(&title);
-
         // General
         let general_group = PreferencesGroup::new();
         general_group.set_title("General");
@@ -30,30 +24,70 @@ impl SettingsPage {
         let autostart_row = SwitchRow::new();
         autostart_row.set_title("Start on login");
         autostart_row.set_subtitle("Launch SpacePods automatically at login");
-        autostart_row.set_active(saved_settings.autostart);
-        autostart_row.connect_active_notify(|row| {
-            let enabled = row.is_active();
-            update_settings(|s| s.autostart = enabled);
-            service::write_autostart_entry(enabled);
+        autostart_row.set_active(prefs::get_bool(prefs::AUTOSTART));
+        // Set while we put the switch back after a refusal, so that does not
+        // trigger another request.
+        let reverting = Rc::new(std::cell::Cell::new(false));
+        let autostart_ctx = ctx.clone();
+        autostart_row.connect_active_notify(move |row| {
+            if reverting.get() {
+                return;
+            }
+            let wanted = row.is_active();
+            let row = row.clone();
+            let reverting = reverting.clone();
+            let ctx = autostart_ctx.clone();
+            glib::spawn_future_local(async move {
+                let revert = |row: &SwitchRow| {
+                    reverting.set(true);
+                    row.set_active(!wanted);
+                    reverting.set(false);
+                };
+                match autostart::set_enabled(wanted).await {
+                    Ok(Outcome::Enabled) => prefs::set_bool(prefs::AUTOSTART, true),
+                    Ok(Outcome::Disabled) => prefs::set_bool(prefs::AUTOSTART, false),
+                    Ok(Outcome::Denied) => {
+                        revert(&row);
+                        ctx.toast("SpacePods wasn't allowed to start on login.");
+                    }
+                    Err(e) => {
+                        revert(&row);
+                        crate::log::Log::warn("AUTOSTART", &e);
+                        ctx.error("Couldn't change start on login. Try again.");
+                    }
+                }
+            });
         });
         general_group.add(&autostart_row);
 
-        let tray_row = SwitchRow::new();
-        tray_row.set_title("Close to tray");
-        tray_row.set_subtitle("Closing the window keeps SpacePods running in the background");
-        tray_row.set_active(saved_settings.close_to_background);
-        tray_row.connect_active_notify(|row| {
-            let enabled = row.is_active();
-            update_settings(|s| s.close_to_background = enabled);
+        // Graphics renderer. GTK reads it once at startup, so the change applies next time.
+        const RENDERERS: [(&str, &str); 3] = [
+            ("cairo", "Cairo (least memory)"),
+            ("vulkan", "Vulkan (GPU)"),
+            ("gl", "OpenGL (GPU)"),
+        ];
+        let renderer_row = libadwaita::ComboRow::new();
+        renderer_row.set_title("Graphics renderer");
+        renderer_row.set_subtitle("Takes effect the next time SpacePods starts");
+        let labels = gtk4::StringList::new(&RENDERERS.map(|(_, label)| label));
+        renderer_row.set_model(Some(&labels));
+        let current = prefs::get_string(prefs::RENDERER);
+        let selected = RENDERERS.iter().position(|(id, _)| *id == current).unwrap_or(0);
+        renderer_row.set_selected(selected as u32);
+        renderer_row.connect_selected_notify(|row| {
+            if let Some((id, _)) = RENDERERS.get(row.selected() as usize) {
+                prefs::set_string(prefs::RENDERER, id);
+            }
         });
-        general_group.add(&tray_row);
+        general_group.add(&renderer_row);
+
 
         // Service
         let service_group = PreferencesGroup::new();
         service_group.set_title("Background Service");
         service_group.set_description(Some(
-            "The SpacePods daemon handles Bluetooth communication. \
-             Start it from a terminal: spacepods service",
+            "SpacePods talks to your earbuds through a background service. \
+             It starts on its own when SpacePods opens.",
         ));
 
         let service_row = ActionRow::new();
@@ -160,7 +194,6 @@ impl SettingsPage {
         content.set_margin_bottom(32);
         content.set_margin_start(16);
         content.set_margin_end(16);
-        content.append(&header_row);
         content.append(&general_group);
         content.append(&service_group);
         content.append(&device_group);
@@ -169,18 +202,25 @@ impl SettingsPage {
         // Handlers
         disconnect_row.connect_activated({
             let on_disconnect = on_disconnect.clone();
+            let ctx = ctx.clone();
             move |_| {
                 let on_disconnect = on_disconnect.clone();
+                let ctx = ctx.clone();
                 glib::spawn_future_local(async move {
                     use libspacepods::client::SpacePodsClient;
-                    if let Ok(mut client) = SpacePodsClient::connect(None).await {
-                        let _ = client.disconnect_device().await;
+                    // Only return to setup once the daemon has confirmed the disconnect.
+                    match SpacePodsClient::connect(None).await {
+                        Ok(mut client) => match client.disconnect_device().await {
+                            Ok(()) => on_disconnect(),
+                            Err(e) => ctx.failed("Couldn't disconnect", &e),
+                        },
+                        Err(e) => ctx.daemon_unreachable(e),
                     }
-                    on_disconnect();
                 });
             }
         });
 
+        let rename_ctx = ctx.clone();
         rename_row.connect_activated(move |row| {
             let parent = row.root().and_then(|r| r.downcast::<gtk4::Window>().ok());
             let dialog = libadwaita::AlertDialog::new(
@@ -197,6 +237,7 @@ impl SettingsPage {
             dialog.set_close_response("cancel");
             {
                 let entry = entry.clone();
+                let ctx = rename_ctx.clone();
                 dialog.connect_response(None, move |_, response| {
                     if response != "rename" {
                         return;
@@ -205,10 +246,16 @@ impl SettingsPage {
                     if name.is_empty() {
                         return;
                     }
+                    let ctx = ctx.clone();
                     glib::spawn_future_local(async move {
                         use libspacepods::client::SpacePodsClient;
-                        if let Ok(mut client) = SpacePodsClient::connect(None).await {
-                            let _ = client.rename(&name).await;
+                        match SpacePodsClient::connect(None).await {
+                            Ok(mut client) => {
+                                if let Err(e) = client.rename(&name).await {
+                                    ctx.failed("Couldn't rename the earbuds", &e);
+                                }
+                            }
+                            Err(e) => ctx.daemon_unreachable(e),
                         }
                     });
                 });
@@ -246,9 +293,9 @@ impl SettingsPage {
                             match SpacePodsClient::connect(None).await {
                                 Ok(mut client) => match client.send_command_raw(cc).await {
                                     Ok(_) => cs.set_text("Pairing records cleared. Device will restart."),
-                                    Err(e) => cs.set_text(&format!("Failed: {}", e)),
+                                    Err(e) => cs.set_text(&format!("Couldn't clear pairing: {}", user_text(&e))),
                                 },
-                                Err(e) => cs.set_text(&format!("Service unreachable: {}", e)),
+                                Err(e) => cs.set_text(&format!("Couldn't clear pairing: {}", user_text(&e))),
                             }
                         });
                     });

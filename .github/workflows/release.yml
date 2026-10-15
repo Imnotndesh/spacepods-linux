@@ -84,16 +84,22 @@ jobs:
     name: Build Flatpak
     runs-on: ubuntu-latest
     container:
-      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-49
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-50
       options: --privileged
     steps:
       - uses: actions/checkout@v4
+
+      - name: Check offline cargo sources are current
+        run: python3 tools/flatpak-cargo-sources.py --check
+
+      - name: Check the UI follows the stock Adwaita rules
+        run: bash tools/check-ui-style.sh
 
       - name: Inject release tag into Flatpak build env
         run: |
           python3 - <<'PYEOF'
           import json
-          p = "spacepods-ui/com.spacepods.ui.json"
+          p = "spacepods-ui/com.github.imnotndesh.spacepods-linux.json"
           with open(p) as f:
               m = json.load(f)
           bo = m.setdefault("build-options", {})
@@ -102,13 +108,13 @@ jobs:
               json.dump(m, f, indent=4)
               f.write("\n")
           PYEOF
-          grep "GIT_TAG" spacepods-ui/com.spacepods.ui.json
+          grep "GIT_TAG" spacepods-ui/com.github.imnotndesh.spacepods-linux.json
 
       - name: Build Flatpak
         uses: flatpak/flatpak-github-actions/flatpak-builder@v6
         with:
           bundle: spacepods.flatpak
-          manifest-path: spacepods-ui/com.spacepods.ui.json
+          manifest-path: spacepods-ui/com.github.imnotndesh.spacepods-linux.json
           cache-key: flatpak-builder-${{ github.sha }}
 
       - name: Upload Flatpak

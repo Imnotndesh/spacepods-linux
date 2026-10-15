@@ -2,7 +2,7 @@ use std::rc::Rc;
 use gtk4::prelude::*;
 use gtk4::{Box, Label, Orientation, Switch};
 use libadwaita::prelude::*;
-use libadwaita::{PreferencesGroup, ActionRow, Clamp, StatusPage};
+use libadwaita::{PreferencesGroup, ActionRow, Clamp};
 
 use crate::context::AppContext;
 
@@ -15,18 +15,18 @@ impl SpatialAudioPage {
         header_row.set_margin_top(24);
         header_row.set_margin_bottom(8);
 
-        let title_lbl = Label::new(Some("Spatial Audio"));
-        title_lbl.add_css_class("title-1");
-        title_lbl.set_halign(gtk4::Align::Start);
-        title_lbl.set_hexpand(true);
-        header_row.append(&title_lbl);
 
         let refresh_btn = gtk4::Button::from_icon_name("view-refresh-symbolic");
         refresh_btn.add_css_class("flat");
         refresh_btn.add_css_class("circular");
         refresh_btn.set_valign(gtk4::Align::Center);
         refresh_btn.set_tooltip_text(Some("Refresh status"));
+        refresh_btn.set_hexpand(true);
+        refresh_btn.set_halign(gtk4::Align::End);
         header_row.append(&refresh_btn);
+        // The window header carries the Refresh button and triggers this one.
+        refresh_btn.set_widget_name("page-refresh");
+        header_row.set_visible(false);
 
         let space_group = PreferencesGroup::new();
         space_group.set_title("Spatial Audio");
@@ -35,6 +35,7 @@ impl SpatialAudioPage {
         space_switch_row.set_title("Space Audio");
         space_switch_row.set_subtitle("Enable 3D spatial audio processing");
         let space_switch = Switch::new();
+        space_switch.set_sensitive(false); // unknown until read from the earbuds
         space_switch.set_valign(gtk4::Align::Center);
         space_switch_row.add_suffix(&space_switch);
         space_switch_row.set_activatable_widget(Some(&space_switch));
@@ -69,7 +70,7 @@ impl SpatialAudioPage {
                         Err(e) => Err(e),
                     };
                     if let Err(e) = result {
-                        ctx.error(format!("Couldn't change Spatial Audio: {}", e));
+                        ctx.failed("Couldn't change Spatial Audio", &e);
                         sw.set_state(!active);
                         status_label.set_text(previous_text);
                     }
@@ -90,18 +91,17 @@ impl SpatialAudioPage {
         {
             let ctx = ctx.clone();
             refresh_btn.connect_clicked(move |_| {
-                let ctx = ctx.clone();
-                glib::spawn_future_local(async move {
-                    use libspacepods::client::SpacePodsClient;
-                    match SpacePodsClient::connect(None).await {
-                        Ok(mut client) => match client.get_status().await {
-                            Ok(_) => ctx.success("Status refreshed"),
-                            Err(e) => ctx.error(format!("Status: {}", e)),
-                        },
-                        Err(e) => ctx.daemon_unreachable(e),
+                let switch = space_switch.clone();
+                let space_switch = space_switch.clone();
+                crate::context::read_features(&ctx, &["space_audio"], move |_, on| {
+                    space_switch.set_sensitive(true);
+                    if switch.state() != on {
+                        switch.set_state(on);
                     }
                 });
             });
+            // Read the state once on open, so switches show what the earbuds report.
+            refresh_btn.emit_clicked();
         }
 
         let clamp = Clamp::new();

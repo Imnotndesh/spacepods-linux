@@ -17,6 +17,8 @@ rustyline = "17.0.2"
 anyhow = "1.0"
 rustyline-derive = "0.11.1"
 uuid = { version = "1.20.0", features = ["v4"] }
+libc = "0.2"
+zbus = { version = "5.15", default-features = false, features = ["tokio"] }
 [package.metadata.deb]
 maintainer = "Imnotndesh"
 copyright = "2026, Imnotndesh"
@@ -28,10 +30,12 @@ priority = "optional"
 assets = [
     ["target/release/libspacepods", "usr/bin/", "755"],
     ["assets/libspacepods.service", "usr/lib/systemd/user/", "644"],
+    ["assets/com.github.imnotndesh.SpacePods.Daemon1.service", "usr/share/dbus-1/services/", "644"],
 ]
 
 [package.metadata.generate-rpm]
 assets = [
     { source = "target/release/libspacepods", dest = "/usr/bin/libspacepods", mode = "755" },
     { source = "assets/libspacepods.service", dest = "/usr/lib/systemd/user/libspacepods.service", mode = "644" },
+    { source = "assets/com.github.imnotndesh.SpacePods.Daemon1.service", dest = "/usr/share/dbus-1/services/com.github.imnotndesh.SpacePods.Daemon1.service", mode = "644" },
 ]

@@ -3,10 +3,6 @@ use anyhow::{Context, Result};
 use std::path::PathBuf;
 use tokio::signal;
 
-#[cfg(unix)]
-const DEFAULT_SOCKET: &str = "/tmp/spacepods.sock";
-#[cfg(windows)]
-const DEFAULT_SOCKET: &str = r"\\.\pipe\spacepods";
 
 #[derive(Parser)]
 #[command(
@@ -76,23 +72,37 @@ enum ExecCommands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    libspacepods::crash::install_panic_hook("daemon");
     let cli = Cli::parse();
 
     // Set log level before anything else
     libspacepods::log::set_log_level(libspacepods::log::LogLevel::from_str(&cli.log_level));
     libspacepods::log::info("DAEMON", &format!("Starting with log-level={}", cli.log_level));
 
-    let socket_path = cli.socket.unwrap_or_else(|| PathBuf::from(DEFAULT_SOCKET));
+    let socket_path = cli.socket.unwrap_or_else(libspacepods::ipc::paths::default_socket_path);
 
     match cli.command {
         Commands::Service => {
             println!("Starting SpacePods service...");
             let mut service = libspacepods::ipc::SpacePodsService::new(Some(socket_path)).await;
 
+            // SIGTERM is what `systemctl stop` sends. Handling it the same way as Ctrl-C
+            // lets the service drop, which removes the socket it created.
+            let mut terminate = signal::unix::signal(signal::unix::SignalKind::terminate())
+                .context("failed to install SIGTERM handler")?;
+
             tokio::select! {
-                _ = service.run() => {},
+                // A failed run (for example "already running") must reach the user
+                // and set a non-zero exit code.
+                result = service.run() => result.context("SpacePods service stopped with an error")?,
                 _ = signal::ctrl_c() => {
                     println!("\nShutting down...");
+                    libspacepods::ipc::notify::stopping();
+                    service.stop().await;
+                }
+                _ = terminate.recv() => {
+                    println!("\nStopping (SIGTERM)...");
+                    libspacepods::ipc::notify::stopping();
                     service.stop().await;
                 }
             }

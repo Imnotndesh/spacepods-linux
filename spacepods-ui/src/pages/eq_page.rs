@@ -76,10 +76,6 @@ impl EqPage {
         root.set_margin_start(16);
         root.set_margin_end(16);
 
-        let title = Label::new(Some("Equalizer"));
-        title.add_css_class("title-1");
-        title.set_halign(gtk4::Align::Start);
-
         let curve_card = libadwaita::Bin::new();
         curve_card.add_css_class("card");
         curve_card.set_hexpand(true);
@@ -158,7 +154,7 @@ impl EqPage {
                                 Err(e) => Err(e),
                             };
                             if let Err(e) = result {
-                                ctx.error(format!("Couldn't apply EQ preset: {}", e));
+                                ctx.failed("Couldn't apply EQ preset", &e);
                             }
                         });
                     } else {
@@ -345,7 +341,6 @@ impl EqPage {
             }
         }
 
-        root.append(&title);
         root.append(&curve_card);
         root.append(&builtin_label);
         root.append(&flow);
@@ -527,14 +522,16 @@ fn make_preset_button(name: &str, gains: &[i8; 7], is_custom: bool) -> ToggleBut
     btn
 }
 
-fn accent_color_from_drawing(area: &DrawingArea) -> (f64, f64, f64) {
-    let color = area.style_context().color();
+/// The desktop's accent colour (libadwaita 1.6+), so the curve follows the theme.
+fn accent_color_from_drawing(_area: &DrawingArea) -> (f64, f64, f64) {
+    let color = libadwaita::StyleManager::default().accent_color_rgba();
     (color.red() as f64, color.green() as f64, color.blue() as f64)
 }
 
-fn get_accent_rgba(area: &DrawingArea, alpha: f64) -> (f64, f64, f64, f64) {
-    let (r, g, b) = accent_color_from_drawing(area);
-    (r, g, b, alpha)
+/// The widget's text colour. Grid lines use it so they stay visible in light and dark.
+fn text_color_from_drawing(area: &DrawingArea) -> (f64, f64, f64) {
+    let color = area.color();
+    (color.red() as f64, color.green() as f64, color.blue() as f64)
 }
 
 fn db_to_y(db: f64, height: f64) -> f64 {
@@ -547,15 +544,16 @@ fn band_center_x(i: usize, n: usize, width: f64) -> f64 {
 
 fn draw_eq_curve(area: &DrawingArea, cr: &gtk4::cairo::Context, w: f64, h: f64, gains: &[i8]) {
     let (ar, ag, ab) = accent_color_from_drawing(area);
+    let (tr, tg, tb) = text_color_from_drawing(area);
     let n = gains.len();
 
     for &db in &[-12.0f64, -6.0, 0.0, 6.0, 12.0] {
         let y = db_to_y(db, h);
         if db.abs() < 0.1 {
-            cr.set_source_rgba(0.5, 0.5, 0.5, 0.5);
+            cr.set_source_rgba(tr, tg, tb, 0.5);
             cr.set_line_width(1.5);
         } else {
-            cr.set_source_rgba(0.5, 0.5, 0.5, 0.18);
+            cr.set_source_rgba(tr, tg, tb, 0.18);
             cr.set_line_width(1.0);
         }
         cr.move_to(0.0, y);
@@ -563,7 +561,7 @@ fn draw_eq_curve(area: &DrawingArea, cr: &gtk4::cairo::Context, w: f64, h: f64, 
         let _ = cr.stroke();
     }
 
-    cr.set_source_rgba(0.5, 0.5, 0.5, 0.1);
+    cr.set_source_rgba(tr, tg, tb, 0.1);
     cr.set_line_width(1.0);
     for i in 1..n {
         let x = (i as f64 / n as f64) * w;
@@ -603,7 +601,7 @@ fn draw_eq_curve(area: &DrawingArea, cr: &gtk4::cairo::Context, w: f64, h: f64, 
         cr.set_source_rgba(ar, ag, ab, 1.0);
         let _ = cr.fill();
         cr.arc(x, y, 4.5, 0.0, std::f64::consts::TAU);
-        cr.set_source_rgba(1.0, 1.0, 1.0, 0.9);
+        cr.set_source_rgba(tr, tg, tb, 0.9);
         cr.set_line_width(1.5);
         let _ = cr.stroke();
     }

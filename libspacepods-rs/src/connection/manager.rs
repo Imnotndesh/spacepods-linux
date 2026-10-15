@@ -2,11 +2,7 @@ use crate::commands::BleCommand;
 use crate::connection::ble::BleConnection;
 use crate::connection::jieli::JieliConnection;
 use crate::connection::scanner::DeviceScanner;
-use crate::protocol::{ConnectionState, Packet, TlvParser, CMD_HANDSHAKE,
-    ID_ANC_MODE, ID_ANC_GAIN, ID_ANC_MAX, ID_TRANS_GAIN, ID_TRANS_MAX,
-    ID_EQ_SETTING, ID_ENV_ADAPTIVE, ID_DUAL_DEVICE, ID_KEY_SETTINGS,
-    ID_WORK_MODE, ID_IN_EAR_STATUS, ID_AUTO_ANSWER,
-    ID_TONE_VOLUME, ID_HEARING_CARE, ID_VOICE_PROMPT,
+use crate::protocol::{ConnectionState, Packet, CMD_HANDSHAKE,
 };
 use crate::{Error, Result};
 use std::sync::Arc;
@@ -35,7 +31,65 @@ struct Inner {
     connection: Option<ChipConnection>,
 }
 
-/// A connected device speaking one of the supported chip protocols.
+/// The command protocol a device speaks. Each family uses different GATT
+/// characteristics and different command frames, so a command for one family must
+/// never reach a device of the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChipFamily {
+    /// Bluetrum protocol (most SpaceBuds): characteristics `ff17` (write) and `ff18` (notify).
+    Bluetrum,
+    /// JieLi RCSP protocol: characteristics `ae01` (write) and `ae02` (notify).
+    Jieli,
+}
+
+/// Decide the protocol from the device's characteristic UUIDs.
+///
+/// A family is chosen only when its own write and notify characteristics are both
+/// present. A device that matches neither, or matches both, is refused. There is no
+/// default: an unknown device gets no commands.
+pub fn classify_chip(uuids: &[uuid::Uuid]) -> std::result::Result<ChipFamily, &'static str> {
+    use crate::protocol::{UUID_JIELI_NOTIFY, UUID_JIELI_WRITE, UUID_NOTIFY, UUID_WRITE};
+    let has = |u: uuid::Uuid| uuids.contains(&u);
+    let bluetrum = has(UUID_WRITE) && has(UUID_NOTIFY);
+    let jieli = has(UUID_JIELI_WRITE) && has(UUID_JIELI_NOTIFY);
+    match (bluetrum, jieli) {
+        (true, false) => Ok(ChipFamily::Bluetrum),
+        (false, true) => Ok(ChipFamily::Jieli),
+        (true, true) => Err("device matches both chip protocols; refusing to guess"),
+        (false, false) => Err("unrecognised device; no supported command protocol"),
+    }
+}
+
+#[cfg(test)]
+mod chip_tests {
+    use super::*;
+    use crate::protocol::{UUID_JIELI_NOTIFY, UUID_JIELI_WRITE, UUID_NOTIFY, UUID_WRITE};
+
+    #[test]
+    fn bluetrum_needs_both_its_characteristics() {
+        assert_eq!(classify_chip(&[UUID_WRITE, UUID_NOTIFY]), Ok(ChipFamily::Bluetrum));
+        assert!(classify_chip(&[UUID_WRITE]).is_err());
+        assert!(classify_chip(&[UUID_NOTIFY]).is_err());
+    }
+
+    #[test]
+    fn jieli_needs_both_its_characteristics() {
+        assert_eq!(classify_chip(&[UUID_JIELI_WRITE, UUID_JIELI_NOTIFY]), Ok(ChipFamily::Jieli));
+        assert!(classify_chip(&[UUID_JIELI_WRITE]).is_err());
+    }
+
+    #[test]
+    fn unknown_device_is_refused_not_defaulted() {
+        assert!(classify_chip(&[]).is_err());
+        assert!(classify_chip(&[uuid::Uuid::nil()]).is_err());
+    }
+
+    #[test]
+    fn device_matching_both_families_is_refused() {
+        let both = [UUID_WRITE, UUID_NOTIFY, UUID_JIELI_WRITE, UUID_JIELI_NOTIFY];
+        assert!(classify_chip(&both).is_err());
+    }
+}
 ///
 /// This keeps the two wire protocols side by side so a JieLi device (RCSP) and
 /// a Bluetrum device (`ff17`/`ff18`) can share the same connection lifecycle.
@@ -172,28 +226,71 @@ impl ConnectionManager {
                 .ok_or(Error::DeviceNotFound { retries: 0 })?;
             let bdaddr = btleplug::api::BDAddr::from_str(addr)
                 .map_err(|_| Error::Ipc(format!("Invalid address: {}", addr)))?;
-            // Scan briefly to discover the peripheral. Use an empty filter:
-            // some Oraimo devices (e.g. BoomPop Pro) do not advertise the
-            // ff17/fe2c service UUIDs.
-            adapter.start_scan(ScanFilter::default()).await?;
-            tokio::time::sleep(Duration::from_secs(3)).await;
-            let peripherals = adapter.peripherals().await?;
-            let _ = adapter.stop_scan().await;
-            let mut found = None;
-            for p in &peripherals {
-                if p.address() == bdaddr {
-                    found = Some(p.clone());
-                    break;
+            // A device BlueZ already knows (paired, or connected for audio) is used directly.
+            let known = adapter.peripherals().await?;
+            if let Some(p) = known.iter().find(|p| p.address() == bdaddr) {
+                p.clone()
+            } else {
+                // Otherwise scan. The earbuds change their BLE address between sessions, but
+                // the advertising beacon carries the classic address, which is the one the
+                // person knows. Match on either.
+                let found = crate::beacon::scanner::scan_for_devices(
+                    self.config.scan_timeout.min(Duration::from_secs(6)),
+                )
+                .await?;
+                let target = found.into_iter().find(|d| {
+                    let by_ble = d.ble_address.as_deref().is_some_and(|a| a.eq_ignore_ascii_case(addr));
+                    let by_classic = d
+                        .beacon
+                        .as_ref()
+                        .and_then(|b| b.bt_address_string())
+                        .is_some_and(|a| a.eq_ignore_ascii_case(addr));
+                    by_ble || by_classic
+                });
+                match target {
+                    Some(d) => adapter.peripheral(&d.peripheral_id).await?,
+                    None => return Err(Error::DeviceNotFound { retries: 0 }),
                 }
             }
-            found.ok_or(Error::DeviceNotFound { retries: 0 })?
         } else {
             DeviceScanner::find_device(self.config.scan_timeout).await?
         };
 
         self.set_state(ConnectionState::Connecting).await;
 
-        let conn = Self::open_connection(peripheral).await?;
+        // The control link can fail while audio holds the device. Then the audio link is
+        // dropped once so the BLE link can come up, and audio is restored afterwards. This
+        // runs only on connect, never on a settings change.
+        // Note whether audio was up before this connect. The failed attempts can drop it, so it
+        // is restored afterwards if it was.
+        let peripheral_address = {
+            use btleplug::api::Peripheral as _;
+            peripheral.address().to_string()
+        };
+        let audio_was_up = match crate::bluez::audio_side_of(&peripheral_address).await {
+            Some(audio) => crate::bluez::audio_connected(&audio).await,
+            None => false,
+        };
+        let conn = match Self::open_connection_with_retries(peripheral.clone(), 2).await {
+            Err(Error::ConnectionLost) => {
+                let Some(audio) = crate::bluez::audio_side_of(&peripheral_address).await else {
+                    crate::log::warn("BLE", &format!("no paired audio device for {peripheral_address}; cannot drop audio"));
+                    return Err(Error::ConnectionLost);
+                };
+                crate::log::warn("BLE", "control link blocked while audio is up; dropping audio briefly");
+                if let Err(e) = crate::bluez::disconnect_device(&audio).await {
+                    crate::log::warn("BLE", &format!("audio disconnect failed: {e}"));
+                }
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                let result = Self::open_connection_with_retries(peripheral, 3).await;
+                // Audio comes back whether or not the control link did.
+                if audio_was_up && !crate::bluez::ensure_audio(&audio).await {
+                    crate::log::warn("AUDIO", "audio did not come back after the control link");
+                }
+                result?
+            }
+            other => other?,
+        };
 
         let mut inner = self.inner.write().await;
         inner.connection = Some(conn);
@@ -216,6 +313,28 @@ impl ConnectionManager {
         inner.state = ConnectionState::Disconnected;
         let _ = self.state_tx.send(ConnectionState::Disconnected);
         Ok(())
+    }
+
+    /// Open the control link, retrying while it comes up without services. Other errors
+    /// are returned at once.
+    async fn open_connection_with_retries(
+        peripheral: btleplug::platform::Peripheral,
+        attempts: usize,
+    ) -> Result<ChipConnection> {
+        let mut attempt = 1;
+        loop {
+            match Self::open_connection(peripheral.clone()).await {
+                Err(Error::ConnectionLost) if attempt < attempts => {
+                    crate::log::warn(
+                        "BLE",
+                        &format!("control link attempt {attempt} of {attempts} failed; retrying"),
+                    );
+                    attempt += 1;
+                    tokio::time::sleep(Duration::from_secs(3)).await;
+                }
+                other => return other,
+            }
+        }
     }
 
     /// Connect and pick the chip protocol from the discovered GATT services.
@@ -254,15 +373,42 @@ impl ConnectionManager {
             return Err(e.into());
         }
         peripheral.discover_services().await?;
-        let is_jieli = peripheral
-            .characteristics()
-            .iter()
-            .any(|c| c.uuid == crate::protocol::UUID_JIELI_WRITE);
-        if is_jieli {
-            crate::log::info("BLE", "detected JieLi RCSP device");
-            Ok(ChipConnection::Jieli(JieliConnection::new(peripheral).await?))
-        } else {
-            Ok(ChipConnection::Bluetrum(BleConnection::new(peripheral).await?))
+        let mut uuids: Vec<uuid::Uuid> = peripheral.characteristics().iter().map(|c| c.uuid).collect();
+        // Right after the link comes up, discovery can finish before every characteristic is
+        // visible. Look once more before refusing, so a slow discovery is not mistaken for an
+        // unknown device. A genuinely unknown device is still refused.
+        if classify_chip(&uuids).is_err() {
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+            peripheral.discover_services().await?;
+            uuids = peripheral.characteristics().iter().map(|c| c.uuid).collect();
+        }
+        if uuids.is_empty() {
+            // No services at all: the control link did not come up. This is not an unknown
+            // device, so it is not refused as one. The caller can try again.
+            let _ = peripheral.disconnect().await;
+            crate::log::warn("BLE", "no GATT services after connect; the control link did not come up");
+            return Err(Error::ConnectionLost);
+        }
+        match classify_chip(&uuids) {
+            Ok(ChipFamily::Jieli) => {
+                crate::log::info("BLE", "detected JieLi RCSP device");
+                Ok(ChipConnection::Jieli(JieliConnection::new(peripheral).await?))
+            }
+            Ok(ChipFamily::Bluetrum) => {
+                crate::log::info("BLE", "detected Bluetrum device");
+                Ok(ChipConnection::Bluetrum(BleConnection::new(peripheral).await?))
+            }
+            Err(reason) => {
+                // Refuse the connection. Nothing is written to a device we cannot identify:
+                // the wrong command on the wrong chip can damage the earbuds.
+                let seen: Vec<String> = uuids.iter().map(|u| u.to_string()).collect();
+                crate::log::warn(
+                    "BLE",
+                    &format!("refusing to talk to this device: {} (characteristics seen: {})", reason, seen.join(" ")),
+                );
+                let _ = peripheral.disconnect().await;
+                Err(Error::UnrecognisedDevice(reason))
+            }
         }
     }
 
@@ -362,6 +508,16 @@ impl ConnectionManager {
     }
 
     /// Try to detect the product ID from BLE advertisement manufacturer data.
+    /// Battery level over GATT, for Bluetrum devices. Read only. `None` for other chips
+    /// or when the device does not report it.
+    pub async fn read_battery_level(&self) -> Option<u8> {
+        let inner = self.inner.read().await;
+        match inner.connection.as_ref() {
+            Some(ChipConnection::Bluetrum(c)) => c.read_battery_level().await,
+            _ => None,
+        }
+    }
+
     pub async fn detect_product_id(&self) -> Option<u16> {
         let inner = self.inner.read().await;
         if let Some(conn) = inner.connection.as_ref() {

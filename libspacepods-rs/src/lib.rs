@@ -6,9 +6,12 @@ pub mod ipc;
 pub mod beacon;
 pub mod cli;
 pub mod device_profile;
+pub mod bluez;
+pub mod crash;
+pub mod battery;
 pub mod log;
 
-pub use errors::{Error, Result};
+pub use errors::{Error, ErrorCode, Result};
 pub use protocol::*;
 pub use connection::*;
 pub use commands::*;
@@ -27,9 +30,10 @@ use std::time::Duration;
 /// # Example
 ///
 /// ```no_run
-/// use spacepods::SpaceBuds;
+/// use std::time::Duration;
+/// use libspacepods::SpaceBuds;
 ///
-/// # async fn example() -> Result<(), spacepods::Error> {
+/// # async fn example() -> Result<(), libspacepods::Error> {
 /// let buds = SpaceBuds::builder()
 ///     .scan_timeout(Duration::from_secs(5))
 ///     .max_retries(3)
@@ -112,7 +116,7 @@ impl SpaceBuds {
     /// Used for features not yet wrapped in typed controllers.
     pub async fn send_raw(&self, cmd_id: u8, payload: Vec<u8>) -> Result<()> {
         use crate::commands::BleCommand;
-        use crate::protocol::constants::*;
+        
 
         struct Raw {
             cmd_id: u8,

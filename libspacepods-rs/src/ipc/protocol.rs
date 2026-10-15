@@ -1,13 +1,11 @@
-use crate::protocol::{AncMode, BatteryLevel, ConnectionState};
+use crate::protocol::{AncMode, ConnectionState};
 use crate::device_profile::DetailFeature;
+use crate::errors::{Error, ErrorCode};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 
-#[cfg(unix)]
-pub const DEFAULT_SOCKET_PATH: &str = "/tmp/spacepods.sock";
-
-#[cfg(windows)]
-pub const DEFAULT_SOCKET_PATH: &str = r"\\.\pipe\spacepods";
+/// Version of the request/response schema shared by the socket and D-Bus interfaces.
+/// Bump when a change is not backward compatible.
+pub const PROTOCOL_VERSION: u32 = 1;
 
 // ── IPC Message Envelope ──
 
@@ -116,7 +114,15 @@ pub enum IpcResult {
     },
 
     #[serde(rename = "error")]
-    Error { message: String },
+    Error {
+        /// Stable category; clients choose user-facing text from this.
+        #[serde(default)]
+        code: ErrorCode,
+        /// For logs and developers. Not a stable interface.
+        message: String,
+        #[serde(default)]
+        retryable: bool,
+    },
 
     #[serde(rename = "scan_results")]
     ScanResults { devices: Vec<ScannedDevice> },
@@ -185,6 +191,7 @@ impl DeviceStatus {
                 connected: false,
                 address: None,
                 state: ConnectionState::Disconnected,
+                audio: false,
             },
             anc: AncInfo {
                 mode: AncMode::Off,
@@ -196,6 +203,9 @@ impl DeviceStatus {
                 left: None,
                 right: None,
                 case: None,
+                level: None,
+                source: Default::default(),
+                state: Default::default(),
             },
             features: FeatureInfo {
                 adaptive_anc: None,
@@ -213,6 +223,10 @@ pub struct ConnectionInfo {
     pub connected: bool,
     pub address: Option<String>,
     pub state: ConnectionState,
+    /// Whether the audio link is up (BlueZ media transport). The control link and the
+    /// audio link are separate; this is the second one.
+    #[serde(default)]
+    pub audio: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -235,10 +249,36 @@ pub struct BatteryInfo {
     pub left: Option<u8>,
     pub right: Option<u8>,
     pub case: Option<u8>,
+    /// The earbuds' battery percentage as one number, when known.
+    #[serde(default)]
+    pub level: Option<u8>,
+    /// Where `level` came from.
+    #[serde(default)]
+    pub source: crate::battery::BatterySource,
+    /// Whether `level` is current. See [`crate::battery::BatteryState`].
+    #[serde(default)]
+    pub state: crate::battery::BatteryState,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FeatureInfo {
     pub adaptive_anc: Option<bool>,
     pub dual_device: Option<bool>,
+}
+
+impl IpcResult {
+    /// An error reply with a code. `retryable` follows the code.
+    pub fn error(code: ErrorCode, message: impl Into<String>) -> Self {
+        IpcResult::Error {
+            code,
+            message: message.into(),
+            retryable: code.retryable(),
+        }
+    }
+
+    /// An error reply for a failed operation: `context` says what was attempted, and
+    /// the code comes from the underlying error.
+    pub fn failed(context: &str, err: &Error) -> Self {
+        Self::error(err.code(), format!("{}: {}", context, err))
+    }
 }

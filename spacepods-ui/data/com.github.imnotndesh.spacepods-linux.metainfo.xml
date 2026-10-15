@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>com.spacepods.ui</id>
+  <id>com.github.imnotndesh.spacepods-linux</id>
   <name>SpacePods Linux</name>
   <summary>Control your oraimo SpaceBuds earbuds</summary>
   <metadata_license>MIT</metadata_license>
@@ -22,7 +22,7 @@
       <li>Hearing health, wear detection and battery status</li>
     </ul>
   </description>
-  <launchable type="desktop-id">com.spacepods.ui.desktop</launchable>
+  <launchable type="desktop-id">com.github.imnotndesh.spacepods-linux.desktop</launchable>
   <screenshots>
     <screenshot type="default">
       <image>https://raw.githubusercontent.com/Imnotndesh/spacepods-linux/main/spacepods-ui/resources/app-icon.svg</image>

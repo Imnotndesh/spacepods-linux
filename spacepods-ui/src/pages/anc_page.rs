@@ -2,8 +2,8 @@ use std::cell::Cell;
 use std::rc::Rc;
 use glib::clone;
 use gtk4::prelude::*;
-use gtk4::{Box, Label, Orientation, Switch, ToggleButton, Spinner};
-use libadwaita::{ActionRow, PreferencesGroup, Clamp, StatusPage};
+use gtk4::{Box, Orientation, Switch, ToggleButton, Spinner};
+use libadwaita::{ActionRow, PreferencesGroup, Clamp};
 use libadwaita::prelude::*;
 
 use crate::context::AppContext;
@@ -18,6 +18,9 @@ impl AncPage {
         clamp.set_tightening_threshold(420);
 
         let container = Box::new(Orientation::Vertical, 16);
+        // Fill the page height, so the offline status page is centred in the space it has.
+        container.set_vexpand(true);
+        clamp.set_vexpand(true);
         container.set_margin_top(24);
         container.set_margin_bottom(32);
         container.set_margin_start(16);
@@ -25,18 +28,18 @@ impl AncPage {
 
         // ── Header ──
         let header_row = Box::new(Orientation::Horizontal, 0);
-        let title = Label::new(Some("ANC Control"));
-        title.add_css_class("title-1");
-        title.set_halign(gtk4::Align::Start);
-        title.set_hexpand(true);
-        header_row.append(&title);
 
         let refresh_btn = gtk4::Button::from_icon_name("view-refresh-symbolic");
         refresh_btn.add_css_class("flat");
         refresh_btn.add_css_class("circular");
         refresh_btn.set_valign(gtk4::Align::Center);
         refresh_btn.set_tooltip_text(Some("Refresh status"));
+        refresh_btn.set_hexpand(true);
+        refresh_btn.set_halign(gtk4::Align::End);
         header_row.append(&refresh_btn);
+        // The window header carries the Refresh button and triggers this one.
+        refresh_btn.set_widget_name("page-refresh");
+        header_row.set_visible(false);
 
         // ── Mode row ──
         let off_btn = ToggleButton::with_label("Off");
@@ -84,6 +87,8 @@ impl AncPage {
 
         let features_group = PreferencesGroup::new();
         features_group.set_title("Additional Features");
+        // Shown only once the earbuds report they are connected (see the status check below).
+        features_group.set_visible(false);
 
         let adaptive_row = ActionRow::new();
         adaptive_row.set_title("Adaptive ANC");
@@ -150,14 +155,80 @@ impl AncPage {
             features_group.add(&find_ear_row);
         }
 
-        let offline_status = StatusPage::new();
-        offline_status.set_icon_name(Some("network-offline-symbolic"));
-        offline_status.set_title("Daemon Unreachable");
-        offline_status.set_description(Some("Couldn't connect to the SpacePods service."));
+        let offline_status = crate::widgets::centered_message(
+            "network-offline-symbolic",
+            "Can't reach SpacePods",
+            "Check that the SpacePods background service is running. Use Retry above to try again.",
+        );
         offline_status.set_visible(false);
-        offline_status.set_vexpand(true);
 
         container.append(&header_row);
+        // Above the mode switcher: the connected device's drawing (it changes with the
+        // device kind) and a battery row below it (icon, then the percentage).
+        let device_name = ctx.profile().map(|p| p.name).unwrap_or("");
+        let device_picture = gtk4::Image::from_paintable(crate::widgets::still_for_kind(
+            crate::widgets::kind_for_name(device_name),
+        ).as_ref());
+        device_picture.set_pixel_size(144);
+        device_picture.set_halign(gtk4::Align::Center);
+        device_picture.set_margin_bottom(4);
+        device_picture.update_property(&[gtk4::accessible::Property::Label("Your earbuds")]);
+        container.append(&device_picture);
+
+        let battery_row = Box::new(Orientation::Horizontal, 6);
+        battery_row.set_halign(gtk4::Align::Center);
+        battery_row.set_margin_bottom(12);
+        let battery_icon = gtk4::Picture::new();
+        battery_icon.set_size_request(28, 14);
+        battery_icon.set_content_fit(gtk4::ContentFit::Contain);
+        battery_icon.set_can_shrink(true);
+        let battery_text = gtk4::Label::new(Some("—"));
+        battery_text.add_css_class("caption-heading");
+        battery_row.append(&battery_icon);
+        battery_row.append(&battery_text);
+        battery_row.set_tooltip_text(Some("Battery"));
+        battery_row.update_property(&[gtk4::accessible::Property::Label("Battery")]);
+        container.append(&battery_row);
+
+        // Keep the picture and the battery row in step with the connection. The connect
+        // animation plays once per run of the app.
+        {
+            let device_picture = device_picture.clone();
+            let battery_icon = battery_icon.clone();
+            let battery_text = battery_text.clone();
+            let battery_row = battery_row.clone();
+            let shown_kind = std::rc::Rc::new(std::cell::Cell::new(None::<crate::widgets::DeviceKind>));
+            let update = std::rc::Rc::new(move |s: &libspacepods::ipc::protocol::DeviceStatus| {
+                let level = s.battery.level;
+                battery_icon.set_paintable(crate::widgets::battery_art(level).as_ref());
+                battery_text.set_text(&match level {
+                    Some(l) => format!("{}%", l),
+                    None => "—".to_string(),
+                });
+                // Unknown battery is dimmed, not guessed.
+                battery_row.set_opacity(if level.is_some() { 1.0 } else { 0.5 });
+
+                if s.connection.connected {
+                    let kind = libspacepods::device_profile::profile_for_product(s.product_id.unwrap_or(0));
+                    let kind = crate::widgets::kind_for_name(kind.name);
+                    if shown_kind.get() != Some(kind) {
+                        shown_kind.set(Some(kind));
+                        if crate::widgets::claim_intro() {
+                            crate::widgets::play_connect_animation(&device_picture, kind);
+                        } else {
+                            device_picture.set_paintable(crate::widgets::still_for_kind(kind).as_ref());
+                        }
+                    }
+                }
+            });
+            // Status may already have arrived before this page was built.
+            let listener = update.clone();
+            ctx.on_status(move |s| listener(s));
+            let current = ctx.status.borrow().clone();
+            if let Some(s) = current {
+                update(&s);
+            }
+        }
         container.append(&mode_row);
         container.append(&mode_spinner);
         container.append(&anc_group);
@@ -175,14 +246,23 @@ impl AncPage {
             #[strong] low_btn, #[strong] med_btn, #[strong] high_btn,
             #[strong] adaptive_switch, #[strong] adaptive_row,
             #[strong] dual_switch, #[strong] dual_row,
-            #[strong] mode_spinner, #[strong] mode_row,
-            #[strong] offline_status, #[strong] features_group, #[strong] anc_group,
+            #[strong] mode_row, #[strong] intensity_btns,
+            #[strong] offline_status, #[strong] features_group, #[strong] anc_group, #[strong] container,
             #[strong] applying, #[strong] current_mode, #[strong] ctx,
             async move {
                 use libspacepods::client::SpacePodsClient;
                 match SpacePodsClient::connect(None).await {
                     Ok(mut client) => match client.get_status().await {
                         Ok(s) => {
+                            // Back online: show the controls that were hidden while offline.
+                            offline_status.set_visible(false);
+                            container.set_margin_top(24);
+                            container.set_margin_bottom(32);
+                            mode_row.set_visible(true);
+                            anc_group.set_visible(true);
+                            // The feature rows only mean something with earbuds connected.
+                            features_group.set_visible(s.connection.connected);
+                            intensity_btns.set_visible(true);
                             Log::info("ANC", &format!("Status received: mode={:?} level={} max={} adaptive={:?} dual={:?}",
                                 s.anc.mode, s.anc.level, s.anc.max_level,
                                 s.features.adaptive_anc, s.features.dual_device));
@@ -196,17 +276,23 @@ impl AncPage {
                         }
                         Err(e) => {
                             mode_row.set_visible(false);
+                            intensity_btns.set_visible(false);
                             anc_group.set_visible(false);
                             features_group.set_visible(false);
                             offline_status.set_visible(true);
+                            container.set_margin_top(0);
+                            container.set_margin_bottom(0);
                             ctx.daemon_unreachable(e);
                         }
                     },
                     Err(e) => {
                         mode_row.set_visible(false);
+                        intensity_btns.set_visible(false);
                         anc_group.set_visible(false);
                         features_group.set_visible(false);
                         offline_status.set_visible(true);
+                        container.set_margin_top(0);
+                        container.set_margin_bottom(0);
                         ctx.daemon_unreachable(e);
                     }
                 }
@@ -219,7 +305,6 @@ impl AncPage {
                 off_btn.clone(), anc_btn.clone(), trans_btn.clone(),
                 low_btn.clone(), med_btn.clone(), high_btn.clone(),
             ];
-            let rows = vec![adaptive_row.clone(), dual_row.clone()];
             let asw = adaptive_switch.clone();
             let dsw = dual_switch.clone();
             let am = applying.clone();
@@ -261,7 +346,7 @@ impl AncPage {
                                 if let Some(v) = s.features.dual_device { dsw.set_active(v); }
                                 ctx.success("Status refreshed");
                             }
-                            Err(e) => ctx.error(format!("Status: {}", e)),
+                            Err(e) => ctx.failed("Couldn't read the status", &e),
                         },
                         Err(e) => ctx.daemon_unreachable(e),
                     }
@@ -312,10 +397,10 @@ impl AncPage {
                 glib::spawn_future_local(async move {
                     if let Ok(mut client) = libspacepods::client::SpacePodsClient::connect(None).await {
                         if let Err(e) = client.set_level(level).await {
-                            ctx.error(format!("Couldn't set ANC level: {}", e));
+                            ctx.failed("Couldn't set ANC level", &e);
                         }
                     } else {
-                        ctx.daemon_unreachable("connection failed");
+                        ctx.error("Can't reach the SpacePods background service.");
                     }
                 });
             };
@@ -352,7 +437,7 @@ impl AncPage {
                     match libspacepods::client::SpacePodsClient::connect(None).await {
                         Ok(mut client) => {
                             if let Err(e) = client.set_adaptive_anc(state).await {
-                                ctx.error(format!("Couldn't set Adaptive ANC: {}", e));
+                                ctx.failed("Couldn't set Adaptive ANC", &e);
                                 sw.set_state(!state);
                             }
                         }
@@ -378,7 +463,7 @@ impl AncPage {
                     match libspacepods::client::SpacePodsClient::connect(None).await {
                         Ok(mut client) => {
                             if let Err(e) = client.set_dual_device(state).await {
-                                ctx.error(format!("Couldn't set Dual Device: {}", e));
+                                ctx.failed("Couldn't set Dual Device", &e);
                                 sw.set_state(!state);
                             }
                         }
@@ -401,11 +486,11 @@ impl AncPage {
                 glib::spawn_future_local(async move {
                     if let Ok(mut client) = libspacepods::client::SpacePodsClient::connect(None).await {
                         if let Err(e) = client.set_feature("chat_mode", state).await {
-                            ctx.error(format!("Chat Mode: {}", e));
+                            ctx.failed("Couldn't change Chat Mode", &e);
                             sw.set_state(!state);
                         }
                     } else {
-                        ctx.daemon_unreachable("no connection");
+                        ctx.error("Can't reach the SpacePods background service.");
                         sw.set_state(!state);
                     }
                 });
@@ -422,11 +507,11 @@ impl AncPage {
                 glib::spawn_future_local(async move {
                     if let Ok(mut client) = libspacepods::client::SpacePodsClient::connect(None).await {
                         if let Err(e) = client.set_feature("long_endurance", state).await {
-                            ctx.error(format!("Long Endurance: {}", e));
+                            ctx.failed("Couldn't change Long Endurance", &e);
                             sw.set_state(!state);
                         }
                     } else {
-                        ctx.daemon_unreachable("no connection");
+                        ctx.error("Can't reach the SpacePods background service.");
                         sw.set_state(!state);
                     }
                 });
@@ -448,8 +533,15 @@ impl AncPage {
                     let payload = vec![0x00];
                     let ctx = ctx.clone();
                     glib::spawn_future_local(async move {
-                        let _ = libspacepods::client::SpacePodsClient::connect(None).await
-                            .map(|mut c| glib::spawn_future_local(async move { let _ = c.send_command_raw(libspacepods::ipc::ServiceCommand::Custom { command_id: 0x2A, payload }).await; }));
+                        match libspacepods::client::SpacePodsClient::connect(None).await {
+                            Ok(mut c) => {
+                                let cmd = libspacepods::ipc::ServiceCommand::Custom { command_id: 0x2A, payload };
+                                if let Err(e) = c.send_command_raw(cmd).await {
+                                    ctx.failed("Couldn't stop ringing the earbuds", &e);
+                                }
+                            }
+                            Err(e) => ctx.daemon_unreachable(e),
+                        }
                     });
                 } else {
                     finding.set(true);
@@ -471,7 +563,7 @@ impl AncPage {
                             Err(e) => Err(e),
                         };
                         if let Err(e) = result {
-                            ctx.error(format!("Couldn't ring earbuds: {}", e));
+                            ctx.failed("Couldn't ring earbuds", &e);
                             finding.set(false);
                             btn_ref.set_label("Ring");
                             btn_ref.remove_css_class("suggested-action");
@@ -618,7 +710,7 @@ impl AncPage {
 
                 if let Err(e) = result {
                     Log::warn("ANC", &format!("set_anc_mode '{}' failed: {}", mc, e));
-                    ctx.error(format!("Couldn't switch ANC mode: {}", e));
+                    ctx.failed("Couldn't switch ANC mode", &e);
                     current_mode_ref.set(previous_mode);
                     ctx.anc_mode.set(previous_mode);
                     crate::tray::ANC_MODE_ATOMIC.store(previous_mode, std::sync::atomic::Ordering::Relaxed);

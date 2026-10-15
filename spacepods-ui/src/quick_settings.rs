@@ -5,7 +5,6 @@
 //! Noise Control segmented control, Ambient Level slider,
 //! and Conversation Awareness toggle.
 
-use std::cell::Cell;
 use std::rc::Rc;
 
 use gtk4::prelude::*;
@@ -35,7 +34,7 @@ pub fn show_popup(ctx: &Rc<AppContext>, x: i32, y: i32) {
         }
     });
 
-    window.show();
+    window.present();
     let _ = (x, y);
 }
 
@@ -241,26 +240,13 @@ fn set_mode_cell(mode: u8, ctx: &Rc<AppContext>) {
         match SpacePodsClient::connect(None).await {
             Ok(mut client) => match client.set_anc_mode(label).await {
                 Ok(_) => ctx.success(&format!("ANC: {}", label)),
-                Err(e) => ctx.error(format!("ANC: {}", e)),
+                Err(e) => ctx.failed("Couldn't change ANC", &e),
             },
             Err(e) => ctx.daemon_unreachable(e),
         }
     });
 }
 
-fn set_mode(mode: &'static str, ctx: &Rc<AppContext>) {
-    let ctx = ctx.clone();
-    glib::spawn_future_local(async move {
-        use libspacepods::client::SpacePodsClient;
-        match SpacePodsClient::connect(None).await {
-            Ok(mut client) => match client.set_anc_mode(mode).await {
-                Ok(_) => ctx.success(&format!("ANC: {}", mode)),
-                Err(e) => ctx.error(format!("ANC: {}", e)),
-            },
-            Err(e) => ctx.daemon_unreachable(e),
-        }
-    });
-}
 
 fn set_level(level: u8, ctx: &Rc<AppContext>) {
     let ctx = ctx.clone();
@@ -269,7 +255,7 @@ fn set_level(level: u8, ctx: &Rc<AppContext>) {
         match SpacePodsClient::connect(None).await {
             Ok(mut client) => match client.set_level(level).await {
                 Ok(_) => ctx.success("Level updated"),
-                Err(e) => ctx.error(format!("Level: {}", e)),
+                Err(e) => ctx.failed("Couldn't set the level", &e),
             },
             Err(e) => ctx.daemon_unreachable(e),
         }
@@ -285,7 +271,7 @@ fn set_adaptive(on: bool, ctx: &Rc<AppContext>) {
                 Ok(_) => ctx.success(
                     if on { "Conversation awareness on" } else { "Conversation awareness off" },
                 ),
-                Err(e) => ctx.error(format!("Conversation: {}", e)),
+                Err(e) => ctx.failed("Couldn't change Conversation Awareness", &e),
             },
             Err(e) => ctx.daemon_unreachable(e),
         }
