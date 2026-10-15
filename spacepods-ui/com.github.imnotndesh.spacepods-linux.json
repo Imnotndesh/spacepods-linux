@@ -28,7 +28,7 @@
             "name": "spacepods-ui",
             "buildsystem": "simple",
             "build-commands": [
-                "cargo build --release --offline --bin spacepods-ui",
+                "cargo build --release --offline --bin spacepods-ui --config 'source.crates-io.replace-with=\"vendored-sources\"' --config 'source.vendored-sources.directory=\"/run/build/spacepods-ui/cargo/vendor\"'",
                 "install -Dm755 target/release/spacepods-ui /app/bin/spacepods-ui",
                 "install -Dm644 spacepods-ui/resources/app-icon.svg /app/share/icons/hicolor/scalable/apps/com.github.imnotndesh.spacepods-linux.svg",
                 "install -Dm644 spacepods-ui/data/com.github.imnotndesh.spacepods-linux.desktop /app/share/applications/com.github.imnotndesh.spacepods-linux.desktop",
