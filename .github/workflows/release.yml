@@ -135,11 +135,8 @@ jobs:
           dnf install -y gcc gcc-c++ make pkgconf-pkg-config rust cargo nodejs \
             gtk4-devel libadwaita-devel glib2-devel dbus-devel openssl-devel
 
-      - name: Cache cargo packaging tools
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/bin
-          key: cargo-deb-rpm-tools-${{ runner.os }}
+      - name: Put cargo's bin directory on PATH
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       - name: Install cargo-deb and cargo-generate-rpm
         run: |
