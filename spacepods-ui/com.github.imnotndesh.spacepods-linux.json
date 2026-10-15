@@ -47,10 +47,7 @@
                         "spacepods-applet"
                     ]
                 },
-                {
-                    "type": "file",
-                    "path": "cargo-sources.json"
-                }
+                "cargo-sources.json"
             ]
         }
     ]
