@@ -2,25 +2,28 @@ use gtk4::prelude::*;
 use gtk4::{Box, Label, Orientation, DropDown, Switch, Scale};
 use libadwaita::prelude::*;
 use libadwaita::{PreferencesGroup, ActionRow, Clamp};
+use std::rc::Rc;
+
+use crate::context::AppContext;
 
 pub struct LedPage;
 
 impl LedPage {
-    pub fn new() -> gtk4::Widget {
+    pub fn new(ctx: Rc<AppContext>) -> gtk4::Widget {
         // ── Header with refresh ──
         let header_row = Box::new(Orientation::Horizontal, 0);
-        let title = Label::new(Some("LED Control"));
-        title.add_css_class("title-1");
-        title.set_halign(gtk4::Align::Start);
-        title.set_hexpand(true);
-        header_row.append(&title);
 
         let refresh_btn = gtk4::Button::from_icon_name("view-refresh-symbolic");
         refresh_btn.add_css_class("flat");
         refresh_btn.add_css_class("circular");
         refresh_btn.set_valign(gtk4::Align::Center);
         refresh_btn.set_tooltip_text(Some("Refresh status"));
+        refresh_btn.set_hexpand(true);
+        refresh_btn.set_halign(gtk4::Align::End);
         header_row.append(&refresh_btn);
+        // The window header carries the Refresh button and triggers this one.
+        refresh_btn.set_widget_name("page-refresh");
+        header_row.set_visible(false);
 
         // ── LED Mode ──
         let mode_group = PreferencesGroup::new();
@@ -78,20 +81,30 @@ impl LedPage {
         brightness_scale.set_hexpand(true);
         brightness_scale.set_draw_value(true);
         brightness_scale.set_value(70.0);
-        brightness_scale.set_margin_start(16);
-        brightness_scale.set_margin_end(16);
-        brightness_scale.set_margin_top(8);
-        brightness_scale.set_margin_bottom(8);
+        brightness_scale.set_width_request(200);
+        brightness_scale.set_valign(gtk4::Align::Center);
+        brightness_scale.update_property(&[gtk4::accessible::Property::Label("Brightness")]);
+        let brightness_row = ActionRow::new();
+        brightness_row.set_title("Brightness");
+        brightness_row.set_subtitle("How bright the LED lights are");
+        brightness_row.add_suffix(&brightness_scale);
 
         // ── Speed ──
         let speed_scale = Scale::with_range(Orientation::Horizontal, 1.0, 10.0, 1.0);
         speed_scale.set_hexpand(true);
         speed_scale.set_draw_value(true);
         speed_scale.set_value(5.0);
-        speed_scale.set_margin_start(16);
-        speed_scale.set_margin_end(16);
-        speed_scale.set_margin_top(8);
-        speed_scale.set_margin_bottom(8);
+        speed_scale.set_width_request(200);
+        speed_scale.set_valign(gtk4::Align::Center);
+        speed_scale.update_property(&[gtk4::accessible::Property::Label("Speed")]);
+        let speed_row = ActionRow::new();
+        speed_row.set_title("Speed");
+        speed_row.set_subtitle("How fast the pattern changes");
+        speed_row.add_suffix(&speed_scale);
+        let effects_group = PreferencesGroup::new();
+        effects_group.set_title("Effects");
+        effects_group.add(&brightness_row);
+        effects_group.add(&speed_row);
 
         // ── Preview note ──
         let preview_label = Label::new(Some("Note: LED controls may not be supported on all devices."));
@@ -109,8 +122,7 @@ impl LedPage {
         content.append(&header_row);
         content.append(&mode_group);
         content.append(&color_group);
-        content.append(&brightness_scale);
-        content.append(&speed_scale);
+        content.append(&effects_group);
         content.append(&preview_label);
 
         let clamp = Clamp::new();
@@ -128,9 +140,15 @@ impl LedPage {
                         command_id: 0x2E, // CMD_LED_MODE
                         payload,
                     };
+                    let ctx = ctx.clone();
                     glib::spawn_future_local(async move {
-                        if let Ok(mut client) = libspacepods::client::SpacePodsClient::connect(None).await {
-                            let _ = client.send_command_raw(cc).await;
+                        match libspacepods::client::SpacePodsClient::connect(None).await {
+                            Ok(mut client) => {
+                                if let Err(e) = client.send_command_raw(cc).await {
+                                    ctx.failed("Couldn't change the LED light", &e);
+                                }
+                            }
+                            Err(e) => ctx.daemon_unreachable(e),
                         }
                     });
                     glib::Propagation::Proceed

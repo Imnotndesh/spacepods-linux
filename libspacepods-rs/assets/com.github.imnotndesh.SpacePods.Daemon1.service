@@ -1,0 +1,5 @@
+[D-BUS Service]
+Name=com.github.imnotndesh.SpacePods.Daemon1
+Exec=/usr/bin/libspacepods service
+# Start through the user's service manager so the daemon is supervised like any unit.
+SystemdService=libspacepods.service

@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.github.imnotndesh.spacepods-linux</id>
+  <name>SpacePods Linux</name>
+  <summary>Control your oraimo SpaceBuds earbuds</summary>
+  <metadata_license>MIT</metadata_license>
+  <project_license>GPL-3.0-only</project_license>
+  <developer>
+    <name>Imnotndesh</name>
+  </developer>
+  <description>
+    <p>
+      SpacePods Linux is a desktop companion for oraimo SpaceBuds earbuds.
+      Control ANC, EQ, gestures, game mode, spatial audio and more from your
+      Linux desktop.
+    </p>
+    <p>Features:</p>
+    <ul>
+      <li>Active Noise Cancellation, Transparency and ambient levels</li>
+      <li>Equalizer presets and a custom equalizer</li>
+      <li>Gestures, game mode, spatial audio and LED controls</li>
+      <li>Hearing health, wear detection and battery status</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">com.github.imnotndesh.spacepods-linux.desktop</launchable>
+  <screenshots>
+    <screenshot type="default">
+      <image>https://raw.githubusercontent.com/Imnotndesh/spacepods-linux/main/spacepods-ui/resources/app-icon.svg</image>
+    </screenshot>
+  </screenshots>
+  <url type="homepage">https://github.com/Imnotndesh/spacepods-linux</url>
+  <url type="bugtracker">https://github.com/Imnotndesh/spacepods-linux/issues</url>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="1.0.6" date="2026-08-27"/>
+  </releases>
+  <requires>
+    <display_length compare="ge">360</display_length>
+  </requires>
+  <recommends>
+    <control>keyboard</control>
+    <control>pointing</control>
+    <control>touch</control>
+  </recommends>
+  <kudos>
+    <kudo>ModernToolkit</kudo>
+    <kudo>HiDpiIcon</kudo>
+    <kudo>Notifications</kudo>
+  </kudos>
+</component>

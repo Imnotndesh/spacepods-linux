@@ -231,10 +231,8 @@ impl DeviceScanner {
         let peripherals = adapter.peripherals().await?;
 
         for peripheral in peripherals {
-            let properties = peripheral.properties().await?.unwrap();
-            for uuid in &properties.services {
-                let uuid_str = uuid.to_string().to_lowercase();
-                if uuid_str.contains("ff17") || uuid_str.contains("fe2c") {
+            if let Ok(Some(properties)) = peripheral.properties().await {
+                if crate::beacon::is_oraimo_peripheral(&properties) {
                     return Ok(peripheral);
                 }
             }
@@ -256,12 +254,8 @@ impl DeviceScanner {
 
         for peripheral in peripherals {
             if let Ok(Some(properties)) = peripheral.properties().await {
-                for uuid in &properties.services {
-                    let uuid_str = uuid.to_string().to_lowercase();
-                    if uuid_str.contains("ff17") || uuid_str.contains("fe2c") {
-                        found.push(peripheral);
-                        break;
-                    }
+                if crate::beacon::is_oraimo_peripheral(&properties) {
+                    found.push(peripheral);
                 }
             }
         }

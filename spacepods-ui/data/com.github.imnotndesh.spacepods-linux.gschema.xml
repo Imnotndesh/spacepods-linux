@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="com.github.imnotndesh.spacepods-linux" path="/com/github/imnotndesh/spacepods-linux/">
+    <key name="autostart" type="b">
+      <default>false</default>
+      <summary>Start SpacePods when you log in</summary>
+      <description>When enabled, SpacePods starts in the background at login.</description>
+    </key>
+    <key name="disclaimer-dismissed" type="b">
+      <default>false</default>
+      <summary>Setup notice dismissed</summary>
+      <description>Set once the person has read and dismissed the background-service notice.</description>
+    </key>
+    <key name="renderer" type="s">
+      <default>'cairo'</default>
+      <choices>
+        <choice value='cairo'/>
+        <choice value='vulkan'/>
+        <choice value='gl'/>
+      </choices>
+      <summary>Graphics renderer</summary>
+      <description>How GTK draws the window. Cairo uses the least memory. Vulkan and OpenGL use the GPU. Takes effect on the next start.</description>
+    </key>
+  </schema>
+</schemalist>

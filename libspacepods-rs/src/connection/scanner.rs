@@ -12,12 +12,34 @@ impl DeviceScanner {
     const GAP_DEVICE_NAME_UUID: uuid::Uuid =
         uuid::Uuid::from_u128(0x00002a00_0000_1000_8000_00805f9b34fb);
 
-    /// Check if a peripheral advertises a SpaceBuds-compatible service UUID.
+    /// Check if a peripheral looks like a SpaceBuds-compatible device.
+    ///
+    /// Priority order:
+    ///   1. the `ff17`/`fe2c` service UUIDs (fast path),
+    ///   2. an Oraimo manufacturer beacon / company ID,
+    ///   3. a recognisable Oraimo product name.
+    ///
+    /// Steps 2 and 3 exist because some firmware (e.g. `oraimo BoomPop Pro`)
+    /// only exposes the proprietary beacon in manufacturer data without the
+    /// standard service UUIDs.
+    /// Check if a peripheral is a viable connection target.
+    ///
+    /// Unlike the scan-listing predicate, this deliberately does **not** match
+    /// on local name alone: a name-only device (e.g. a classic/BR-EDR entry)
+    /// has no control characteristic and would fail with
+    /// "write characteristic not found". Require the `ff17`/`fe2c`/`ae00`
+    /// service UUID or a recognised Oraimo beacon.
     fn is_spacebuds(props: &btleplug::api::PeripheralProperties) -> bool {
-        props.services.iter().any(|uuid| {
+        if props.services.iter().any(|uuid| {
             let s = uuid.to_string().to_lowercase();
-            s.contains("ff17") || s.contains("fe2c")
-        })
+            s.contains("ff17") || s.contains("fe2c") || s.contains("ae00")
+        }) {
+            return true;
+        }
+        props
+            .manufacturer_data
+            .iter()
+            .any(|(id, data)| crate::beacon::is_oraimo_manufacturer_data(*id, data))
     }
 
     /// Get the first BLE adapter.
@@ -79,6 +101,9 @@ impl DeviceScanner {
         time::sleep(timeout).await;
 
         let peripherals = adapter.peripherals().await?;
+        // Stop discovery before the caller connects: an active scan makes the
+        // GATT connect fail or time out on some controllers.
+        let _ = adapter.stop_scan().await;
 
         for peripheral in peripherals {
             if let Ok(Some(props)) = peripheral.properties().await {
@@ -99,6 +124,7 @@ impl DeviceScanner {
         time::sleep(timeout).await;
 
         let peripherals = adapter.peripherals().await?;
+        let _ = adapter.stop_scan().await;
 
         // Collect compatible peripherals
         let mut found: Vec<Peripheral> = Vec::new();

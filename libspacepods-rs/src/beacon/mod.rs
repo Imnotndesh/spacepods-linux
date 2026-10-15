@@ -18,31 +18,263 @@
 //!   - Battery levels and charging status (V1 only)
 //!   - Brand ID (V2)
 //!
-//! ## Beacon versions
+//! ## Beacon dispatch (ported exactly from `DeviceBeacon.getDeviceBeaconVersion`)
 //!
-//! | Version | Data length | Notes |
-//! |---------|------------|-------|
-//! | V1      | 13 bytes   | Includes battery levels + charging |
-//! | V2      | 13 bytes   | Includes brand ID, MAC XOR'd |
-//! | V3      | 8 bytes    | Minimal, MAC XOR'd, no battery |
-//! | V4      | 27/13/9    | Extended, MAC XOR'd |
+//! The APK short-circuits on length *before* looking at any version nibble:
+//!   - 8 bytes  → always V3
+//!   - 13 bytes → always V4 (the nibble at `data[0]` is **not** consulted)
+//!   - 27 bytes → V2 when `data[0] & 0x0F == 2`, otherwise V4
+//!   - 9 bytes  → V4 (the APK additionally requires the nibble to be 1)
 //!
-//! The beacon version is encoded differently per length:
-//!   - 8 bytes  → V3
-//!   - 13 bytes → data[0] & 0x0F (1 = V1 or V4, 2 = V2)
-//!   - 27 bytes → data[0] & 0x0F (>=0)
-//!   - 9 bytes  → data[0] & 0x0F (1 = V4)
+//! V1 support is retained for direct callers and older firmware, but the
+//! reference implementation never selects it for these advertisement lengths.
 
 pub mod scanner;
 
-/// Known Oraimo manufacturer IDs observed in the wild.
-/// The APK doesn't hardcode a single manufacturer ID — it just checks if the data parses
-/// as a valid DeviceBeacon. But for scan filtering we may want these.
+/// Oraimo / Transsion Bluetooth SIG company identifier.
+///
+/// Observed live on an `oraimo SpacePods` advertisement:
+/// `ManufacturerData.Key: 0x4301`.
+pub const ORAIMO_COMPANY_ID: u16 = 0x4301;
+
+/// Manufacturer IDs that may carry a DeviceBeacon payload.
 pub const ORAIMO_MANUFACTURER_IDS: &[u16] = &[
-    0x00E0, // Google (some chips use this)
-    // The bluetrum SDK devices often use custom manufacturer IDs.
-    // We'll discover the actual ID dynamically.
+    ORAIMO_COMPANY_ID, // 0x4301 = 17153 — confirmed on real Oraimo hardware
+    0x0942,            // 2370 — confirmed on the oraimo BoomPop Pro beacon
+    0x00E0,            // Google — used by some Bluetrum-based devices
 ];
+
+/// True when a BLE local name looks like an Oraimo / SpaceBuds product.
+///
+/// Used as a discovery fallback for firmware that advertises neither a
+/// parseable beacon nor the `ff17`/`fe2c` service UUIDs.
+pub fn looks_like_oraimo_name(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    const NEEDLES: &[&str] = &[
+        "oraimo",
+        "spacebuds",
+        "spacepods",
+        "spacebox",
+        "boompod",
+        "necklace",
+        "freepods",
+        "airbuds",
+        "opensnap",
+        "openarc",
+        "openloop",
+        "opencirclet",
+    ];
+    NEEDLES.iter().any(|needle| n.contains(needle))
+}
+
+/// True when a beacon product ID maps to a known Oraimo product.
+pub fn is_known_beacon_pid(pid: u16) -> bool {
+    device_type_from_pid(pid).is_some()
+        || device_type_name(pid).is_some()
+        || beacon_product_name(pid).is_some()
+}
+
+/// True when manufacturer data under the given company ID is an Oraimo beacon.
+///
+/// Requires both a known Oraimo company ID and a product ID we recognise.
+/// This filters out unrelated vendors (Microsoft `0x0006`, Apple `0x004c`, …)
+/// whose advertisement bytes happen to parse as a beacon.
+pub fn is_oraimo_manufacturer_data(manufacturer_id: u16, data: &[u8]) -> bool {
+    ORAIMO_MANUFACTURER_IDS.contains(&manufacturer_id)
+        && DeviceBeacon::from_manufacturer_data(data)
+            .map(|b| is_known_beacon_pid(b.product_id))
+            .unwrap_or(false)
+}
+
+/// True when btleplug peripheral properties describe an Oraimo device.
+///
+/// Combines the `ff17`/`fe2c` service-UUID fast path, a recognised Oraimo
+/// beacon, and a local-name fallback. Kept here so every scanner (daemon,
+/// connection manager and legacy paths) uses the same policy.
+pub fn is_oraimo_peripheral(props: &btleplug::api::PeripheralProperties) -> bool {
+    if props.services.iter().any(|uuid| {
+        let s = uuid.to_string().to_lowercase();
+        s.contains("ff17") || s.contains("fe2c")
+    }) {
+        return true;
+    }
+
+    if props
+        .manufacturer_data
+        .iter()
+        .any(|(id, data)| is_oraimo_manufacturer_data(*id, data))
+    {
+        return true;
+    }
+
+    props
+        .local_name
+        .as_deref()
+        .map(looks_like_oraimo_name)
+        .unwrap_or(false)
+}
+
+/// Every device type in the Oraimo `getDeviceNameByType` table.
+///
+/// Used to build generic-but-correctly-named device profiles for the whole
+/// Oraimo line-up without hardcoding the same list twice.
+pub const KNOWN_DEVICE_TYPES: &[u16] = &[
+    104, 105, 10510, 108, 300, 3001, 3002, 3003, 310, 311, 316, 317, 321,
+    323, 324, 3240, 325, 330, 340, 371, 3711, 372, 373, 374, 610, 611, 6111,
+    620, 6201, 626, 630, 6301, 6302, 6303, 631, 6312, 662, 666, 670, 671,
+    675, 680, 682, 687, 915, 917, 930, 931, 982, 1059, 3231, 3232, 3233,
+    3251, 3252, 3253, 3254, 3300, 3301, 6100, 6311, 57421,
+];
+
+/// Map a beacon product ID to an Oraimo device type.
+///
+/// Ported from `MyUtils.getDeviceTypeByPID()`, which is what the reference
+/// app calls on the product ID parsed from `DeviceBeacon` during discovery.
+/// Product IDs that are already device types, or that are handled by the
+/// `Product` enum, are not listed here; callers use the ID as-is in that case.
+pub fn device_type_from_pid(pid: u16) -> Option<u16> {
+    Some(match pid {
+        1 => 105,
+        2 => 330,
+        6 => 104,
+        7 => 57421,
+        9 => 1059,
+        16 => 10510,
+        17 => 108,
+        19 => 340,
+        20 => 930,
+        21 => 630,
+        22 => 3300,
+        23 => 620,
+        24 => 3301,
+        25 => 6301,
+        32 => 6302,
+        33 => 6303,
+        34 => 323,
+        35 => 6201,
+        36 => 626,
+        37 => 3231,
+        38 => 372,
+        39 => 324,
+        40 => 3240,
+        41 => 3232,
+        48 => 373,
+        49 => 3233,
+        50 => 631,
+        52 => 325,
+        53 => 3251,
+        54 => 3252,
+        55 => 6311,
+        56 => 3253,
+        57 => 3254,
+        4096 => 662,
+        4097 => 666,
+        4098 => 675,
+        4099 => 371,
+        4100 => 374,
+        8195 => 311,
+        8196 => 611,
+        8197 => 6111,
+        8198 => 310,
+        12288 => 610,
+        12289 => 6100,
+        12291 => 317,
+        12292 => 917,
+        12293 => 915,
+        12294 => 316,
+        12295 => 670,
+        12296 => 917,
+        16384 => 300,
+        16386 => 682,
+        16387 => 3001,
+        16388 => 3002,
+        16389 => 3003,
+        16390 => 982,
+        16391 => 680,
+        _ => return None,
+    })
+}
+
+/// Human-readable name for an Oraimo device type (`AppConstant.DeviceType`).
+pub fn device_type_name(device_type: u16) -> Option<&'static str> {
+    Some(match device_type {
+        104 => "oraimo FreePods 3C",
+        105 | 10510 => "oraimo FreePods 4",
+        108 => "oraimo FreePods Pro+",
+        300 | 3001 | 3002 | 3003 => "oraimo SpaceBox",
+        310 => "oraimo Necklace Neo",
+        311 => "oraimo Necklace Lite",
+        316 => "oraimo BoomPop Air+",
+        317 => "oraimo BoomPop Lite",
+        321 => "oraimo SpaceBuds Neo 2",
+        323 => "oraimo SpaceBuds Neo",
+        324 | 3240 => "oraimo SpaceBuds Lite",
+        325 => "oraimo SpaceBuds Lite 2",
+        330 => "oraimo FreePods Lite",
+        340 => "oraimo AirBuds 4",
+        371 => "oraimo OpenSnap Air",
+        3711 => "oraimo OpenSnap Hayato",
+        372 => "oraimo OpenSnap N",
+        373 => "oraimo OpenSnap",
+        374 => "oraimo OpenSnap N2",
+        610 => "oraimo BoomPop2",
+        611 | 6111 => "oraimo Necklace 5",
+        620 | 6201 => "oraimo SpaceBuds Z",
+        626 => "oraimo SpaceBuds N",
+        630 | 6301 | 6302 | 6303 => "oraimo SpaceBuds",
+        631 | 6312 => "oraimo SpaceBuds 2",
+        662 => "oraimo OpenCirclet 2",
+        666 => "oraimo OpenArc",
+        670 => "oraimo OpenLoop",
+        671 => "oraimo OpenSnap 2",
+        675 => "oraimo SpaceArc",
+        680 => "oraimo SpaceBox Active",
+        682 => "oraimo SpaceBox Pro",
+        687 => "oraimo HomeBox",
+        915 => "oraimo BoomPop N",
+        917 => "oraimo BoomPop Pro",
+        930 => "oraimo SpaceBuds Pro",
+        931 => "oraimo SpaceBuds Pro 2",
+        982 => "oraimo SpaceBox Max",
+        1059 => "oraimo SpacePods",
+        3231 | 3232 => "oraimo SpaceBuds Neo+",
+        3233 => "oraimo SpaceBuds Air+",
+        3251 => "oraimo SpaceBuds Air 2",
+        3252 => "oraimo SpaceBuds Lite 2+",
+        3253 => "oraimo SpaceBuds Lite 2",
+        3254 => "oraimo SpaceBuds Air 2",
+        3300 | 3301 => "oraimo FreePods Neo",
+        6100 => "oraimo BoomPop2S",
+        6311 => "oraimo SpaceBuds Fit",
+        57421 => "oraimo Riff 2",
+        _ => return None,
+    })
+}
+
+/// Beacon product IDs handled by the `Product` enum rather than
+/// `getDeviceTypeByPID` (`Product.getProductId()`).
+fn beacon_product_name(product_id: u16) -> Option<&'static str> {
+    Some(match product_id {
+        64 => "oraimo SpaceBuds Neo 2", // OTW_321
+        65 => "oraimo SpaceBuds 2",     // OTW_631_STAR
+        4101 => "oraimo OpenSnap 2",    // PRODUCT_OPN671 (device type 671)
+        16400 => "oraimo HomeBox",      // OBS_687 (device type 687)
+        _ => return None,
+    })
+}
+
+/// Human-readable product name for a beacon product ID.
+///
+/// Resolution order mirrors the reference app: map the beacon product ID to a
+/// device type (`MyUtils.getDeviceTypeByPID`), then name that device type
+/// (`MyUtils.getDeviceNameByType`). IDs that are already device types and the
+/// small `Product` enum set are handled as fallbacks.
+pub fn product_name_for_pid(product_id: u16) -> Option<&'static str> {
+    if let Some(name) = device_type_from_pid(product_id).and_then(device_type_name) {
+        return Some(name);
+    }
+    device_type_name(product_id).or_else(|| beacon_product_name(product_id))
+}
 
 /// Result of parsing a DeviceBeacon from manufacturer data.
 #[derive(Debug, Clone)]
@@ -86,24 +318,18 @@ impl DeviceBeacon {
 
         let len = data.len();
 
-        // Determine version and parse
+        // Determine version and parse. Length is authoritative for 8 and 13
+        // (see module docs): a 13-byte payload is *always* V4 even when
+        // `data[0] & 0x0F == 1`, which the old port got wrong.
         match len {
-            8 => {
-                // V3: 8 bytes, version is implicitly 1
-                Self::parse_v3(data)
-            }
-            9 | 13 | 27 => {
-                let version = data[0] & 0x0F;
-                match version {
-                    1 => {
-                        if len == 27 || len == 9 {
-                            Self::parse_v4(data)
-                        } else {
-                            Self::parse_v1(data)
-                        }
-                    }
-                    2 => Self::parse_v2(data),
-                    _ => Self::parse_v4(data), // fallback
+            8 => Self::parse_v3(data),      // V3
+            13 => Self::parse_v4(data),     // V4 (never V1/V2)
+            9 => Self::parse_v4(data),      // V4 (APK also requires nibble == 1)
+            27 => {
+                if data[0] & 0x0F == 2 {
+                    Self::parse_v2(data)    // V2
+                } else {
+                    Self::parse_v4(data)    // V4 (incl. nibble 1)
                 }
             }
             _ => None,
@@ -262,9 +488,9 @@ impl DeviceBeacon {
             19 | 21 | 25 | 32 | 33 | 34 | 20 | 6 | 12288 | 12289 | 17
         );
 
-        let connected = if is_special_pid && data[0] > 1 {
-            // Use fixed value 1 (connected)
-            true
+        let connected = if is_special_pid {
+            // APK: `data[0] > 1 ? 4 : 1`, then `(state >> 2) & 3`.
+            data[0] > 1
         } else {
             let flags = if data.len() > 9 { data[9] } else { data[0] };
             ((flags >> 2) & 0x03) == 1
@@ -299,14 +525,7 @@ impl DeviceBeacon {
 
     /// Human-readable product name for known product IDs.
     pub fn product_name(&self) -> &'static str {
-        match self.product_id {
-            64 => "SpaceBuds Neo 2",
-            65 => "SpaceBuds 2",
-            4100 => "OpenSnap Hayato",
-            4101 => "OPN671",
-            55 => "627S",
-            _ => "Oraimo SpaceBuds",
-        }
+        product_name_for_pid(self.product_id).unwrap_or("Oraimo SpaceBuds")
     }
 }
 
@@ -360,7 +579,8 @@ mod tests {
 
     #[test]
     fn test_v1_parse() {
-        // V1: 13 bytes, version=1
+        // V1 is only reachable through a direct call now (the reference
+        // implementation never selects it for 8/9/13/27-byte payloads).
         let mut data = vec![0u8; 13];
         data[0] = 0x01; // version 1
         data[1] = 65;   // product_id low
@@ -373,7 +593,7 @@ mod tests {
         data[11] = 0x8F;  // right: charging, 15%
         data[12] = 0x64;  // case: not charging, 100%
 
-        let beacon = DeviceBeacon::from_manufacturer_data(&data).unwrap();
+        let beacon = DeviceBeacon::parse_v1(&data).unwrap();
         assert_eq!(beacon.version, 1);
         assert_eq!(beacon.product_id, 65);
         assert_eq!(beacon.bt_address, Some(mac));
@@ -385,6 +605,77 @@ mod tests {
         assert_eq!(beacon.right_charging, Some(true));
         assert_eq!(beacon.case_battery, Some(100));
         assert_eq!(beacon.case_charging, Some(false));
+    }
+
+    /// Regression: a 13-byte beacon is *always* V4, regardless of the
+    /// `data[0]` nibble. The old port treated nibble 1 as V1 and nibble 2 as
+    /// V2, producing a garbled MAC (V1 does not XOR-deobfuscate).
+    #[test]
+    fn test_13_byte_beacon_is_always_v4() {
+        let mac: [u8; 6] = [0x24, 0xDF, 0x17, 0x5A, 0x7F, 0x26];
+        for nibble in [0x01u8, 0x02, 0x09, 0x00] {
+            let mut data = vec![0u8; 13];
+            data[0] = nibble; // product_id 917 (BoomPop Pro)
+            data[1] = 0x95;
+            data[2] = 0x03;
+            for (i, b) in mac.iter().enumerate() {
+                data[3 + i] = b ^ 0xAD;
+            }
+
+            let beacon = DeviceBeacon::from_manufacturer_data(&data)
+                .unwrap_or_else(|| panic!("13-byte beacon must parse (nibble {:#x})", nibble));
+            assert_eq!(beacon.version, 4, "nibble {:#x}", nibble);
+            assert_eq!(beacon.product_id, 917);
+            assert_eq!(beacon.bt_address, Some(mac), "nibble {:#x}", nibble);
+        }
+    }
+
+    #[test]
+    fn test_27_byte_v2_dispatch() {
+        let mut data = vec![0u8; 27];
+        data[0] = 0x02; // nibble 2 → V2
+        data[1] = 0x95;
+        data[2] = 0x03;
+        let beacon = DeviceBeacon::from_manufacturer_data(&data).unwrap();
+        assert_eq!(beacon.version, 2);
+        assert_eq!(beacon.product_id, 917);
+    }
+
+    #[test]
+    fn test_product_names() {
+        // Device types resolve directly.
+        assert_eq!(device_type_name(917), Some("oraimo BoomPop Pro"));
+        assert_eq!(device_type_name(6311), Some("oraimo SpaceBuds Fit"));
+        // Beacon product IDs resolve through getDeviceTypeByPID.
+        assert_eq!(product_name_for_pid(12292), Some("oraimo BoomPop Pro"));
+        assert_eq!(product_name_for_pid(12289), Some("oraimo BoomPop2S"));
+        assert_eq!(product_name_for_pid(25), Some("oraimo SpaceBuds"));
+        assert_eq!(product_name_for_pid(50), Some("oraimo SpaceBuds 2"));
+        assert_eq!(product_name_for_pid(64), Some("oraimo SpaceBuds Neo 2"));
+        assert_eq!(product_name_for_pid(4100), Some("oraimo OpenSnap N2"));
+        assert_eq!(product_name_for_pid(65535), None);
+        assert!(looks_like_oraimo_name("oraimo BoomPop Pro"));
+        assert!(looks_like_oraimo_name("Oraimo SpacePods"));
+        assert!(!looks_like_oraimo_name("JBL Tune"));
+    }
+
+    #[test]
+    fn test_pid_mapping_and_predicate() {
+        assert_eq!(device_type_from_pid(12292), Some(917));
+        assert_eq!(device_type_from_pid(12289), Some(6100));
+        assert_eq!(device_type_from_pid(25), Some(6301));
+        assert_eq!(device_type_from_pid(50), Some(631));
+        assert_eq!(device_type_from_pid(8201), None);
+        assert!(is_known_beacon_pid(12292));
+        assert!(!is_known_beacon_pid(8201));
+
+        // A Microsoft (0x0006) advert that happens to parse is not Oraimo.
+        assert!(!is_oraimo_manufacturer_data(0x0006, &[0u8; 13]));
+        // Known company ID + known product ID is accepted.
+        let mut data = vec![0u8; 13];
+        data[1] = 0x04; // product_id low
+        data[2] = 0x30; // product_id high → 0x3004 = 12292 (BoomPop Pro)
+        assert!(is_oraimo_manufacturer_data(0x0942, &data));
     }
 
     #[test]

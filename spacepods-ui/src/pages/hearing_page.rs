@@ -1,8 +1,8 @@
 use std::rc::Rc;
 use gtk4::prelude::*;
-use gtk4::{Box, Label, Orientation, Switch, Scale};
+use gtk4::{Box, Orientation, Switch, Scale};
 use libadwaita::prelude::*;
-use libadwaita::{PreferencesGroup, ActionRow, Clamp, StatusPage};
+use libadwaita::{PreferencesGroup, ActionRow, Clamp};
 
 use crate::context::{AppContext, set_busy};
 
@@ -16,18 +16,18 @@ impl HearingPage {
         header_row.set_margin_top(24);
         header_row.set_margin_bottom(8);
 
-        let title_lbl = Label::new(Some("Hearing Health"));
-        title_lbl.add_css_class("title-1");
-        title_lbl.set_halign(gtk4::Align::Start);
-        title_lbl.set_hexpand(true);
-        header_row.append(&title_lbl);
 
         let refresh_btn = gtk4::Button::from_icon_name("view-refresh-symbolic");
         refresh_btn.add_css_class("flat");
         refresh_btn.add_css_class("circular");
         refresh_btn.set_valign(gtk4::Align::Center);
         refresh_btn.set_tooltip_text(Some("Refresh status"));
+        refresh_btn.set_hexpand(true);
+        refresh_btn.set_halign(gtk4::Align::End);
         header_row.append(&refresh_btn);
+        // The window header carries the Refresh button and triggers this one.
+        refresh_btn.set_widget_name("page-refresh");
+        header_row.set_visible(false);
         
         let volume_group = PreferencesGroup::new();
         volume_group.set_title("Volume Management");
@@ -36,6 +36,7 @@ impl HearingPage {
         adapt_vol_row.set_title("Adaptive Volume");
         adapt_vol_row.set_subtitle("Automatically adjust volume based on ambient noise");
         let adapt_switch = Switch::new();
+        adapt_switch.set_sensitive(false); // unknown until read from the earbuds
         adapt_switch.set_valign(gtk4::Align::Center);
         adapt_vol_row.add_suffix(&adapt_switch);
         adapt_vol_row.set_activatable_widget(Some(&adapt_switch));
@@ -63,21 +64,17 @@ impl HearingPage {
             let scale_for_release = tone_vol_scale.clone();
             gc.connect_released(move |_, _, _, _| {
                 let level = scale_for_release.value() as u8;
-                let cc = libspacepods::ipc::ServiceCommand::Custom {
-                    command_id: 0x46,
-                    payload: vec![level],
-                };
                 set_busy(&[&tone_vol_row], true);
                 let ctx = ctx.clone();
                 let tone_vol_row = tone_vol_row.clone();
                 glib::spawn_future_local(async move {
                     let result = match libspacepods::client::SpacePodsClient::connect(None).await {
-                        Ok(mut client) => client.send_command_raw(cc).await,
+                        Ok(mut client) => client.set_tone_volume(level).await,
                         Err(e) => Err(e),
                     };
                     set_busy(&[&tone_vol_row], false);
                     if let Err(e) = result {
-                        ctx.error(format!("Couldn't set tone volume: {}", e));
+                        ctx.failed("Couldn't set tone volume", &e);
                     }
                 });
             });
@@ -91,6 +88,7 @@ impl HearingPage {
         ear_detect_row.set_title("In-Ear Detection");
         ear_detect_row.set_subtitle("Auto-pause music when removing earbuds");
         let ear_switch = Switch::new();
+        ear_switch.set_sensitive(false); // unknown until read from the earbuds
         ear_switch.set_valign(gtk4::Align::Center);
         ear_switch.set_active(true);
         ear_detect_row.add_suffix(&ear_switch);
@@ -122,7 +120,7 @@ impl HearingPage {
                         Err(e) => Err(e),
                     };
                     if let Err(e) = result {
-                        ctx.error(format!("Couldn't change Auto Answer: {}", e));
+                        ctx.failed("Couldn't change Auto Answer", &e);
                         sw.set_state(!active);
                     }
                 });
@@ -137,6 +135,7 @@ impl HearingPage {
         voice_row.set_title("Voice Prompts");
         voice_row.set_subtitle("Spoken notifications for mode changes");
         let voice_switch = Switch::new();
+        voice_switch.set_sensitive(false); // unknown until read from the earbuds
         voice_switch.set_valign(gtk4::Align::Center);
         voice_switch.set_active(true);
         voice_row.add_suffix(&voice_switch);
@@ -146,20 +145,15 @@ impl HearingPage {
         {
             let ctx = ctx.clone();
             voice_switch.connect_state_set(move |sw, active| {
-                let payload = vec![if active { 0x01 } else { 0x00 }];
-                let cc = libspacepods::ipc::ServiceCommand::Custom {
-                    command_id: 0x48, // CMD_VOICE_PROMPTS
-                    payload,
-                };
                 let sw = sw.clone();
                 let ctx = ctx.clone();
                 glib::spawn_future_local(async move {
                     let result = match libspacepods::client::SpacePodsClient::connect(None).await {
-                        Ok(mut client) => client.send_command_raw(cc).await,
+                        Ok(mut client) => client.set_feature("voice_prompt", active).await,
                         Err(e) => Err(e),
                     };
                     if let Err(e) = result {
-                        ctx.error(format!("Couldn't change Voice Prompts: {}", e));
+                        ctx.failed("Couldn't change Voice Prompts", &e);
                         sw.set_state(!active);
                     }
                 });
@@ -171,23 +165,18 @@ impl HearingPage {
             let ctx = ctx.clone();
             let adapt_vol_row = adapt_vol_row.clone();
             adapt_switch.connect_state_set(move |sw, active| {
-                let payload = vec![if active { 0x01 } else { 0x00 }];
-                let cc = libspacepods::ipc::ServiceCommand::Custom {
-                    command_id: 0x45, // CMD_ADAPTIVE_VOLUME
-                    payload,
-                };
                 set_busy(&[&adapt_vol_row], true);
                 let sw = sw.clone();
                 let ctx = ctx.clone();
                 let adapt_vol_row = adapt_vol_row.clone();
                 glib::spawn_future_local(async move {
                     let result = match libspacepods::client::SpacePodsClient::connect(None).await {
-                        Ok(mut client) => client.send_command_raw(cc).await,
+                        Ok(mut client) => client.set_feature("adaptive_volume", active).await,
                         Err(e) => Err(e),
                     };
                     set_busy(&[&adapt_vol_row], false);
                     if let Err(e) = result {
-                        ctx.error(format!("Couldn't set Adaptive Volume: {}", e));
+                        ctx.failed("Couldn't set Adaptive Volume", &e);
                         sw.set_state(!active);
                     }
                 });
@@ -199,23 +188,18 @@ impl HearingPage {
             let ctx = ctx.clone();
             let ear_detect_row = ear_detect_row.clone();
             ear_switch.connect_state_set(move |sw, active| {
-                let payload = vec![if active { 0x01 } else { 0x00 }];
-                let cc = libspacepods::ipc::ServiceCommand::Custom {
-                    command_id: 0x26, // CMD_IN_EAR_DETECT
-                    payload,
-                };
                 set_busy(&[&ear_detect_row], true);
                 let sw = sw.clone();
                 let ctx = ctx.clone();
                 let ear_detect_row = ear_detect_row.clone();
                 glib::spawn_future_local(async move {
                     let result = match libspacepods::client::SpacePodsClient::connect(None).await {
-                        Ok(mut client) => client.send_command_raw(cc).await,
+                        Ok(mut client) => client.set_feature("in_ear_detection", active).await,
                         Err(e) => Err(e),
                     };
                     set_busy(&[&ear_detect_row], false);
                     if let Err(e) = result {
-                        ctx.error(format!("Couldn't change In-Ear Detection: {}", e));
+                        ctx.failed("Couldn't change In-Ear Detection", &e);
                         sw.set_state(!active);
                     }
                 });
@@ -237,18 +221,27 @@ impl HearingPage {
         {
             let ctx = ctx.clone();
             refresh_btn.connect_clicked(move |_| {
-                let ctx = ctx.clone();
-                glib::spawn_future_local(async move {
-                    use libspacepods::client::SpacePodsClient;
-                    match SpacePodsClient::connect(None).await {
-                        Ok(mut client) => match client.get_status().await {
-                            Ok(_) => ctx.success("Status refreshed"),
-                            Err(e) => ctx.error(format!("Status: {}", e)),
-                        },
-                        Err(e) => ctx.daemon_unreachable(e),
-                    }
-                });
+                let voice = voice_switch.clone();
+                let adapt = adapt_switch.clone();
+                let ear = ear_switch.clone();
+                crate::context::read_features(
+                    &ctx,
+                    &["voice_prompt", "adaptive_volume", "in_ear_detection"],
+                    move |feature, on| {
+                        let sw = match feature {
+                            "voice_prompt" => &voice,
+                            "adaptive_volume" => &adapt,
+                            _ => &ear,
+                        };
+                        sw.set_sensitive(true);
+                        if sw.state() != on {
+                            sw.set_state(on);
+                        }
+                    },
+                );
             });
+            // Read the state once on open, so switches show what the earbuds report.
+            refresh_btn.emit_clicked();
         }
 
         let clamp = Clamp::new();

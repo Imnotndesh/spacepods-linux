@@ -277,7 +277,10 @@ remove_libspacepods() {
 #   systemctl --user status spacepods
 #   journalctl --user -u spacepods -f
 SERVICE_UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
-SERVICE_UNIT_FILE="$SERVICE_UNIT_DIR/spacepods.service"
+# Same name as the packaged unit: the D-Bus activation file refers to it.
+SERVICE_UNIT_FILE="$SERVICE_UNIT_DIR/libspacepods.service"
+# Unit name used before this change; removed on install and uninstall.
+LEGACY_UNIT_FILE="$SERVICE_UNIT_DIR/spacepods.service"
 
 # The unit lives in $HOME so it is managed WITHOUT sudo (per-user systemd).
 # The binary itself lives under $PREFIX (which may need sudo to install).
@@ -286,15 +289,18 @@ write_service_unit() {
   # Use a heredoc that does NOT expand $PREFIX/$LOG_LEVEL so the unit gets
   # literal placeholders we can substitute safely via sed (paths may contain
   # characters that would confuse replacement).
-  cat > "$SERVICE_UNIT_DIR/spacepods.service.in" <<'UNITEOF'
+  cat > "$SERVICE_UNIT_DIR/libspacepods.service.in" <<'UNITEOF'
 [Unit]
 Description=SpacePods daemon (libspacepods)
 After=bluetooth.target
 Wants=bluetooth.target
 
 [Service]
-Type=simple
-ExecStart=@PREFIX@/bin/libspacepods service --log-level @LOG_LEVEL@
+# The daemon reports readiness and feeds the watchdog (sd_notify).
+Type=notify
+NotifyAccess=main
+WatchdogSec=30
+ExecStart=@PREFIX@/bin/libspacepods --log-level @LOG_LEVEL@ service
 Restart=on-failure
 RestartSec=3
 StandardOutput=journal
@@ -304,8 +310,12 @@ StandardError=journal
 WantedBy=default.target
 UNITEOF
   sed -e "s|@PREFIX@|$PREFIX|g" -e "s|@LOG_LEVEL@|$LOG_LEVEL|g" \
-    "$SERVICE_UNIT_DIR/spacepods.service.in" > "$SERVICE_UNIT_FILE"
-  rm -f "$SERVICE_UNIT_DIR/spacepods.service.in"
+    "$SERVICE_UNIT_DIR/libspacepods.service.in" > "$SERVICE_UNIT_FILE"
+  rm -f "$SERVICE_UNIT_DIR/libspacepods.service.in"
+  if [ -f "$LEGACY_UNIT_FILE" ]; then
+    systemctl --user disable --now spacepods.service 2>/dev/null || true
+    rm -f "$LEGACY_UNIT_FILE"
+  fi
   systemctl --user daemon-reload 2>/dev/null || true
 }
 
@@ -338,7 +348,7 @@ remove_service() {
   if [ "$DO_DISABLE" = "1" ] && command -v systemctl >/dev/null 2>&1; then
     systemctl --user disable --now spacepods 2>/dev/null || true
   fi
-  rm -f "$SERVICE_UNIT_FILE"
+  rm -f "$SERVICE_UNIT_FILE" "$LEGACY_UNIT_FILE"
   if command -v systemctl >/dev/null 2>&1; then
     systemctl --user daemon-reload 2>/dev/null || true
   fi
@@ -407,22 +417,24 @@ install_spacepods_ui() {
     done
     [ "$FOUND" = "1" ] || die "No binary found inside the downloaded tarball."
   fi
-  cat > "$TMP_DIR/com.spacepods.ui.desktop" <<'EOF'
+  cat > "$TMP_DIR/com.github.imnotndesh.spacepods-linux.desktop" <<'EOF'
 [Desktop Entry]
 Type=Application
 Name=SpacePods Linux
-Comment=Control your SpaceBuds earbuds
+Comment=Control your oraimo SpaceBuds earbuds
 Exec=spacepods-ui
-Icon=com.spacepods.ui
-Categories=Audio;Settings;HardwareSettings;
+Icon=com.github.imnotndesh.spacepods-linux
 Terminal=false
+Categories=Audio;Settings;HardwareSettings;
+Keywords=earbuds;bluetooth;audio;oraimo;spacebuds;anc;equalizer;
 StartupNotify=true
+StartupWMClass=com.github.imnotndesh.spacepods-linux
 EOF
-  cat > "$TMP_DIR/com.spacepods.ui.svg" <<'EOF'
+  cat > "$TMP_DIR/com.github.imnotndesh.spacepods-linux.svg" <<'EOF'
 <svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256"><rect width="256" height="256" rx="48" fill="#1f57c4"/><text x="128" y="150" font-family="sans-serif" font-size="120" font-weight="bold" text-anchor="middle" fill="#fff">S</text></svg>
 EOF
-  sudo_cmd install -m644 "$TMP_DIR/com.spacepods.ui.desktop" "$PREFIX/share/applications/com.spacepods.ui.desktop"
-  sudo_cmd install -m644 "$TMP_DIR/com.spacepods.ui.svg" "$PREFIX/share/icons/hicolor/scalable/apps/com.spacepods.ui.svg"
+  sudo_cmd install -m644 "$TMP_DIR/com.github.imnotndesh.spacepods-linux.desktop" "$PREFIX/share/applications/com.github.imnotndesh.spacepods-linux.desktop"
+  sudo_cmd install -m644 "$TMP_DIR/com.github.imnotndesh.spacepods-linux.svg" "$PREFIX/share/icons/hicolor/scalable/apps/com.github.imnotndesh.spacepods-linux.svg"
   sudo_cmd update-desktop-database "$PREFIX/share/applications" 2>/dev/null || true
   sudo_cmd gtk-update-icon-cache "$PREFIX/share/icons/hicolor" 2>/dev/null || true
   log "Installed. Launch it with:  spacepods-ui"
@@ -440,8 +452,8 @@ remove_spacepods_ui() {
     sudo_cmd rpm -e spacepods-ui
   else
     sudo_cmd rm -f "$PREFIX/bin/spacepods-ui"
-    sudo_cmd rm -f "$PREFIX/share/applications/com.spacepods.ui.desktop"
-    sudo_cmd rm -f "$PREFIX/share/icons/hicolor/scalable/apps/com.spacepods.ui.svg"
+    sudo_cmd rm -f "$PREFIX/share/applications/com.github.imnotndesh.spacepods-linux.desktop"
+    sudo_cmd rm -f "$PREFIX/share/icons/hicolor/scalable/apps/com.github.imnotndesh.spacepods-linux.svg"
     sudo_cmd update-desktop-database "$PREFIX/share/applications" 2>/dev/null || true
   fi
   log "spacepods-ui removed."
@@ -462,7 +474,7 @@ install_flatpak() {
   log "Downloading $url"
   fetch "$url" "$TMP_DIR/spacepods.flatpak" || die "Failed to download flatpak bundle. URL: $url"
   flatpak install --user -y "$TMP_DIR/spacepods.flatpak"
-  log "Installed. Launch it with:  flatpak run com.spacepods.ui"
+  log "Installed. Launch it with:  flatpak run com.github.imnotndesh.spacepods-linux"
   trap - EXIT
   rm -rf "$TMP_DIR"
 }
@@ -475,7 +487,7 @@ remove_flatpak() {
     warn "flatpak not installed; nothing to remove."
     return 0
   fi
-  flatpak uninstall --user -y com.spacepods.ui 2>/dev/null || true
+  flatpak uninstall --user -y com.github.imnotndesh.spacepods-linux 2>/dev/null || true
   log "Flatpak app removed."
 }
 

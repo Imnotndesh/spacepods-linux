@@ -1,4 +1,4 @@
-use crate::protocol::{Packet, UUID_NOTIFY, UUID_WRITE, CMD_HANDSHAKE};
+use crate::protocol::{Packet, UUID_NOTIFY, UUID_WRITE, CMD_HANDSHAKE, UUID_JIELI_WRITE, UUID_JIELI_NOTIFY};
 use crate::{Error, Result};
 use btleplug::api::{Peripheral as _, WriteType};
 use btleplug::platform::Peripheral;
@@ -29,17 +29,27 @@ impl BleConnection {
 
         let chars = peripheral.characteristics();
 
-        let write_char = chars
-            .iter()
-            .find(|c| c.uuid == UUID_WRITE)
-            .cloned()
-            .ok_or(Error::WriteCharNotFound)?;
+        let write_char = match chars.iter().find(|c| c.uuid == UUID_WRITE).cloned() {
+            Some(c) => c,
+            None => {
+                if chars.iter().any(|c| c.uuid == UUID_JIELI_WRITE)
+                    || chars.iter().any(|c| c.uuid == UUID_JIELI_NOTIFY)
+                {
+                    return Err(Error::UnsupportedChip("JieLi RCSP"));
+                }
+                return Err(Error::WriteCharNotFound);
+            }
+        };
 
-        let notify_char = chars
-            .iter()
-            .find(|c| c.uuid == UUID_NOTIFY)
-            .cloned()
-            .ok_or(Error::NotifyCharNotFound)?;
+        let notify_char = match chars.iter().find(|c| c.uuid == UUID_NOTIFY).cloned() {
+            Some(c) => c,
+            None => {
+                if chars.iter().any(|c| c.uuid == UUID_JIELI_NOTIFY) {
+                    return Err(Error::UnsupportedChip("JieLi RCSP"));
+                }
+                return Err(Error::NotifyCharNotFound);
+            }
+        };
 
         peripheral.subscribe(&notify_char).await?;
 
@@ -99,6 +109,18 @@ impl BleConnection {
         self.response_tx.subscribe()
     }
 
+    /// Read the standard GATT battery level (`0x2A19`). A read only: nothing is written
+    /// to the device. `None` if the device does not expose the characteristic.
+    pub async fn read_battery_level(&self) -> Option<u8> {
+        let characteristic = self
+            .peripheral
+            .characteristics()
+            .into_iter()
+            .find(|c| c.uuid == crate::protocol::UUID_BATTERY_LEVEL)?;
+        let data = self.peripheral.read(&characteristic).await.ok()?;
+        data.first().copied().filter(|v| *v <= 100)
+    }
+
     pub async fn is_connected(&self) -> bool {
         self.peripheral.is_connected().await.unwrap_or(false)
     }
@@ -113,16 +135,26 @@ impl BleConnection {
     }
 
     /// Try to detect product ID from manufacturer data in the BLE advertisement.
+    ///
+    /// Uses the full [`crate::beacon::DeviceBeacon`] parser so 8-byte V3
+    /// payloads (product ID at offset 0) and 13-byte V4/V2 payloads (product ID
+    /// at offset 1) are both handled correctly.
     pub async fn detect_product_id(&self) -> Option<u16> {
         if let Ok(Some(props)) = self.peripheral.properties().await {
-            for (_, data) in &props.manufacturer_data {
-                eprintln!("[SPACEPODS][BLE] manufacturer_data len={}", data.len());
-                if data.len() >= 3 {
-                    let product_id = u16::from_le_bytes([data[1], data[2]]);
-                    eprintln!("[SPACEPODS][BLE] product_id from mfg data: {}", product_id);
-                    return Some(product_id);
-                } else {
-                    eprintln!("[SPACEPODS][BLE] mfg data too short: {:?}", data);
+            for (mfg_id, data) in &props.manufacturer_data {
+                eprintln!(
+                    "[SPACEPODS][BLE] manufacturer_data len={} mfg=0x{:04X}",
+                    data.len(),
+                    mfg_id
+                );
+                if let Some(beacon) = crate::beacon::DeviceBeacon::from_manufacturer_data(data) {
+                    let device_type = crate::beacon::device_type_from_pid(beacon.product_id)
+                        .unwrap_or(beacon.product_id);
+                    eprintln!(
+                        "[SPACEPODS][BLE] beacon product_id={} device_type={} version={}",
+                        beacon.product_id, device_type, beacon.version
+                    );
+                    return Some(device_type);
                 }
             }
         } else {

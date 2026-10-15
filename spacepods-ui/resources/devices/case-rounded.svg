@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="24 32 72 64">
+  <!-- Charging case, flat style: rounded body, lid seam and LED. Original drawing. -->
+  <rect x="28" y="36" width="64" height="56" rx="20" fill="#e8ebf0" stroke="#7d8590" stroke-width="2"/>
+  <path d="M28 60 H92" stroke="#b5bcc6" stroke-width="2"/>
+  <circle cx="60" cy="78" r="2.5" fill="#3ec46d"/>
+</svg>

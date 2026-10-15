@@ -1,0 +1,57 @@
+{
+    "app-id": "com.github.imnotndesh.spacepods-linux",
+    "runtime": "org.gnome.Platform",
+    "runtime-version": "50",
+    "sdk": "org.gnome.Sdk",
+    "sdk-extensions": [
+        "org.freedesktop.Sdk.Extension.rust-stable"
+    ],
+    "command": "spacepods-ui",
+    "finish-args": [
+        "--socket=wayland",
+        "--socket=fallback-x11",
+        "--share=ipc",
+        "--device=dri",
+        "--talk-name=com.github.imnotndesh.SpacePods.Daemon1"
+    ],
+    "build-options": {
+        "append-path": "/usr/lib/sdk/rust-stable/bin",
+        "env": {
+            "CARGO_HOME": "/run/build/spacepods-ui/cargo",
+            "RUSTUP_HOME": "/usr/lib/sdk/rust-stable",
+            "RUSTC": "/usr/lib/sdk/rust-stable/bin/rustc",
+            "CARGO": "/usr/lib/sdk/rust-stable/bin/cargo"
+        }
+    },
+    "modules": [
+        {
+            "name": "spacepods-ui",
+            "buildsystem": "simple",
+            "build-commands": [
+                "cargo build --release --offline --bin spacepods-ui",
+                "install -Dm755 target/release/spacepods-ui /app/bin/spacepods-ui",
+                "install -Dm644 spacepods-ui/resources/app-icon.svg /app/share/icons/hicolor/scalable/apps/com.github.imnotndesh.spacepods-linux.svg",
+                "install -Dm644 spacepods-ui/data/com.github.imnotndesh.spacepods-linux.desktop /app/share/applications/com.github.imnotndesh.spacepods-linux.desktop",
+                "install -Dm644 spacepods-ui/data/com.github.imnotndesh.spacepods-linux.metainfo.xml /app/share/metainfo/com.github.imnotndesh.spacepods-linux.metainfo.xml",
+                "install -Dm644 spacepods-ui/data/com.github.imnotndesh.spacepods-linux.gschema.xml /app/share/glib-2.0/schemas/com.github.imnotndesh.spacepods-linux.gschema.xml",
+                "glib-compile-schemas /app/share/glib-2.0/schemas"
+            ],
+            "sources": [
+                {
+                    "type": "dir",
+                    "path": "..",
+                    "skip": [
+                        ".git",
+                        "target",
+                        "**/target",
+                        "spacepods-applet"
+                    ]
+                },
+                {
+                    "type": "file",
+                    "path": "cargo-sources.json"
+                }
+            ]
+        }
+    ]
+}

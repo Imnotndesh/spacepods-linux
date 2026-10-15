@@ -1,6 +1,5 @@
 use super::types::MessageType;
 use super::constants::*;
-use crate::Error;
 
 /// A BLE protocol packet sent to/received from the SpaceBuds device.
 ///

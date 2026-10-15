@@ -172,6 +172,14 @@ pub struct EqController<'a> {
 
 impl EqController<'_> {
     pub async fn get_state(&self) -> Result<Option<EqState>> {
+        if self.buds.manager.is_jieli().await {
+            return Ok(self
+                .buds
+                .manager
+                .jieli_get_eq_value()
+                .await?
+                .map(|(mode, gains)| Self::jieli_eq_state(mode, gains)));
+        }
         let resp = self.buds.manager.send(&EqCommand::GetState).await?;
         match resp {
             EqResponse::State(state) => Ok(state),
@@ -180,8 +188,9 @@ impl EqController<'_> {
     }
 
     pub async fn set_preset(&self, preset_id: u8) -> Result<()> {
-        if EqPreset::find(preset_id).is_none() {
-            return Err(Error::InvalidPreset(preset_id));
+        let preset = EqPreset::find(preset_id).ok_or(Error::InvalidPreset(preset_id))?;
+        if self.buds.manager.is_jieli().await {
+            return self.set_jieli_preset(preset_id, preset).await;
         }
         self.buds.manager.send(&EqCommand::SetPreset(preset_id)).await?;
         tokio::time::sleep(Duration::from_millis(300)).await;
@@ -189,7 +198,75 @@ impl EqController<'_> {
     }
 
     pub async fn set_custom(&self, gains: Vec<i8>) -> Result<()> {
+        if self.buds.manager.is_jieli().await {
+            self.buds
+                .manager
+                .jieli_set_eq_value(crate::protocol::jieli::eq_mode::CUSTOM, &gains)
+                .await?;
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            return Ok(());
+        }
         self.buds.manager.send(&EqCommand::SetCustom(gains)).await?;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        Ok(())
+    }
+
+    /// Build an [`EqState`] from a JieLi `EqInfo` value.
+    fn jieli_eq_state(mode: u8, gains: Vec<i8>) -> EqState {
+        let name = crate::protocol::jieli::eq_mode_name(mode).to_string();
+        let description = if gains.len() >= 8 {
+            let mut curve = [0i8; 10];
+            for (dst, src) in curve.iter_mut().zip(gains.iter()) {
+                *dst = *src;
+            }
+            EqPreset::gains_description(&curve)
+        } else {
+            String::new()
+        };
+        EqState { mode, name, description, gains }
+    }
+
+    /// Map the UI/daemon's preset id onto a JieLi EQ mode.
+    fn jieli_mode_for_preset(id: u8) -> Option<u8> {
+        use crate::protocol::jieli::eq_mode;
+        Some(match id {
+            0 => eq_mode::STANDARD,
+            1 => eq_mode::POPULAR,
+            2 => eq_mode::ROCK,
+            3 => eq_mode::JAZZ,
+            4 => eq_mode::CLASSICAL,
+            5 => eq_mode::COUNTRY,
+            6 => eq_mode::CUSTOM,
+            _ => return None,
+        })
+    }
+
+    /// Apply a preset on JieLi hardware: prefer the device's own preset for the
+    /// mapped mode (so its DSP curve is used), and fall back to writing the
+    /// daemon's curve as a custom EQ when the device does not offer that mode.
+    async fn set_jieli_preset(&self, preset_id: u8, preset: &EqPreset) -> Result<()> {
+        let custom = crate::protocol::jieli::eq_mode::CUSTOM;
+        if let Some(mode) = Self::jieli_mode_for_preset(preset_id) {
+            if mode != custom {
+                match self.buds.manager.jieli_set_eq_preset(mode).await {
+                    Ok(()) => {
+                        tokio::time::sleep(Duration::from_millis(300)).await;
+                        return Ok(());
+                    }
+                    Err(e) => crate::log::warn(
+                        "EQ",
+                        &format!(
+                            "JieLi EQ mode {} unavailable ({}); applying preset curve as custom",
+                            mode, e
+                        ),
+                    ),
+                }
+            }
+        }
+        self.buds
+            .manager
+            .jieli_set_eq_value(custom, &preset.gains)
+            .await?;
         tokio::time::sleep(Duration::from_millis(300)).await;
         Ok(())
     }

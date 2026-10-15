@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=SpacePods Linux
+Comment=Control your oraimo SpaceBuds earbuds
+Exec=spacepods-ui
+Icon=com.github.imnotndesh.spacepods-linux
+Terminal=false
+Categories=Audio;Settings;HardwareSettings;
+Keywords=earbuds;bluetooth;audio;oraimo;spacebuds;anc;equalizer;
+StartupNotify=true
+StartupWMClass=com.github.imnotndesh.spacepods-linux
